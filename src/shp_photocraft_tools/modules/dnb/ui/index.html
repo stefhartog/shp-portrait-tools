@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SHP PhotoCraft D&amp;B</title>
+<link rel="stylesheet" href="/static/shp-ui.css">
+<style>
+  #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); height:100vh; }
+  #bar { grid-column: 1 / -1; }
+  h1 { font-size:16px; margin:0 0 10px; }
+  h2 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); margin:16px 0 6px; }
+  section { border-top:1px solid var(--line); padding-top:2px; }
+  input[type=number] { width:68px; -moz-appearance:textfield; appearance:textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+  button.primary.dirty { box-shadow:0 0 0 2px var(--warn); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 10px 8px; margin:8px 0; }
+  .card .head { display:flex; justify-content:space-between; align-items:center; font-weight:600; }
+  .card .head button { padding:0 8px; }
+  #info { color:var(--dim); font-size:12px; margin:4px 0; min-height:2.6em; }
+  #info b { color:var(--text); }
+  #profile { width:100%; height:120px; background:#12141a; border:1px solid var(--line); border-radius:4px; display:block; }
+  main { display:grid; grid-template-rows: 1fr; min-width:0; min-height:0; }
+  #bar b { color:var(--text); }
+  #presetBar { margin-left:auto; display:flex; gap:6px; align-items:center; }
+  #panels { display:grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: minmax(0, 1fr); gap:6px; padding:6px; min-height:0; }
+  .ptitle label { font-weight:400; margin-left:10px; cursor:pointer; }
+  .ptitle input { vertical-align:middle; margin:0 3px 0 0; }
+  .opts { display:flex; align-items:center; flex-wrap:wrap; }
+  .opts[hidden] { display:none; }
+  .pwrap { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .pan { position:relative; flex:1; overflow:hidden; background:#0c0d10; border:1px solid var(--line); cursor:grab; min-height:0; touch-action:none; }
+  .pan.drag { cursor:grabbing; }
+  .pan img { position:absolute; left:0; top:0; transform-origin:0 0; user-select:none; -webkit-user-drag:none; image-rendering:auto; }
+  .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
+  details { margin-top:6px; color:var(--dim); }
+  details.grp { margin-top:0; }
+  details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
+  .sub { font-size:11px; color:var(--dim); font-weight:600; margin:10px 0 4px; }
+  details.mask-group > summary { gap:8px; }
+  details.mask-group > summary label { display:flex; align-items:center; gap:4px; margin-left:auto; flex:none; color:var(--dim); font-size:11px; font-weight:400; letter-spacing:0; text-transform:none; cursor:pointer; }
+  details.mask-group > summary input { margin:0; }
+  details.mask-group > summary::after { flex:none; }
+  .color-pick { display:flex; align-items:center; gap:6px; margin:4px 0; }
+  .sub-title { display:flex; align-items:center; gap:8px; }
+  .color-swatch { width:14px; height:14px; flex:none; padding:0; border:1px solid var(--line); border-radius:3px; background:var(--bg); cursor:pointer; }
+  .color-swatch.picking { outline:2px solid var(--acc); outline-offset:1px; }
+  .color-swatch.disabled { opacity:.4; cursor:default; }
+  .pan.picking { cursor:crosshair; }
+  table { border-collapse:collapse; font-size:11px; }
+  td, th { padding:1px 8px 1px 0; text-align:right; }
+  @media (max-width: 980px) {
+    #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; height:auto; }
+    aside { border-right:0; border-bottom:1px solid var(--line); overflow:visible; }
+    main { min-height: 100vh; }
+    #panels { grid-template-columns: 1fr; }
+    .pan { height: 70vh; flex:none; }
+  }
+  .pan.zin { cursor:zoom-in; } .pan.zout { cursor:zoom-out; }
+</style>
+</head>
+<body>
+<div id="app">
+<div id="bar"><button id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get from PhotoCraft</button><button id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send to PhotoCraft</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<aside>
+
+
+  <details class="grp" id="g-bands" open>
+    <summary>Detail level</summary>
+    <div class="gbody">
+    <div id="bands"></div>
+    <div id="globals"></div>
+    <canvas id="profile" title="Total gain by feature size (mm) for the detail level settings." width="680" height="120" style="width:100%;height:60px;background:#12141a;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-mask" open>
+    <summary><span>Skin mask</span><label><input type="checkbox" id="maskOn" aria-label="Enable skin mask" title="Only correct skin: pixels outside the skin mask are left unchanged. Eyes, brows, lips, nostrils and off-colour pixels such as tattoos are always left out." checked>on</label></summary>
+    <div class="gbody">
+      <div id="maskSliders"></div>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-structure" open>
+    <summary><span>Structure protection</span><label><input type="checkbox" id="structureOn" aria-label="Enable structure protection" title="Reduce correction on detected folds, creases and contours.">on</label></summary>
+    <div class="gbody">
+      <div id="structSliders"></div>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-range" open>
+    <summary><span class="sub-title">Light range<button type="button" class="color-swatch" id="toneSwatch" aria-label="Pick light range" title="Click, then click a point in the Original preview to center the light range on its brightness"></button></span><label><input type="checkbox" id="toneOn" aria-label="Enable light range" title="Only correct midtones: the light range below is multiplied into the mask." checked>on</label></summary>
+    <div class="gbody">
+      <div id="tone"></div>
+      <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="120" style="width:100%;height:60px;background:#12141a;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-color" open>
+    <summary><span class="sub-title">Color range<button type="button" class="color-swatch" id="colorSwatch" aria-label="Pick color range" title="Click, then click a color in the Original preview"></button></span><label><input type="checkbox" id="colorOn" aria-label="Enable color range" title="Limit correction to colors near the picked hue and saturation." disabled>on</label></summary>
+    <div class="gbody">
+      <div id="colorSliders"></div>
+    </div>
+  </details>
+  <details class="grp" id="g-file" open>
+    <summary>Image analysis</summary>
+    <div class="gbody">
+      <div id="info">No photo loaded.</div>
+      <div class="row"><label>px / 63 mm</label><input type="number" id="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." min="10" max="5000" step="1"></div>
+    </div>
+  </details>
+  <div id="manual" hidden>
+    <select id="view"><option value="detail">Face crop</option><option value="crop" selected>Portrait crop</option><option value="whole">Whole image</option></select>
+    <div class="row"><select id="imgSel" style="flex:1"></select><button id="loadBtn">Load</button></div>
+    <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
+    <div class="row"><button class="primary" id="apply" disabled>Apply</button><button id="save" disabled>Save</button></div>
+  </div>
+
+
+
+
+
+</aside>
+
+<main>
+  <div id="panels">
+    <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsA">
+      <button class="tab" data-k="orig" title="The picture as loaded.">Original</button>
+      <button class="tab on" data-k="result" title="The picture with the soft light layer applied through the mask.">Result</button></div></div>
+      <div class="pan" id="p0"><div class="empty">no result yet</div></div></div>
+    <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsB">
+      <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
+      <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
+      <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Layer</button>
+      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button></div>
+      <span class="opts" id="optsAn" hidden>
+      <label title="Detected faces (box, eyes/nose/mouth points, face mesh features) and bodies (skeleton). Yellow = AF/target subject, gray = others, orange box = region used for the skin mask."><input type="checkbox" id="anDetect" checked>faces &amp; bodies</label>
+      <label title="Skin mask in green; magenta = eyes, brows, lips, nostrils left out; orange = off-colour skin (e.g. tattoos) left out."><input type="checkbox" id="anSkin" checked>skin</label>
+      <label title="Narrow structure (folds, creases, contours) in red, as set by the structure protection sliders. Shown whether or not protection is on."><input type="checkbox" id="anStruct" checked>structure</label></span>
+      <span class="opts" id="optsLayer" hidden>
+      <label title="Stretch the layer around 50% gray by 8 so small changes are visible. Display only."><input type="checkbox" id="layerX" checked>stretch x8</label></span></div>
+      <div class="pan" id="p1"><div class="empty">no result yet</div></div></div>
+  </div>
+</main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = {
+  bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
+  strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0,
+  tone: {mid:0.52, range:0.87, taper:0.16, strength:1}, maskFeather: 1.0, structure: {protect:0, mm:4, thr:0.1},
+  color: {hue:null, saturation:null, rgb:null, hueRange:30, saturationRange:0.25, blurMm:1, smoothMm:0.8, strength:1},
+  loaded: false, busy: false, dirty: true, version: 0, avers: 0,
+};
+
+/* ---------- small helpers ---------- */
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+let statusOk = false;
+function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; statusOk = ok && !err; s.className = err ? 'err' : state.busy ? 'busy' : ok ? 'ok' : ''; }
+function slider(parent, label, min, max, step, value, onInput, opts={}) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label;
+  if (opts.tip) { row.title = opts.tip; lab.style.cursor = 'help'; }
+  const rng = document.createElement('input'); rng.type = 'range';
+  const num = document.createElement('input'); num.type = 'text'; num.readOnly = true; num.tabIndex = -1; num.className = 'val';
+  const log = !!opts.log;
+  const toT = v => log ? Math.round(1000 * Math.log(v/min) / Math.log(max/min)) : v;
+  const fromT = t => log ? min * Math.pow(max/min, t/1000) : parseFloat(t);
+  rng.min = log ? 0 : min; rng.max = log ? 1000 : max; rng.step = log ? 1 : step;
+  const fmt = v => (log ? (v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : v.toFixed(0)) : v);
+  const set = (v, fire) => { v = Math.min(max, Math.max(min, v)); rng.value = toT(v); num.value = fmt(v); if (fire) onInput(parseFloat(num.value)); };
+  rng.addEventListener('input', () => set(fromT(rng.value), true));
+  set(value, false);
+  row.append(lab, rng, num); parent.append(row);
+  return { set, row, rng, num };
+}
+function markDirty() {
+  if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
+  state.dirty = true; $('apply').classList.add('dirty');
+  drawProfile();
+  if (state.loaded && !state.busy) { clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350); }
+}
+
+const sliders = {};
+
+/* ---------- bands ---------- */
+const bandSliders = [];
+function renderBands() {
+  const root = $('bands'); root.innerHTML = ''; bandSliders.length = 0;
+  const b = state.bands[0];
+  const oct = Math.log2(b.hi / b.lo), mid = Math.sqrt(b.lo * b.hi);
+  const update = () => {
+    b.lo = Math.max(0.3, st.mid / Math.pow(2, st.range / 2)); b.hi = Math.min(300, st.mid * Math.pow(2, st.range / 2));
+    markDirty();
+  };
+  const st = {mid, range: oct};
+  slider(root, 'midpoint', 0.3, 300, 0.01, mid, v => { st.mid = v; update(); }, {log:true, tip:'Feature size (mm on the face) at the centre of the corrected range.'});
+  slider(root, 'range', 0.2, 10, 0.05, Math.min(10, Math.max(0.2, oct)), v => { st.range = v; update(); }, {tip:'Width of the corrected range of feature sizes, in octaves (each octave doubles the size).'});
+  slider(root, 'taper', 0.1, 2, 0.05, b.taper, v => { b.taper = v; markDirty(); }, {tip:'How softly the two ends of the size range fade out.'});
+}
+/* ---------- global + tone sliders ---------- */
+sliders.strength = slider($('globals'), 'strength', 0, 4, 0.01, state.strength, v => { state.strength = v; markDirty(); }, {tip:'Multiplies the gain of the band.'});
+sliders.edge = slider($('globals'), 'edge', 0, 0.2, 0.005, state.edge, v => { state.edge = v; markDirty(); }, {tip:'Brightness step that counts as an edge.'});
+sliders.toneStrength = slider($('tone'), 'strength', 0, 1, 0.01, state.tone.strength, v => { state.tone.strength = v; markDirty(); }, {tip:'How strongly the tone range limits the correction (1 = fully, 0 = not at all).'});
+sliders.toneMid = slider($('tone'), 'midpoint', 0, 1, 0.01, state.tone.mid, v => { state.tone.mid = v; setToneSwatch(); drawTone(); markDirty(); }, {tip:'Brightness (0 black, 1 white) at the centre of the corrected range.'});
+sliders.toneRange = slider($('tone'), 'range', 0.05, 1.2, 0.01, state.tone.range, v => { state.tone.range = v; drawTone(); markDirty(); }, {tip:'Total width of the corrected brightness range; nothing outside it changes.'});
+sliders.toneTaper = slider($('tone'), 'taper', 0.01, 0.5, 0.01, state.tone.taper, v => { state.tone.taper = v; drawTone(); markDirty(); }, {tip:'How softly both edges of the range fade out.'});
+sliders.colorStrength = slider($('colorSliders'), 'strength', 0, 1, 0.01, state.color.strength, v => { state.color.strength = v; markDirty(); }, {tip:'How strongly the color range limits the correction (1 = fully, 0 = not at all).'});
+sliders.colorHue = slider($('colorSliders'), 'hue range °', 1, 180, 1, state.color.hueRange, v => { state.color.hueRange = v; markDirty(); }, {tip:'How far the selected hue can vary in either direction. Hue wraps around red.'});
+sliders.colorSaturation = slider($('colorSliders'), 'saturation range', 0.01, 1, 0.01, state.color.saturationRange, v => { state.color.saturationRange = v; markDirty(); }, {tip:'How far saturation can vary above or below the picked color.'});
+sliders.colorBlur = slider($('colorSliders'), 'feather mm', 0, 10, 0.1, state.color.blurMm, v => { state.color.blurMm = v; markDirty(); }, {tip:'Blurs the color mask to remove pixelated edges.'});
+sliders.colorSmooth = slider($('colorSliders'), 'smoothing mm', 0, 5, 0.1, state.color.smoothMm, v => { state.color.smoothMm = v; markDirty(); }, {tip:'Blurs the image before the color test, so skin texture and noise do not break up the mask.'});
+sliders.feather = slider($('maskSliders'), 'feather mm', 0, 10, 0.1, state.maskFeather, v => { state.maskFeather = v; markDirty(); }, {tip:'Softens the mask edge, in mm on the face. It fades inward only, so the correction does not spill onto hair or background.'});
+sliders.protect = slider($('structSliders'), 'strength', 0, 1, 0.01, state.structure.protect, v => { state.structure.protect = v; markDirty(); }, {tip:'How much the correction is reduced on detected folds, creases and contours. 0 = off.'});
+sliders.protectMm = slider($('structSliders'), 'feature mm', 1, 15, 0.1, state.structure.mm, v => { state.structure.mm = v; markDirty(); }, {tip:'Width of the structures to protect, in mm on the subject. Small = fine creases, large = broader contours and muscle definition.'});
+sliders.protectThr = slider($('structSliders'), 'threshold', 0.02, 0.4, 0.005, state.structure.thr, v => { state.structure.thr = v; markDirty(); }, {tip:'How pronounced a line must be to count. Lower protects more (also faint lines).'});
+function syncStructureControls() {
+  [sliders.protect, sliders.protectMm, sliders.protectThr].forEach(s => {
+    s.rng.disabled = s.num.disabled = !$('structureOn').checked;
+  });
+}
+function syncColorControls() {
+  const available = state.color.hue !== null && state.color.saturation !== null;
+  $('colorOn').disabled = !available;
+  [sliders.colorHue, sliders.colorSaturation, sliders.colorBlur, sliders.colorSmooth, sliders.colorStrength].forEach(s => {
+    s.rng.disabled = s.num.disabled = !available || !$('colorOn').checked;
+  });
+}
+$('toneOn').onchange = () => { drawTone(); markDirty(); };
+$('maskOn').onchange = markDirty;
+$('structureOn').onchange = () => { syncStructureControls(); markDirty(); };
+$('colorOn').onchange = () => { syncColorControls(); markDirty(); };
+syncStructureControls();
+syncColorControls();
+async function drawTone() {
+  clearTimeout(drawTone.t);
+  drawTone.t = setTimeout(async () => {
+    try {
+      const p = await api('/api/tone', {mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength});
+      const c = $('toneplot'), x = c.getContext('2d'), W = c.width, H = c.height, off = !$('toneOn').checked;
+      x.clearRect(0, 0, W, H);
+      const grad = x.createLinearGradient(0, 0, W, 0); grad.addColorStop(0, '#000'); grad.addColorStop(1, '#fff');
+      x.fillStyle = grad; x.globalAlpha = 0.25; x.fillRect(0, 0, W, H); x.globalAlpha = 1;
+      const X = v => v * (W - 1), Y = w => H - 6 - w * (H - 14);
+      const w = off ? p.w.map(() => 1) : p.w;
+      x.beginPath(); x.moveTo(X(0), Y(0)); p.v.forEach((v, i) => x.lineTo(X(v), Y(w[i]))); x.lineTo(X(1), Y(0)); x.closePath();
+      x.fillStyle = off ? 'rgba(154,161,176,.35)' : 'rgba(76,141,255,.45)'; x.fill();
+      x.strokeStyle = off ? '#9aa1b0' : '#4c8dff'; x.lineWidth = 2; x.beginPath();
+      p.v.forEach((v, i) => i ? x.lineTo(X(v), Y(w[i])) : x.moveTo(X(v), Y(w[i]))); x.stroke();
+      x.fillStyle = '#e6e8ee'; x.font = '16px system-ui'; x.fillText('dark', 4, 16); x.fillText('light', W - 44, 16);
+    } catch (e) { /* ignore */ }
+  }, 60);
+}
+
+/* ---------- gain profile plot ---------- */
+async function drawProfile() {
+  clearTimeout(drawProfile.t);
+  drawProfile.t = setTimeout(async () => {
+    try {
+      const p = await api('/api/profile', {bands: bandsPayload(), strength: state.strength});
+      const c = $('profile'), x = c.getContext('2d'), W = c.width, H = c.height, padL = 34, padB = 22, padT = 8, padR = 8;
+      x.clearRect(0, 0, W, H);
+      const gmax = 4.1;
+      const X = s => padL + (Math.log(s/0.5) / Math.log(400)) * (W - padL - padR);
+      const Y = v => H - padB - (v / gmax) * (H - padB - padT);
+      x.strokeStyle = '#3a3f4b'; x.fillStyle = '#9aa1b0'; x.font = '18px system-ui'; x.lineWidth = 1;
+      for (const s of [1, 2, 5, 10, 20, 50, 100, 200]) { x.beginPath(); x.moveTo(X(s), padT); x.lineTo(X(s), H - padB); x.stroke(); x.fillText(s, X(s) - 8, H - 4); }
+      for (const v of [0, 1, 2, 3, 4]) if (v < gmax) { x.beginPath(); x.moveTo(padL, Y(v)); x.lineTo(W - padR, Y(v)); x.stroke(); x.fillText(v, 2, Y(v) + 6); }
+      x.beginPath(); x.moveTo(X(p.sizes[0]), Y(0));
+      p.sizes.forEach((s, i) => x.lineTo(X(s), Y(p.gains[i])));
+      x.lineTo(X(p.sizes[p.sizes.length-1]), Y(0)); x.closePath();
+      x.fillStyle = 'rgba(76,141,255,.30)'; x.fill();
+      x.strokeStyle = '#4c8dff'; x.lineWidth = 2; x.beginPath();
+      p.sizes.forEach((s, i) => i ? x.lineTo(X(s), Y(p.gains[i])) : x.moveTo(X(s), Y(p.gains[i]))); x.stroke();
+    } catch (e) { /* ignore */ }
+  }, 60);
+}
+function bandsPayload() { return state.bands.map(b => [b.lo, b.hi, b.gain, b.taper]); }
+
+/* ---------- loading and running ---------- */
+async function loadList() {
+  const list = await api('/api/images');
+  const sel = $('imgSel'); sel.innerHTML = '';
+  list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
+}
+function applyLoaded(r) {
+    state.loaded = true; syncCropButtons(); state.estS = r.S;
+    state.color.hue = state.color.saturation = state.color.rgb = null;
+    $('colorOn').checked = false; setColorSwatch(null); setPickingColor(false);
+    if (r.skin_colour) { state.color.hue = r.skin_colour.hue; state.color.saturation = r.skin_colour.saturation; setColorSwatch(r.skin_colour.rgb); $('colorOn').checked = true; setToneMid(r.skin_colour.light); drawTone(); }
+    syncColorControls();
+    $('S').value = r.S ? Math.round(r.S) : '';
+    $('info').innerHTML = `<b>${r.name}</b> ${r.width}×${r.height}<br><span class="hint">colour: ${r.colour}</span><br>` + (r.S
+      ? `estimated S = <b>${Math.round(r.S)}</b> px (${r.confidence}); ${r.desc}`
+      : `<span style="color:var(--warn)">no scale estimate (${r.desc}); enter S by hand</span>`);
+    ['maskOn'].forEach(id => { $(id).disabled = !r.has_mask; });
+    if (!r.has_mask) { $('maskOn').checked = false; }
+    else { $('maskOn').checked = true; }
+    setStatus(`Loaded in ${r.seconds}s. Press Apply.`, false, true);
+    clearPanels();
+}
+async function loadImage() {
+  const path = $('imgPath').value.trim() || $('imgSel').value;
+  if (!path) return;
+  setBusy(true); setStatus('Loading and estimating scale (a few seconds the first time)...');
+  try {
+    applyLoaded(await api('/api/load', {path}));
+  } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+  if (state.loaded) apply();
+}
+function setBusy(b) {
+  state.busy = b;
+  const st = $('status');
+  if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
+  $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
+  ['colorSwatch', 'toneSwatch'].forEach(id => {
+    $(id).disabled = b || !state.loaded;
+    $(id).classList.toggle('disabled', $(id).disabled);
+  });
+}
+function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSkin').checked, structure: $('anStruct').checked}; }
+['anDetect', 'anSkin', 'anStruct'].forEach(id => $(id).onchange = async () => {
+  localStorage.setItem('dnb-' + id, $(id).checked ? '1' : '0');
+  if (!state.version || state.busy) return;
+  try { const r = await api('/api/analysis', {analysis: analysisFlags()}); state.avers = r.avers; showImages(); } catch (e) { setStatus(e.message, true); }
+});
+['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).checked = v === '1'; });
+function params() {
+  return { S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+           max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
+           mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
+           structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
+           color: {on: $('colorOn').checked, hue: state.color.hue, saturation: state.color.saturation,
+                   hue_range: state.color.hueRange, saturation_range: state.color.saturationRange, blur_mm: state.color.blurMm, smooth_mm: state.color.smoothMm, strength: state.color.strength},
+           analysis: analysisFlags(),
+           view: $('view').value };
+}
+async function apply() {
+  if (state.busy || !state.loaded) return;
+  const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
+  setBusy(true); setStatus('Computing...');
+  try {
+    const r = await api('/api/run', p);
+    state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
+    showImages();
+    setStatus('Done.', false, true);
+  } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+}
+async function save() {
+  if (state.busy || !state.loaded) return;
+  const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
+  setBusy(true); setStatus('Saving at full resolution (several seconds)...');
+  try {
+    const r = await api('/api/save', p);
+    setStatus(`Saved to ${r.dir}\n${r.files.join(', ')} (${r.seconds}s)`, false, true);
+  } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+}
+
+async function pcGet() {
+  if (state.busy) return;
+  setBusy(true); setStatus('Getting the picture from PhotoCraft...');
+  try {
+    const r = await api('/api/pc/fetch', {});
+    applyLoaded(r); $('pcSend').disabled = false;
+  } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+  if (state.loaded) apply();
+}
+async function pcSend() {
+  if (state.busy || !state.loaded) return;
+  const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
+  setBusy(true); setStatus('Sending the layer and mask to PhotoCraft...');
+  try { const r = await api('/api/pc/send', p); setStatus(`Sent: layer added to ${r.document}.`, false, true); }
+  catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+}
+$('pcGet').onclick = pcGet; $('pcSend').onclick = pcSend;
+$('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
+$('imgSel').onchange = () => { $('imgPath').value = ''; };
+const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
+if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
+if (!['analysis', 'mask', 'layer', 'layerm'].includes(tabSel.B)) tabSel.B = 'mask';
+function paneKinds() {
+  const x = $('layerX').checked;
+  const b = tabSel.B === 'layer' ? (x ? 'layerx' : 'layer') : tabSel.B === 'layerm' ? (x ? 'layermx' : 'layerm') : tabSel.B;
+  return [tabSel.A, b];
+}
+function syncTabs() {
+  [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === tabSel[k])));
+  $('optsAn').hidden = tabSel.B !== 'analysis';
+  $('optsLayer').hidden = tabSel.B !== 'layer' && tabSel.B !== 'layerm';
+}
+[['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();
+}));
+$('layerX').checked = localStorage.getItem('dnb-layerX') !== '0';
+$('layerX').onchange = () => { localStorage.setItem('dnb-layerX', $('layerX').checked ? '1' : '0'); if (state.version) showImages(); };
+syncTabs();
+
+/* ---------- panels: synchronised zoom / pan ---------- */
+const view = {z:1, tx:0, ty:0};
+const pans = [$('p0'), $('p1')];
+let pickingColor = null;
+function setPickingColor(target) {
+  pickingColor = target || null;
+  pans[0].classList.toggle('picking', !!target);
+  $('colorSwatch').classList.toggle('picking', target === 'color');
+  $('toneSwatch').classList.toggle('picking', target === 'tone');
+}
+function setToneSwatch() {
+  const g = Math.round(255 * Math.min(1, Math.max(0, state.tone.mid)));
+  $('toneSwatch').style.background = `rgb(${g},${g},${g})`;
+}
+function setToneMid(v) { state.tone.mid = v; sliders.toneMid.set(v, false); setToneSwatch(); }
+function setColorSwatch(rgb) {
+  state.color.rgb = rgb;
+  $('colorSwatch').style.background = rgb ? `rgb(${rgb.join(',')})` : '';
+  $('colorSwatch').title = (rgb ? `Picked RGB ${rgb.join(', ')}. ` : '') + 'Click, then click a color in the Original preview';
+}
+async function pickColorAt(u, v) {
+  try {
+    const target = pickingColor;
+    const c = await api('/api/color-pick', {u, v, version:state.version});
+    setPickingColor(false);
+    if (target === 'tone') {
+      setToneMid(c.light); $('toneOn').checked = true; drawTone();
+      setStatus('Brightness picked; light range centered on it.', false, true);
+    } else {
+      state.color.hue = c.hue; state.color.saturation = c.saturation;
+      setColorSwatch(c.rgb);
+      $('colorOn').checked = true;
+      syncColorControls();
+      setStatus('Color picked; color range enabled.', false, true);
+    }
+    markDirty();
+  } catch (e) { setStatus(e.message, true); }
+}
+function imagePoint(p, e) {
+  const img = p.querySelector('img');
+  if (!img || !img.naturalWidth) return null;
+  const r = p.getBoundingClientRect(), pw = p.clientWidth, ph = p.clientHeight, nw = img.naturalWidth, nh = img.naturalHeight;
+  const sc = Math.min(pw / nw, ph / nh) * view.z;
+  const u = ((e.clientX - r.left - pw / 2 - view.tx) / sc + nw / 2) / nw;
+  const v = ((e.clientY - r.top - ph / 2 - view.ty) / sc + nh / 2) / nh;
+  return u < 0 || u > 1 || v < 0 || v > 1 ? null : {u, v};
+}
+function cyclePaneTab(index) {
+  const key = index === 0 ? 'A' : 'B', tabs = [...$(`tabs${key}`).querySelectorAll('.tab')];
+  const current = tabs.findIndex(t => t.dataset.k === tabSel[key]);
+  const next = tabs[(current + 1) % tabs.length];
+  tabSel[key] = next.dataset.k;
+  localStorage.setItem('dnb-tab' + key, next.dataset.k);
+  syncTabs();
+  if (state.version) showImages();
+}
+function clearPanels() { pans.forEach(p => p.innerHTML = '<div class="empty">no result yet</div>'); }
+function showImages() {
+  const kinds = paneKinds();
+  pans.forEach((p, i) => {
+    let img = p.querySelector('img');
+    if (!img) { p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img); img.onload = layout; }
+    img.src = `/img/${kinds[i]}?v=${state.version}-${state.avers}`;
+  });
+}
+function layout() {
+  pans.forEach(p => {
+    const img = p.querySelector('img'); if (!img || !img.naturalWidth) return;
+    const pw = p.clientWidth, ph = p.clientHeight, nw = img.naturalWidth, nh = img.naturalHeight;
+    const fit = Math.min(pw / nw, ph / nh), s = fit * view.z;
+    img.style.transform = `translate(${pw/2 + view.tx}px, ${ph/2 + view.ty}px) scale(${s}) translate(${-nw/2}px, ${-nh/2}px)`;
+    img.style.imageRendering = s > 2 ? 'pixelated' : 'auto';
+  });
+}
+ const startPick = (target, msg) => {
+  if (pickingColor === target) { setPickingColor(false); setStatus('Pick cancelled.'); return; }
+  if (!state.loaded) return;
+  tabSel.A = 'orig'; localStorage.setItem('dnb-tabA', 'orig'); syncTabs();
+  if (state.version) showImages();
+  setPickingColor(target);
+  setStatus(msg);
+};
+$('colorSwatch').onclick = () => startPick('color', 'Click a color point in the Original preview.');
+$('toneSwatch').onclick = () => startPick('tone', 'Click a point in the Original preview to center the light range on its brightness.');
+let shiftDown = false;
+function updateCursor(shift) {
+  shiftDown = shift;
+  const whole = $('view').value === 'whole';
+  pans.forEach(p => { p.classList.toggle('zin', shift && whole); p.classList.toggle('zout', shift && !whole); });
+}
+function syncCropButtons() { updateCursor(shiftDown); }
+$('view').onchange = () => { view.z = 1; view.tx = 0; view.ty = 0; layout(); syncCropButtons(); if (state.loaded) markDirty(); };
+window.addEventListener('keydown', e => { if (e.key === 'Shift') updateCursor(true); });
+window.addEventListener('keyup', e => { if (e.key === 'Shift') updateCursor(false); });
+window.addEventListener('blur', () => updateCursor(false));
+pans.forEach(p => p.addEventListener('pointermove', e => { if (e.shiftKey !== shiftDown) updateCursor(e.shiftKey); }));
+async function moveCrop(body) {
+  try { await api('/api/centre', body); view.z = 1; view.tx = 0; view.ty = 0; layout(); markDirty(); } catch (e) { setStatus(e.message, true); }
+}
+syncCropButtons();
+pans.forEach(p => {
+  p.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = p.getBoundingClientRect(), mx = e.clientX - r.left - r.width/2, my = e.clientY - r.top - r.height/2;
+    const f = Math.exp(-e.deltaY * 0.0015), z = Math.min(40, Math.max(0.2, view.z * f)), k = z / view.z;
+    view.tx = mx - (mx - view.tx) * k; view.ty = my - (my - view.ty) * k; view.z = z; layout();
+  }, {passive:false});
+  let drag = null;
+  p.addEventListener('pointerdown', e => {
+    drag = {x:e.clientX, y:e.clientY, tx:view.tx, ty:view.ty, shift:e.shiftKey, ctrl:e.ctrlKey, button:e.button};
+    if (e.button === 0 && e.ctrlKey) e.preventDefault();
+    p.setPointerCapture(e.pointerId); p.classList.add('drag');
+  });
+  p.addEventListener('pointermove', e => { if (drag && !drag.ctrl) { view.tx = drag.tx + e.clientX - drag.x; view.ty = drag.ty + e.clientY - drag.y; layout(); } });
+  p.addEventListener('pointerup', e => {
+    const d = drag; drag = null; p.classList.remove('drag');
+    if (!d || d.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+    if (pickingColor) {
+      if (pans.indexOf(p) !== 0 || tabSel.A !== 'orig') { setStatus('Pick the color from the Original preview.'); return; }
+      const point = imagePoint(p, e);
+      if (!point) { setStatus('Click inside the image to pick a color.', true); return; }
+      pickColorAt(point.u, point.v);
+      return;
+    }
+    if (d.ctrl) { cyclePaneTab(pans.indexOf(p)); return; }
+    const img = p.querySelector('img');
+    if (!d.shift || !img || !img.naturalWidth) return;
+    const point = imagePoint(p, e);
+    if (!point) return;
+    const {u, v} = point;
+    if ($('view').value !== 'whole') { $('view').value = 'whole'; $('view').onchange(); return; }
+    $('view').value = 'crop'; syncCropButtons();
+    moveCrop({u, v});
+  });
+  p.addEventListener('pointercancel', () => {
+    drag = null; p.classList.remove('drag');
+  });
+  p.addEventListener('contextmenu', e => { if (e.ctrlKey) e.preventDefault(); });
+  p.addEventListener('dblclick', () => { view.z = 1; view.tx = 0; view.ty = 0; layout(); });
+});
+window.addEventListener('resize', layout);
+
+/* ---------- collapsible groups: remember open/closed ---------- */
+document.querySelectorAll('details.grp').forEach(d => {
+  const k = 'dnb-' + d.id;
+  // New sections inherit their former parent state until toggled independently.
+  const formerGroup = {'g-structure':'g-mask', 'g-color':'g-range'}[d.id];
+  const v = localStorage.getItem(k) ?? (formerGroup ? localStorage.getItem('dnb-' + formerGroup) : null);
+  if (v !== null) d.open = v === '1';
+  d.addEventListener('toggle', () => localStorage.setItem(k, d.open ? '1' : '0'));
+});
+
+/* ---------- presets ---------- */
+const FACTORY = {
+  bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
+  strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12,
+  tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
+  mask: {on:true, features:true, colour:true, feather:1.0, inward:true},
+  structure: {on:false, protect:0, mm:4, thr:0.1},
+  color: {on:false, hue:null, saturation:null, rgb:null, hue_range:30, saturation_range:0.25, blur_mm:1, smooth_mm:0.8, strength:1},
+  view: 'crop',
+};
+function getSettings() {
+  return {
+    bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
+    strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge,
+    tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
+    mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
+    structure: {on: $('structureOn').checked, protect: state.structure.protect, mm: state.structure.mm, thr: state.structure.thr},
+    color: {on: $('colorOn').checked, hue: state.color.hue, saturation: state.color.saturation, rgb: state.color.rgb,
+            hue_range: state.color.hueRange, saturation_range: state.color.saturationRange, blur_mm: state.color.blurMm, smooth_mm: state.color.smoothMm, strength: state.color.strength},
+    view: $('view').value,
+  };
+}
+function applySettings(o) {
+  const f = JSON.parse(JSON.stringify(FACTORY));
+  const v = Object.assign({}, f, o || {}, {tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
+  state.bands = [(v.bands && v.bands.length ? v.bands : f.bands)[0]].map(b => ({lo:+b.lo, hi:+b.hi, gain:1, taper:+b.taper, linked:!!b.linked}));
+  state.strength = v.strength; sliders.strength.set(v.strength, false);
+  state.maxEv = v.max_ev;
+  state.tau = v.tau;
+  state.edge = Math.min(0.2, Math.max(0, v.edge)); sliders.edge.set(state.edge, false);
+  state.tone.mid = v.tone.mid; sliders.toneMid.set(v.tone.mid, false); setToneSwatch();
+  state.tone.range = v.tone.range; sliders.toneRange.set(v.tone.range, false);
+  state.tone.taper = v.tone.taper; sliders.toneTaper.set(v.tone.taper, false);
+  state.tone.strength = +v.tone.strength; sliders.toneStrength.set(state.tone.strength, false);
+  $('toneOn').checked = !!v.tone.on;
+  state.maskFeather = v.mask.feather; sliders.feather.set(v.mask.feather, false);
+  state.structure = {protect:+v.structure.protect, mm:+v.structure.mm, thr:+v.structure.thr};
+  $('structureOn').checked = o && o.structure && o.structure.on !== undefined ? !!o.structure.on : state.structure.protect > 0;
+  syncStructureControls();
+  sliders.protect.set(state.structure.protect, false); sliders.protectMm.set(state.structure.mm, false); sliders.protectThr.set(state.structure.thr, false);
+  state.color = {hue:v.color.hue == null ? null : +v.color.hue, saturation:v.color.saturation == null ? null : +v.color.saturation,
+                 rgb:Array.isArray(v.color.rgb) ? v.color.rgb.map(Number) : null,
+                 hueRange:+v.color.hue_range, saturationRange:+v.color.saturation_range, blurMm:+v.color.blur_mm, smoothMm:+v.color.smooth_mm, strength:+v.color.strength};
+  sliders.colorHue.set(state.color.hueRange, false); sliders.colorSaturation.set(state.color.saturationRange, false); sliders.colorBlur.set(state.color.blurMm, false); sliders.colorSmooth.set(state.color.smoothMm, false); sliders.colorStrength.set(state.color.strength, false);
+  $('colorOn').checked = !!v.color.on && state.color.hue !== null && state.color.saturation !== null;
+  setColorSwatch(state.color.rgb);
+  syncColorControls();
+  $('maskOn').checked = !!v.mask.on;
+  $('view').value = v.view; syncCropButtons();
+  renderBands(); drawTone(); markDirty();
+}
+const presets = {default: null, presets: {}};
+let presetSnap = '';
+const presetErr = (e) => setStatus(e.message, true);
+function snapNow() { presetSnap = JSON.stringify(getSettings()); updateStar(); }
+function updateStar() {
+  const o = $('presetSel').selectedOptions[0]; if (!o) return;
+  o.textContent = o.dataset.label + (JSON.stringify(getSettings()) !== presetSnap ? ' *' : '');
+}
+function presetButtons() {
+  const v = $('presetSel').value;
+  $('presetSave').disabled = v === 'builtin';
+  $('presetRemove').disabled = !v.startsWith('p:');
+}
+function fillPresetList(selected) {
+  const sel = $('presetSel'); sel.innerHTML = '';
+  const add = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = o.dataset.label = text; sel.append(o); };
+  add('builtin', 'Factory settings');
+  add('default', 'Default');
+  Object.keys(presets.presets).sort().forEach(n => add('p:' + n, n));
+  sel.value = [...sel.options].some(o => o.value === selected) ? selected : 'default';
+  presetButtons();
+}
+function presetSettings(v) { return v === 'builtin' ? FACTORY : v === 'default' ? (presets.default || FACTORY) : presets.presets[v.slice(2)]; }
+async function loadPresets() {
+  try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
+  fillPresetList('default');
+  applySettings(presetSettings('default')); snapNow();
+}
+$('presetSel').onchange = () => {
+  applySettings(presetSettings($('presetSel').value)); presetButtons(); snapNow();
+};
+async function storePreset(v, name) {
+  const r = v === 'default' ? await api('/api/presets/default', {settings: getSettings()}) : await api('/api/presets/save', {name, settings: getSettings()});
+  Object.assign(presets, {default: r.default, presets: r.presets});
+  fillPresetList(v === 'default' ? 'default' : 'p:' + name); snapNow();
+}
+$('presetSave').onclick = async () => {
+  const v = $('presetSel').value; if (v === 'builtin') return;
+  try { await storePreset(v, v.slice(2)); } catch (e) { presetErr(e); }
+};
+$('presetNew').onclick = async () => {
+  const name = (prompt('Name for the new preset:') || '').trim(); if (!name) return;
+  if (name in presets.presets && !confirm(`A preset named "${name}" exists. Overwrite it?`)) return;
+  try { await storePreset('p:' + name, name); } catch (e) { presetErr(e); }
+};
+$('presetRemove').onclick = async () => {
+  const v = $('presetSel').value; if (!v.startsWith('p:') || !confirm(`Delete the preset "${v.slice(2)}"?`)) return;
+  try {
+    const r = await api('/api/presets/delete', {name: v.slice(2)});
+    Object.assign(presets, {default: r.default, presets: r.presets}); fillPresetList('default');
+    applySettings(presetSettings('default')); snapNow();
+  } catch (e) { presetErr(e); }
+};
+
+/* start at a fixed window size (app window only) */
+if (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible) { try { resizeTo(1347, 994); } catch (e) {} }
+/* ---------- start ---------- */
+setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets(); loadList().catch(e => setStatus(e.message, true));
+</script>
+</body>
+</html>

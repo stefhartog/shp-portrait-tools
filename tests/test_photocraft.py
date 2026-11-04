@@ -1,0 +1,231 @@
+"""Shared transport and module-specific send contracts. All PhotoCraft services are fakes."""
+
+import json
+import os
+import socketserver
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import cv2
+import numpy as np
+from PIL import Image
+
+from shp_photocraft_tools.modules.crop.photocraft_bridge import Bridge as CropBridge
+from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge
+from shp_photocraft_tools.shared.photocraft import Client, ControlError, detect_config
+
+
+class FakePhotoCraft:
+    def __init__(self, bridge, headless=False, fail_copy=False, retry_mask=False):
+        self.bridge = bridge
+        self.headless = headless
+        self.fail_copy = fail_copy
+        self.retry_mask = retry_mask
+        self.calls = []
+        self.active = 1
+        self.documents = [{"index": 1, "name": "portrait:one.png", "width": 64, "height": 48}]
+        self.files = []
+        self.history = ["Original"]
+
+    def session(self):
+        return {"active": self.active, "documents": self.documents.copy()}
+
+    def call(self, method, **params):
+        self.calls.append((method, params))
+        if method == "ui.inspect":
+            if self.headless:
+                raise ControlError("unknown method: ui.inspect")
+            return {"session": self.session()}
+        if method == "session.list":
+            return self.session()
+        if method in ("app.save", "doc.save"):
+            Image.new("RGB", (64, 48), "red").save(self.bridge.exchange / params["path"])
+        if method in ("app.open", "doc.open"):
+            filename = self.bridge.read_root / params["path"]
+            self.files.append(cv2.imread(str(filename), cv2.IMREAD_UNCHANGED))
+            self.active = max(d["index"] for d in self.documents) + 1
+            self.documents.append({"index": self.active, "name": filename.name})
+        return {}
+
+    def run(self, command, **params):
+        self.calls.append((command, params))
+        if command == "document.activate":
+            self.active = params["document"]
+        if command == "image.duplicate":
+            self.active = 2
+            self.documents.append({"index": 2, "name": params["name"]})
+        if command == "file.close":
+            self.documents = [d for d in self.documents if d["index"] != params["document"]]
+        if command == "layer.list":
+            return {"layers": [{"id": self.active * 10}]}
+        if command == "document.inspect":
+            return {"history": self.history.copy()}
+        if command == "select.loadSelection" and self.retry_mask:
+            self.retry_mask = False
+            raise ControlError("selection was cleared")
+        if command == "layer.copyToDocument":
+            if self.fail_copy:
+                raise ControlError("copy failed")
+            self.history += ["Resize", "Layer"]
+            return {"layers": [99]}
+        if command == "history.newSnapshot":
+            return {"snapshot": 7}
+        return {}
+
+
+class BridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def bridge(self, cls, **fake_options):
+        b = cls(port=1, token_file=self.root / "no-token", exchange=self.root / "exchange", read_root=self.root)
+        b.client = FakePhotoCraft(b, **fake_options)
+        return b
+
+    def test_config_compatible_aliases_and_precedence(self):
+        shared = {"SHP_PC_PORT": "1234", "SHP_PC_TOKEN_FILE": str(self.root / "token"),
+                  "SHP_PC_EXCHANGE": str(self.root / "exchange"), "SHP_PC_READ_ROOT": str(self.root)}
+        with patch.dict(os.environ, shared, clear=True):
+            for prefix, module in (("SHPC", "crop"), ("DNB", "dnb")):
+                cfg = detect_config(prefix, module)
+                self.assertEqual(cfg["port"], 1234)
+                self.assertEqual(cfg["token_file"], self.root / "token")
+                self.assertEqual(cfg["exchange"], self.root / "exchange")
+                self.assertEqual(cfg["read_root"], self.root)
+                self.assertEqual(cfg["config_dir"].parts[-2:], ("shp-photocraft-tools", module))
+                with patch.dict(os.environ, {f"{prefix}_PC_PORT": "5678", f"{prefix}_PC_EXCHANGE": str(self.root / module)}):
+                    self.assertEqual(detect_config(prefix, module)["port"], 5678)
+                    self.assertEqual(detect_config(prefix, module)["exchange"], self.root / module)
+
+    def test_fetch_both_bridges_desktop_and_headless(self):
+        self.assertIs(CropBridge.fetch, DnbBridge.fetch)
+        self.assertIs(CropBridge.launch, DnbBridge.launch)
+        for cls in (CropBridge, DnbBridge):
+            for headless in (False, True):
+                with self.subTest(module=cls.module, headless=headless):
+                    b = self.bridge(cls, headless=headless)
+                    path, doc = b.fetch(self.root / "inbox")
+                    self.assertEqual(path.name, "portrait_one.png")
+                    with Image.open(path) as image:
+                        self.assertEqual(image.size, (64, 48))
+                    self.assertEqual(doc["index"], 1)
+                    self.assertEqual(b.client.active, 1)
+                    self.assertEqual(len(b.client.documents), 1)
+                    self.assertEqual(list(b.exchange.iterdir()), [])
+                    commands = [c for c, p in b.client.calls]
+                    self.assertIn("doc.save" if headless else "app.save", commands)
+                    self.assertEqual(b.headless, headless)
+
+    def test_dnb_send_exact_pixels_blend_and_mask_retry(self):
+        b = self.bridge(DnbBridge, retry_mask=True)
+        mask = np.arange(64 * 48, dtype=np.uint8).reshape(48, 64)
+        layer = np.full((48, 64, 3), 32768, np.uint16)
+        result = b.send(layer, mask, b.client.documents[0])
+        self.assertEqual(result["layer"], 99)
+        rgba, imported_mask = b.client.files
+        self.assertEqual(rgba.dtype, np.uint16)
+        np.testing.assert_array_equal(rgba[..., :3], layer)
+        np.testing.assert_array_equal(rgba[..., 3], 65535)
+        np.testing.assert_array_equal(imported_mask, mask)
+        props = [p for c, p in b.client.calls if c == "layer.setProps"]
+        self.assertEqual(props[0]["blend"], "Soft Light")
+        self.assertEqual(sum(c == "select.loadSelection" for c, p in b.client.calls), 2)
+        self.assertEqual(sum(c == "layer.copyToDocument" for c, p in b.client.calls), 1)
+        self.assertFalse(any(c in ("image.crop", "history.newSnapshot") for c, p in b.client.calls))
+        self.assertEqual(b.client.active, 1)
+        self.assertEqual(len(b.client.documents), 1)
+        self.assertEqual(list(b.exchange.iterdir()), [])
+
+    def test_crop_signed_margins_and_grouped_undo(self):
+        b = self.bridge(CropBridge)
+        layer = np.zeros((58, 60, 4), np.uint8)
+        b.send_expand(layer, b.client.documents[0], (-4, 5, 0, 5))
+        self.assertIn(("image.crop", {"x": 4, "y": -5, "width": 60, "height": 58}), b.client.calls)
+        self.assertIn(("history.selectSnapshot", {"snapshot": 7}), b.client.calls)
+        self.assertFalse(any(c.startswith("select.") or "layerMask" in c for c, p in b.client.calls))
+        self.assertEqual(b.client.active, 1)
+        self.assertEqual(list(b.exchange.iterdir()), [])
+
+    def test_failed_send_cleans_scratch_and_reports_error(self):
+        for cls in (CropBridge, DnbBridge):
+            with self.subTest(module=cls.module):
+                b = self.bridge(cls, fail_copy=True)
+                with self.assertRaisesRegex(ControlError, "copy failed"):
+                    if cls is CropBridge:
+                        b.send_expand(np.zeros((58, 64, 4), np.uint8), b.client.documents[0], (0, 5, 0, 5))
+                    else:
+                        b.send(np.zeros((48, 64, 3), np.uint16), np.ones((48, 64), np.uint8), b.client.documents[0])
+                self.assertEqual(b.client.active, 1)
+                self.assertEqual(len(b.client.documents), 1)
+                self.assertEqual(list(b.exchange.iterdir()), [])
+
+    def test_mismatch_refused_before_any_document_mutation(self):
+        b = self.bridge(DnbBridge)
+        with self.assertRaisesRegex(ControlError, "layer and mask sizes differ"):
+            b.send(np.zeros((49, 64, 3), np.uint16), np.zeros((48, 64), np.uint8), b.client.documents[0])
+        with self.assertRaisesRegex(ControlError, "fetch the picture again"):
+            b.send(np.zeros((49, 64, 3), np.uint16), np.zeros((49, 64), np.uint8), b.client.documents[0])
+        self.assertFalse(any(c == "app.open" for c, p in b.client.calls))
+        self.assertEqual(list(b.exchange.iterdir()), [])
+
+
+class TransportTests(unittest.TestCase):
+    def test_authentication_reconnect_and_refusal(self):
+        requests = []
+        drop = [True]
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                for line in self.rfile:
+                    msg = json.loads(line)
+                    requests.append(msg)
+                    if msg["method"] == "auth":
+                        reply = {"ok": msg["params"]["token"] == "test-only"}
+                        if not reply["ok"]:
+                            reply["error"] = "bad token"
+                    elif msg["method"] == "retry" and drop[0]:
+                        drop[0] = False
+                        return
+                    elif msg["method"] == "refuse":
+                        reply = {"ok": False, "error": "test refusal"}
+                    else:
+                        reply = {"ok": True, "result": msg["params"]}
+                    self.wfile.write((json.dumps(reply) + "\n").encode())
+                    self.wfile.flush()
+
+        with tempfile.TemporaryDirectory() as tmp, socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as srv:
+            srv.daemon_threads = True
+            thread = threading.Thread(target=srv.serve_forever)
+            thread.start()
+            client = None
+            try:
+                token = Path(tmp) / "control.token"
+                token.write_text("test-only\n")
+                client = Client(srv.server_address[1], token, timeout=2)
+                self.assertEqual(client.run("layer.list", document=1), {"command": "layer.list", "params": {"document": 1}})
+                self.assertEqual(client.call("retry", value=42), {"value": 42})
+                self.assertEqual(sum(m["method"] == "auth" for m in requests), 2)
+                with self.assertRaisesRegex(ControlError, "refuse: test refusal"):
+                    client.call("refuse")
+                client.close()
+                token.write_text("wrong")
+                with self.assertRaisesRegex(ControlError, "refused the control token"):
+                    client.call("anything")
+                self.assertIsNone(client._sock)
+                token.unlink()
+                with self.assertRaisesRegex(ControlError, "no control token"):
+                    client.call("anything")
+            finally:
+                if client:
+                    client.close()
+                srv.shutdown()
+                thread.join()
+
+
+if __name__ == "__main__":
+    unittest.main()

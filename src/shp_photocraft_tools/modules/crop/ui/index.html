@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SHP PhotoCraft Crop</title>
+<link rel="stylesheet" href="/static/shp-ui.css">
+<style>
+  #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); height:100vh; }
+  #bar { grid-column: 1 / -1; }
+  #bar b.brand { color:var(--text); font-size:14px; }
+  select { max-width:260px; }
+  #xRun { width:92px; }
+  #xRun.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }
+  .ratios { display:grid; grid-template-columns:repeat(6, 1fr); gap:4px; margin:6px 0; }
+  .ratios button, .seg button { padding:5px 2px; font-size:12px; white-space:nowrap; }
+  .ratios button.on, .seg button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
+  .seg { display:flex; gap:4px; margin:6px 0; } .seg button { flex:1; }
+  #xPrompt { width:100%; min-height:54px; resize:vertical; background:#12141a; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:4px 6px; font:inherit; }
+  main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:6px; }
+  #xStage { position:relative; flex:1; min-height:0; background:#0c0d10; border:1px solid var(--line); overflow:hidden; }
+  #xCanvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+  #xInfo { color:var(--dim); font-size:12px; margin:8px 0; min-height:3.2em; } #xInfo b { color:var(--text); }
+  @media (max-width: 980px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: none; height:auto; }
+    aside { border-right:0; border-bottom:1px solid var(--line); overflow:visible; }
+    main { min-height: 100vh; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+<div id="bar"><button id="xGet" title="Take the active document in PhotoCraft (merged) to expand.">Get from PhotoCraft</button><button class="primary" id="xRun" disabled title="Generate the new area with ComfyUI. The picture itself is not changed.">Generate</button><button id="xSend" title="Grow the canvas of that document and add the generated area as a layer, as one undo step." disabled>Send to PhotoCraft</button><div id="statusWrap"><div id="status"></div></div><select id="xFiles" title="Open a picture from the --dir folders." hidden></select><span id="presetBar" style="margin-left:auto;display:flex;gap:6px;align-items:center"><select id="presetSel" title="Choose a saved set of Advanced settings. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<aside>
+  <details class="grp" open>
+    <summary>Crop</summary>
+    <div class="gbody">
+      <div class="ratios" id="xRatios"></div>
+    </div>
+  </details>
+  <details class="grp" open>
+    <summary>AI</summary>
+    <div class="gbody">
+      <div id="xModelMsg" class="hint" style="color:var(--warn);margin:2px 0 8px" hidden></div>
+      <div class="row"><button id="xComfy" title="Start your local ComfyUI in the background." hidden>Start ComfyUI</button></div>
+      <div class="row"><label>variations</label><input type="range" id="xVar" min="1" max="4" step="1" value="1" title="How many different results to generate (1 to 4, one after another). You pick which one to send."><input type="text" class="val" id="xVarVal" readonly tabindex="-1" value="1"></div>
+      <div id="xAdv"></div>
+      <textarea id="xPrompt" placeholder="Optional: describe what the new area should show. Empty continues the scene." title="Optional prompt for the new area. Empty = continue the scene."></textarea>
+      <div id="xInfo">Get a picture from PhotoCraft, choose a ratio (or Free) and drag the frame.</div>
+    </div>
+  </details>
+</aside>
+<main>
+  <div class="tabs pane-header"><button class="tab on" id="xTabFrame" title="Place the frame">Frame</button><span id="xResTabs" style="display:contents"></span></div>
+  <div id="xStage"><canvas id="xCanvas"></canvas></div>
+</main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+let busy = false;
+function setBusy(b) { busy = b; $('status').classList.toggle('busy', b); }
+function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; s.className = err ? 'err' : busy ? 'busy' : ok ? 'ok' : ''; }
+
+const X = {ready:false, img:null, el:null, resEl:null, W:0, H:0, ratio:[4,3], land:true, fx:0, fy:0, fw:0, view:'frame', free:false, fh:0, aspect:1, running:false, hasResult:false, hasDoc:false, limit:4096, seq:0, v:null, drag:null};
+const BASE_RATIOS = [[1,1],[4,3],[3,2],[16,9],[5,4]];
+function xRatio() { if (X.free) return [X.aspect, 1]; const [a,b] = X.ratio; return X.land ? [a,b] : [b,a]; }
+function fH() { return X.free ? X.fh : xH(X.fw); }
+const KEEP = 64;  // min picture px kept per axis (MIN_SIDE in expand.py)
+const SNAP = 2;  // a ratio frame within this many px of the picture's side uses that side exactly (no 1 px strips from rounding)
+function xH(w) { const [a,b] = xRatio(), h = Math.round(w*b/a); return X.img && Math.abs(h - X.H) <= SNAP ? X.H : h; }
+function xBase() { const [a,b] = xRatio(), w = Math.ceil(X.H*a/b); return w - X.W <= SNAP ? X.W : w; }  // smallest frame that contains the picture = 100%
+function xWmin() { const [a,b] = xRatio(); return Math.max(Math.ceil(xBase()/2), Math.ceil(64*Math.max(1, a/b))); }
+function xWmax() { const [a,b] = xRatio(); return Math.max(xBase(), Math.min(X.W + 2*X.limit, Math.floor((X.H + 2*X.limit)*a/b))); }
+function xSizeMax() { return Math.min(xWmax(), Math.round(xBase()*1.5)); }
+const xFreeMax = ext => Math.max(ext, Math.min(Math.round(1.5*ext), ext + 2*X.limit));
+const xFreeMin = ext => Math.max(64, Math.ceil(ext/2));
+function xClamp() {
+  if (X.free) { X.fw = Math.min(xFreeMax(X.W), Math.max(xFreeMin(X.W), Math.round(X.fw))); X.fh = Math.min(xFreeMax(X.H), Math.max(xFreeMin(X.H), Math.round(X.fh))); }
+  else { X.fw = Math.min(xWmax(), Math.max(xWmin(), Math.round(X.fw))); if (Math.abs(X.fw - X.W) <= SNAP) X.fw = X.W; }
+  const h = fH();
+  // each side crops or adds (at most `limit` px) on its own; at least KEEP px of the picture stays in the frame
+  const lim = (extent, size, v) => {
+    const lo = Math.max(-X.limit, KEEP - size), hi = Math.min(extent + X.limit - size, extent - KEEP);
+    return Math.round(Math.min(hi, Math.max(lo, v)));
+  };
+  X.fx = lim(X.W, X.fw, X.fx); X.fy = lim(X.H, h, X.fy);
+}
+function xCentre() { X.fx = -Math.floor((X.fw - X.W)/2); X.fy = -Math.floor((fH() - X.H)/2); xClamp(); }
+function xResetFrame(w) { if (X.free) { X.fw = X.W; X.fh = X.H; X.aspect = X.W/X.H; } else X.fw = w || xBase(); xCentre(); }
+function xMargins() { const h = fH(); return [-X.fx, -X.fy, X.fx + X.fw - X.W, X.fy + h - X.H]; }
+function xSyncSize() {}
+function xInfo() {
+  if (!X.img) { $('xInfo').textContent = 'Get a picture from PhotoCraft, choose a ratio (or Free) and drag the frame.'; return; }
+  const [l,t,r,b] = xMargins(), h = fH(), [a,bb] = xRatio();
+  const added = Math.max(l, t, r, b) > 0, sg = v => v > 0 ? '+' + v : v < 0 ? '\u2212' + (-v) : '0';
+  $('xInfo').innerHTML = `<b>${X.W} \u00d7 ${X.H}</b> \u2192 <b>${X.fw} \u00d7 ${h}</b> (${X.free ? 'free' : a + ':' + bb})<br>left ${sg(l)}, top ${sg(t)}, right ${sg(r)}, bottom ${sg(b)} px (\u2212 = cropped)` + (added ? '' : '<br>Nothing to generate: drag a corner outwards to add space.');
+  if (!X.running) $('xRun').disabled = !X.img || !added || !X.ready;
+}
+function xButtons() {
+  document.querySelectorAll('#xRatios button[data-i]').forEach(b => b.classList.toggle('on', !X.free && b.dataset.i === String(BASE_RATIOS.findIndex(r => r[0]===X.ratio[0] && r[1]===X.ratio[1])))); $('xFree').classList.toggle('on', X.free);
+  document.querySelectorAll('#xRatios button[data-i]').forEach(b => { const [a,c] = BASE_RATIOS[+b.dataset.i]; b.textContent = X.land || a === c ? `${a}:${c}` : `${c}:${a}`; });
+  $('xSend').disabled = !(X.hasResult && X.hasDoc) || X.running;
+  $('xGet').disabled = X.running; $('xFiles').disabled = X.running; $('xVar').disabled = X.running; document.querySelectorAll('#xAdv input,#xAdv select').forEach(e => e.disabled = X.running);
+}
+BASE_RATIOS.forEach((r, i) => { const b = document.createElement('button'); b.dataset.i = i; b.title = 'Click again to flip it (landscape / portrait).';
+  b.onclick = () => { if (!X.free && X.ratio === r) { xSetOrientation(!X.land); return; } X.free = false; X.ratio = r; if (X.img) xResetFrame(); xRefresh(true); }; $('xRatios').append(b); });
+{ const b = document.createElement('button'); b.id = 'xFree'; b.textContent = 'Free'; b.title = 'No fixed ratio: drag the corners freely. Click again to swap width and height.';
+  b.onclick = () => { if (X.free) { if (X.img) xSetOrientation(!(X.fw >= X.fh)); return; } X.fh = fH(); X.free = true; X.aspect = X.img ? X.fw/X.fh : 1; if (X.img) xClamp(); xRefresh(true); }; $('xRatios').append(b); }
+function xRefresh(fit) { xButtons(); xSyncSize(); xInfo(); if (fit) xFit(); xDraw(); }
+function xSetOrientation(land) {
+  if (X.free) { if (X.img && (X.fw >= X.fh) !== land) { const cx = X.fx + X.fw/2, cy = X.fy + X.fh/2; [X.fw, X.fh] = [X.fh, X.fw]; X.aspect = X.fw/X.fh; X.fx = Math.round(cx - X.fw/2); X.fy = Math.round(cy - X.fh/2); xClamp(); } X.land = land; xRefresh(true); return; }
+  X.land = land; if (X.img) xResetFrame(); localStorage.setItem('shpx-land', land ? '1' : '0'); xRefresh(true); }
+$('xVar').oninput = () => { $('xVarVal').value = $('xVar').value; localStorage.setItem('shpx-var', $('xVar').value); };
+if (localStorage.getItem('shpx-var')) { $('xVar').value = localStorage.getItem('shpx-var'); $('xVar').oninput(); }
+
+/* view: image px -> canvas px. Fixed per picture/ratio: fits the picture plus the largest (150%) frame centred on it,
+   so changing the size never zooms. Only if the frame is moved outside that box does the view grow to keep it in sight. */
+function xFit() {
+  const c = $('xCanvas'), r = c.getBoundingClientRect(); if (!X.img || !r.width) return;
+  const mw = X.free ? xFreeMax(X.W) : xSizeMax(), mh = X.free ? xFreeMax(X.H) : xH(mw), mx = -(mw - X.W)/2, my = -(mh - X.H)/2;
+  const x0 = Math.min(0, mx, X.fx), y0 = Math.min(0, my, X.fy);
+  const x1 = Math.max(X.W, mx + mw, X.fx + X.fw), y1 = Math.max(X.H, my + mh, X.fy + fH());
+  const pad = 28, k = Math.min((r.width - 2*pad)/(x1 - x0), (r.height - 2*pad)/(y1 - y0));
+  X.v = {k, ox: r.width/2 - (x0 + x1)/2*k, oy: r.height/2 - (y0 + y1)/2*k};
+}
+const xp = (x, y) => [X.v.ox + x*X.v.k, X.v.oy + y*X.v.k];
+function xDraw() {
+  const c = $('xCanvas'), r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(r.width*dpr); c.height = Math.round(r.height*dpr);
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
+  if (!X.img || !X.v) { g.fillStyle = '#9aa1b0'; g.font = '13px system-ui'; g.textAlign = 'center'; g.fillText('no picture yet', r.width/2, r.height/2); return; }
+  const h = fH(), [fx, fy] = xp(X.fx, X.fy), fw = X.fw*X.v.k, fh = h*X.v.k, [ix, iy] = xp(0, 0), iw = X.W*X.v.k, ih = X.H*X.v.k;
+  if (X.view === 'result' && X.resEl) {
+    // result view: own zoom/pan (wheel zooms at the mouse, drag pans, double-click fits)
+    const rw = X.resEl.naturalWidth, rh = X.resEl.naturalHeight;
+    if (!X.rv) { const k = Math.min((r.width - 48)/rw, (r.height - 48)/rh); X.rv = {k, ox: (r.width - rw*k)/2, oy: (r.height - rh*k)/2}; }
+    g.imageSmoothingQuality = 'high'; g.drawImage(X.resEl, X.rv.ox, X.rv.oy, rw*X.rv.k, rh*X.rv.k);
+    return;
+  }
+  g.fillStyle = 'rgba(76,141,255,.10)'; g.fillRect(fx, fy, fw, fh);
+  g.save(); g.beginPath(); g.rect(fx, fy, fw, fh); g.clip(); g.strokeStyle = 'rgba(76,141,255,.25)'; g.lineWidth = 1;
+  for (let d = -fh; d < fw; d += 12) { g.beginPath(); g.moveTo(fx + d, fy + fh); g.lineTo(fx + d + fh, fy); g.stroke(); } g.restore();
+  g.drawImage(X.el, ix, iy, iw, ih);
+  // darken the part of the picture that the frame crops off
+  g.save(); g.beginPath(); g.rect(ix, iy, iw, ih); g.rect(fx, fy, fw, fh); g.clip('evenodd');
+  g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(ix, iy, iw, ih); g.restore();
+  g.strokeStyle = '#4c8dff'; g.lineWidth = 2; g.strokeRect(fx, fy, fw, fh);
+  g.lineWidth = 1; g.strokeStyle = 'rgba(255,255,255,.25)';
+  for (let i = 1; i < 3; i++) { g.beginPath(); g.moveTo(fx + fw*i/3, fy); g.lineTo(fx + fw*i/3, fy + fh); g.moveTo(fx, fy + fh*i/3); g.lineTo(fx + fw, fy + fh*i/3); g.stroke(); }
+  g.fillStyle = '#4c8dff';
+  xCorners().forEach(([cx, cy], i) => i < 4 ? g.fillRect(cx - 5, cy - 5, 10, 10) : i % 2 ? g.fillRect(cx - 3, cy - 8, 6, 16) : g.fillRect(cx - 8, cy - 3, 16, 6));
+}
+function xCorners() { const h = fH(), x0 = X.fx, y0 = X.fy, x1 = X.fx + X.fw, y1 = X.fy + h, xm = (x0 + x1)/2, ym = (y0 + y1)/2;
+  return [[x0, y0], [x1, y0], [x0, y1], [x1, y1], [xm, y0], [x1, ym], [xm, y1], [x0, ym]].map(([x, y]) => xp(x, y)); }
+const HCURSOR = ['nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize', 'ns-resize', 'ew-resize', 'ns-resize', 'ew-resize'];
+function xPointer(e) { const r = $('xCanvas').getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function xToImg(px, py) { return [(px - X.v.ox)/X.v.k, (py - X.v.oy)/X.v.k]; }
+$('xCanvas').addEventListener('wheel', e => {
+  if (X.view !== 'result' || !X.rv) return;
+  e.preventDefault();
+  const [px, py] = xPointer(e), f = Math.exp(-e.deltaY*0.0015), k = Math.min(16, Math.max(0.02, X.rv.k*f)), s = k/X.rv.k;
+  X.rv = {k, ox: px - (px - X.rv.ox)*s, oy: py - (py - X.rv.oy)*s}; xDraw();
+}, {passive: false});
+$('xCanvas').addEventListener('dblclick', () => { if (X.view === 'result') { X.rv = null; xDraw(); } });
+$('xCanvas').addEventListener('pointerdown', e => {
+  if (X.view === 'result' && X.rv) { const [px, py] = xPointer(e); X.drag = {kind:'pan', px, py, ox:X.rv.ox, oy:X.rv.oy}; $('xCanvas').setPointerCapture(e.pointerId); $('xCanvas').style.cursor = 'grabbing'; return; }
+  if (!X.img || X.running || X.view !== 'frame') return;
+  const [px, py] = xPointer(e), cs = xCorners();
+  const ci = cs.findIndex(([cx, cy]) => Math.abs(cx - px) < 12 && Math.abs(cy - py) < 12);
+  const [ix, iy] = xToImg(px, py), h = fH();
+  if (ci >= 0) {
+    if (ci >= 4) X.drag = {kind:'edge', ci, opp: [X.fy + h, X.fx, X.fy, X.fx + X.fw][ci - 4], cx: X.fx + X.fw/2, cy: X.fy + h/2};
+    else X.drag = {kind:'size', ci, opp: [[X.fx + X.fw, X.fy + h], [X.fx, X.fy + h], [X.fx + X.fw, X.fy], [X.fx, X.fy]][ci]};
+  } else if (ix >= X.fx && ix <= X.fx + X.fw && iy >= X.fy && iy <= X.fy + h) X.drag = {kind:'move', ix, iy, fx:X.fx, fy:X.fy};
+  else return;
+  $('xCanvas').setPointerCapture(e.pointerId);
+});
+$('xCanvas').addEventListener('pointermove', e => {
+  const [px, py] = xPointer(e);
+  if (X.drag && X.drag.kind === 'pan') { X.rv.ox = X.drag.ox + px - X.drag.px; X.rv.oy = X.drag.oy + py - X.drag.py; xDraw(); return; }
+  if (!X.drag) {
+    if (X.view === 'result') { $('xCanvas').style.cursor = X.rv ? 'grab' : 'default'; return; }
+    const ci = X.img && X.view === 'frame' && !X.running ? xCorners().findIndex(([cx, cy]) => Math.abs(cx - px) < 12 && Math.abs(cy - py) < 12) : -1;
+    $('xCanvas').style.cursor = ci >= 0 ? HCURSOR[ci] : X.img && X.view === 'frame' ? 'move' : 'default'; return;
+  }
+  const [ix, iy] = xToImg(px, py);
+  // size range along one axis that keeps the opposite edge `o` fixed (dragged edge within the limit, KEEP px of picture)
+  const rng = (o, ext, fwd) => fwd ? [KEEP - o, ext + X.limit - o] : [o - ext + KEEP, o + X.limit];
+  if (X.drag.kind === 'move') { X.fx = Math.round(X.drag.fx + ix - X.drag.ix); X.fy = Math.round(X.drag.fy + iy - X.drag.iy); xClamp(); }
+  else if (X.drag.kind === 'edge') {
+    // one side moves, the opposite side stays; with a ratio the other dimension follows around its centre
+    const o = X.drag.opp, horiz = X.drag.ci % 2 === 1, fwd = X.drag.ci === 5 || X.drag.ci === 6, [a, b] = xRatio();
+    const [lo, hi] = rng(o, horiz ? X.W : X.H, fwd), want = Math.round(Math.abs((horiz ? ix : iy) - o));
+    if (horiz) {
+      X.fw = X.free ? Math.min(xFreeMax(X.W), hi, Math.max(xFreeMin(X.W), lo, want))
+                    : Math.min(xSizeMax(), hi, Math.max(xWmin(), lo, want));
+      if (X.free) X.aspect = X.fw/X.fh; else X.fy = Math.round(X.drag.cy - xH(X.fw)/2);
+      X.fx = Math.round(fwd ? o : o - X.fw);
+    } else {
+      if (X.free) { X.fh = Math.min(xFreeMax(X.H), hi, Math.max(xFreeMin(X.H), lo, want)); X.aspect = X.fw/X.fh; }
+      else { X.fw = Math.min(xSizeMax(), Math.floor(hi*a/b), Math.max(xWmin(), Math.ceil(lo*a/b), Math.round(want*a/b))); X.fx = Math.round(X.drag.cx - X.fw/2); }
+      X.fy = Math.round(fwd ? o : o - fH());
+    }
+    xClamp();
+  }
+  else {
+    const [ox, oy] = X.drag.opp, [a, b] = xRatio(), right = X.drag.ci % 2 === 1, bottom = X.drag.ci >= 2;
+    const [xlo, xhi] = rng(ox, X.W, right), [ylo, yhi] = rng(oy, X.H, bottom);
+    if (X.free) {
+      X.fw = Math.min(xFreeMax(X.W), xhi, Math.max(xFreeMin(X.W), xlo, Math.round(Math.abs(ix - ox))));
+      X.fh = Math.min(xFreeMax(X.H), yhi, Math.max(xFreeMin(X.H), ylo, Math.round(Math.abs(iy - oy)))); X.aspect = X.fw/X.fh;
+      X.fx = Math.round(right ? ox : ox - X.fw); X.fy = Math.round(bottom ? oy : oy - X.fh); xClamp();
+      xButtons(); xSyncSize(); xInfo(); xDraw(); return;
+    }
+    X.fw = Math.round(Math.max(Math.abs(ix - ox), Math.abs(iy - oy)*a/b));
+    X.fw = Math.min(xSizeMax(), xhi, Math.floor(yhi*a/b), Math.max(xWmin(), xlo, Math.ceil(ylo*a/b), X.fw)); const h = xH(X.fw);
+    X.fx = Math.round(right ? ox : ox - X.fw); X.fy = Math.round(bottom ? oy : oy - h);
+    xClamp();
+  }
+  xButtons(); xSyncSize(); xInfo(); xDraw();
+});
+const xEnd = () => { if (X.drag) { const pan = X.drag.kind === 'pan'; X.drag = null; if (pan) $('xCanvas').style.cursor = 'grab'; else xRefresh(true); } };
+$('xCanvas').addEventListener('pointerup', xEnd); $('xCanvas').addEventListener('pointercancel', xEnd);
+window.addEventListener('resize', () => { xFit(); X.rv = null; xDraw(); });
+
+function xLoaded(r) {
+  X.W = r.width; X.H = r.height; X.limit = r.limit; X.seq = r.seq; X.hasResult = false; xClearTabs(); X.resEl = null; X.hasDoc = !!r.pc_doc; X.view = 'frame';
+  X.land = X.W >= X.H; localStorage.setItem('shpx-land', X.land ? '1' : '0');
+  const el = new Image(); el.onload = () => { X.img = true; X.el = el; xResetFrame(); xTab('frame'); xRefresh(true); };
+  el.src = '/img/xorig?' + r.seq;
+  setStatus(`${r.name}: ${r.width} \u00d7 ${r.height}.`, false, true);
+}
+function xTab(v) {
+  X.view = v; $('xTabFrame').classList.toggle('on', v === 'frame');
+  [...$('xResTabs').children].forEach((b, i) => b.classList.toggle('on', v === 'result' && i === X.sel)); xDraw();
+}
+$('xTabFrame').onclick = () => xTab('frame');
+function xClearTabs() { $('xResTabs').innerHTML = ''; X.sel = 0; X.vars = []; X.rv = null; }
+function xMakeTabs(n, sel) {
+  const box = $('xResTabs'); box.innerHTML = ''; X.sel = sel; X.vars = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const b = document.createElement('button'); b.className = 'tab'; b.textContent = n > 1 ? `Result ${i + 1}` : 'Result';
+    b.title = 'Show this result. The result shown here is the one Send to PhotoCraft and Save use.';
+    b.onclick = () => xPick(i); box.append(b);
+  }
+}
+async function xPick(i) {
+  if (X.running) return;
+  if (i !== X.sel || !X.resEl) { try { await api('/api/select', {index:i}); } catch (e) { setStatus(e.message, true); return; } }
+  const el = new Image(); el.onload = () => {
+    X.sel = i; X.resEl = el; X.hasResult = true; xTab('result'); xRefresh(false);
+    const n = X.vars.length; setStatus(n > 1 ? `Result ${i + 1} of ${n} selected: Send to PhotoCraft uses this one.` : 'Generated. Send it to PhotoCraft.', false, true);
+  };
+  el.src = `/img/xvar${i}?` + Date.now();
+}
+async function xGet() {
+  if (X.running) return;
+  setBusy(true); setStatus('Getting the picture from PhotoCraft...');
+  try { xLoaded(await api('/api/fetch', {})); } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+}
+async function xRun() {
+  if (X.running || !X.img) return;
+  const [a, b] = xRatio(); X.res = xMargins();
+  try { await api('/api/run', {ratio:X.free ? null : [a, b], x:X.fx, y:X.fy, w:X.fw, h:fH(), prompt:$('xPrompt').value.trim(), variations:Math.max(1, Math.min(4, parseInt($('xVar').value) || 1))}); }
+  catch (e) { setStatus(e.message, true); return; }
+  X.running = true; X.hasResult = false; xClearTabs(); xTab('frame'); xRunMode(true); busy = true; xButtons();
+  X.poll = setInterval(xPoll, 600); xPoll();
+}
+async function xPoll() {
+  let j; try { j = await api('/api/job', {}); } catch (e) { return; }
+  if (j.state === 'running') { setStatus(`Generating ${Math.round(j.fraction*100)}%${j.text ? ': ' + j.text : ''}`); $('status').classList.add('busy'); return; }
+  clearInterval(X.poll); X.running = false; busy = false; xRunMode(false); xInfo();
+  if (j.state === 'done') {
+    xMakeTabs(j.count, j.selected || 0); xPick(j.selected || 0);
+  } else { setStatus(j.message || j.state, j.state === 'error'); xRefresh(false); }
+}
+function xRunMode(running) {
+  const b = $('xRun'); b.classList.toggle('cancel', running); b.textContent = running ? 'Cancel' : 'Generate'; b.disabled = false;
+  b.title = running ? 'Stop the generation.' : 'Generate the new area with ComfyUI. The picture itself is not changed.';
+}
+$('xRun').onclick = async () => {
+  if (!X.running) return xRun();
+  $('xRun').disabled = true; try { await api('/api/cancel', {}); } catch (e) { setStatus(e.message, true); $('xRun').disabled = false; }
+};
+$('xGet').onclick = xGet;
+$('xSend').onclick = async () => {
+  if (X.running || !X.hasResult) return;
+  setBusy(true); setStatus('Sending the expanded canvas to PhotoCraft...');
+  try { const r = await api('/api/send', {}); setBusy(false); setStatus(`Sent: canvas ${r.width} \u00d7 ${r.height} and layer added to ${r.document}.`, false, true); }
+  catch (e) { setBusy(false); setStatus(e.message, true); }
+};
+$('xFiles').onchange = async () => {
+  const p = $('xFiles').value; if (!p || X.running) return;
+  setBusy(true); setStatus('Loading...');
+  try { xLoaded(await api('/api/load', {path:p})); } catch (e) { setStatus(e.message, true); }
+  setBusy(false);
+};
+async function loadList() {
+  const list = await api('/api/images'); if (!list.length) return;
+  const sel = $('xFiles'); sel.hidden = false;
+  sel.append(new Option('Open a picture...', ''));
+  list.forEach(f => sel.append(new Option(f.name, f.path)));
+}
+
+const SETKEYS = ['guidance','steps','megapixels','feathering','unet','upscale','lora','seam_correction'];
+const SL = {};
+function slider(parent, key, label, min, max, step, tip) {
+  const row = document.createElement('div'); row.className = 'row'; row.title = tip;
+  const lab = document.createElement('label'); lab.textContent = label; lab.style.cursor = 'help';
+  const rng = document.createElement('input'); rng.type = 'range'; rng.id = 's' + key; rng.min = min; rng.max = max; rng.step = step;
+  const num = document.createElement('input'); num.type = 'text'; num.readOnly = true; num.tabIndex = -1; num.className = 'val';
+  rng.addEventListener('input', () => { num.value = rng.value; if (typeof updateStar === 'function') updateStar(); });
+  row.append(lab, rng, num); parent.append(row);
+  SL[key] = v => { rng.value = v; num.value = rng.value; };
+}
+(function buildAdvanced() {
+  const root = $('xAdv');
+  slider(root, 'guidance', 'guidance', 1, 10, 0.5, 'Prompt strength. Higher is more contrasty and saturated.');
+  slider(root, 'steps', 'steps', 1, 50, 1, 'Sampling steps: 8 with the Turbo LoRA, about 20 without.');
+  slider(root, 'megapixels', 'megapixels', 0.25, 2, 0.25, 'Size the AI works at (the result is upscaled afterwards). Smaller is faster and often cleaner.');
+  slider(root, 'feathering', 'feather px', 0, 512, 8, 'How far the original fades into the new area at the seam.');
+  root.insertAdjacentHTML('beforeend', `
+    <div class="row"><label>model</label><select id="sunet" style="flex:1" title="GGUF diffusion model."></select></div>
+    <div class="row"><label>upscaler</label><select id="supscale" style="flex:1" title="Upscale model for the generated area."></select></div>
+    <div class="row"><label style="width:auto"><input type="checkbox" id="slora"> Turbo LoRA</label><label style="width:auto"><input type="checkbox" id="sseam_correction"> Seam colour correction</label></div>`);
+})();
+function fillSelect(id, options, value) {
+  const sel = $(id); sel.innerHTML = '';
+  const all = options.includes(value) || !value ? options : [value, ...options];
+  all.forEach(o => sel.append(new Option(o, o))); sel.value = value;
+}
+function showSettings(v) { SETKEYS.forEach(k => { const e = $('s' + k); if (e.type === 'checkbox') e.checked = !!v[k]; else if (SL[k]) SL[k](v[k]); }); }
+async function loadStatus() {
+  const msg = $('xModelMsg'); let r;
+  try { r = await api('/api/status', {}); } catch (e) { X.ready = false; $('xComfy').hidden = true; msg.textContent = e.message; msg.hidden = false; xInfo(); return; }
+  fillSelect('sunet', r.unets, r.settings.unet); fillSelect('supscale', r.upscalers, r.settings.upscale); showSettings(r.settings);
+  $('xComfy').hidden = r.reachable !== false;
+  X.ready = r.ok; msg.textContent = r.message; msg.hidden = !r.message; xInfo();
+}
+async function saveSettings(values) {
+  try { await api('/api/settings', {values}); setStatus('Settings saved', false, true); }
+  catch (e) { setStatus(e.message, true); }
+  await loadStatus(); updateStar();
+}
+$('xComfy').onclick = async () => {
+  const b = $('xComfy'); b.disabled = true;
+  try {
+    const r = await api('/api/comfy/start', {}); setStatus(r.message);
+    for (let i = 0; i < 90; i++) {  // loading ComfyUI can take a minute or two
+      await new Promise(ok => setTimeout(ok, 2000));
+      await loadStatus(); if ($('xComfy').hidden) { setStatus('ComfyUI is running', false, true); break; }
+    }
+  } catch (e) { setStatus(e.message, true); }
+  b.disabled = false;
+};
+SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[k]: e.type === 'checkbox' ? e.checked : e.value}); });
+
+/* ---------- presets ---------- */
+const presets = {presets: {}, last: null};
+let presetSnap = '';
+const curSettings = () => { const o = {}; SETKEYS.forEach(k => { const e = $('s' + k); o[k] = e.type === 'checkbox' ? e.checked : (e.tagName === 'SELECT' || isNaN(+e.value) ? e.value : +e.value); }); return JSON.stringify(o); };
+function updateStar() {
+  const o = $('presetSel').selectedOptions[0]; if (!o) return;
+  o.textContent = o.dataset.label + (curSettings() !== presetSnap ? ' *' : '');
+}
+function presetButtons() { const v = $('presetSel').value; $('presetSave').disabled = v === 'builtin'; $('presetRemove').disabled = v === 'builtin'; }
+function fillPresetList() {
+  const sel = $('presetSel'); sel.innerHTML = '';
+  const add = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = o.dataset.label = t; sel.append(o); };
+  add('builtin', 'Factory settings');
+  Object.keys(presets.presets).sort().forEach(n => add('p:' + n, n));
+  sel.value = presets.last ? 'p:' + presets.last : 'builtin';
+  presetButtons();
+}
+const presetSnapNow = () => { presetSnap = curSettings(); updateStar(); };
+async function presetCall(path, body) {
+  try { Object.assign(presets, await api(path, body)); fillPresetList(); await loadStatus(); presetSnapNow(); }
+  catch (e) { setStatus(e.message, true); }
+}
+async function loadPresets() {
+  try { Object.assign(presets, await api('/api/presets', {})); } catch (e) { setStatus(e.message, true); }
+  fillPresetList(); await loadStatus(); presetSnapNow();
+}
+$('presetSel').onchange = () => { const v = $('presetSel').value; presetCall('/api/presets/load', {name: v === 'builtin' ? null : v.slice(2)}); };
+$('presetSave').onclick = () => { const v = $('presetSel').value; if (v !== 'builtin') presetCall('/api/presets/save', {name: v.slice(2)}); };
+$('presetNew').onclick = () => {
+  const name = (prompt('Name for the new preset:') || '').trim(); if (!name) return;
+  if (name in presets.presets && !confirm(`A preset named "${name}" exists. Overwrite it?`)) return;
+  presetCall('/api/presets/save', {name});
+};
+$('presetRemove').onclick = () => {
+  const v = $('presetSel').value; if (v === 'builtin' || !confirm(`Delete the preset "${v.slice(2)}"?`)) return;
+  presetCall('/api/presets/delete', {name: v.slice(2)});
+};
+window.addEventListener('focus', () => { if (!X.running) loadStatus().then(updateStar); });
+if (localStorage.getItem('shpx-land') === '0') X.land = false;
+xButtons(); xSyncSize(); xDraw();
+loadList().catch(e => setStatus(e.message, true)); loadPresets();
+</script>
+</body>
+</html>

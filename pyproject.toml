@@ -1,0 +1,39 @@
+[project]
+name = "shp-photocraft-tools"
+version = "0.1.0"
+description = "SHP PhotoCraft Crop and SHP PhotoCraft D&B, with shared local UI and PhotoCraft transport"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.5.4",
+    "pillow>=13.0.0",
+    "opencv-contrib-python>=4.10",
+    "onnxruntime-gpu>=1.31.1",
+    "rtmlib>=0.0.16",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "nvidia-cublas>=13.8.2.12",
+    "nvidia-cuda-runtime>=13.4.92",
+    "nvidia-cudnn-cu13>=9.27.0.42",
+    "nvidia-cufft>=12.4.0.43",
+    "nvidia-curand>=10.4.4.72",
+]
+research = ["matplotlib>=3.11.2", "jupyter>=1.1.1"]
+
+[project.scripts]
+shp-photocraft-crop = "shp_photocraft_tools.modules.crop.server:main"
+shp-photocraft-dnb = "shp_photocraft_tools.modules.dnb.ui_server:main"
+shpcrop = "shp_photocraft_tools.modules.crop.server:main"
+shpdnb = "shp_photocraft_tools.modules.dnb.ui_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shp_photocraft_tools"]
+
+[tool.uv]
+override-dependencies = ["onnxruntime; sys_platform == 'never'"]
