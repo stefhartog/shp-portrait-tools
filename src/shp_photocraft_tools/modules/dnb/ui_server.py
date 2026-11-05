@@ -25,12 +25,14 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 from shp_photocraft_tools.shared.ui import stylesheet
+from shp_photocraft_tools.shared.health import identity
+from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 
 from . import dodge_burn as D
 from . import skin_mask as K
 from . import skin_mask_compare as M
 from . import photocraft_bridge as PCB
-from .paths import DATA
+from .paths import DATA, MODELS
 
 ROOT = DATA
 HTML = Path(__file__).resolve().parent / "ui" / "index.html"
@@ -514,7 +516,7 @@ def api_profile(req):
     return {"sizes": sizes, "gains": [float(req.get("strength", 1.0)) * (D.band_gain(s, bands) if bands else 0.0) for s in sizes]}
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
@@ -528,6 +530,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/health":
+            return self.send(200, json.dumps({**identity("dnb", ROOT, MODELS),
+                "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
+        if path == "/static/lifecycle.js":
+            return self.send(200, script(), "text/javascript; charset=utf-8")
         if path == "/static/shp-ui.css":
             return self.send(200, stylesheet(), "text/css; charset=utf-8")
         if path in ("/", "/index.html"):
@@ -544,7 +551,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, data, "image/jpeg" if kind in ("orig", "result", "analysis") else "image/png")
         self.send(404, b"not found", "text/plain")
 
-    def do_POST(self):
+    def do_api_POST(self):
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
@@ -563,12 +570,19 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description="SHP PhotoCraft D&B web UI")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--dir", nargs="+", default=[])
     a = ap.parse_args()
     DIRS.extend(a.dir)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
+                        loaded=lambda: STATE["img"] is not None)
     print(f"SHP PhotoCraft D&B: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
 
 
 if __name__ == "__main__":

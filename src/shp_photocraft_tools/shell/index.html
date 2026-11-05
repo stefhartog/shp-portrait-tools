@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHP PhotoCraft Tools</title>
+<link rel="stylesheet" href="static/shp-ui.css">
+<link rel="stylesheet" href="static/shell.css">
+<script src="static/shell.js" defer></script>
+<script src="static/lifecycle.js" defer></script>
+</head>
+<body>
+<header class="shell-header">
+  <nav aria-label="Modules" role="tablist">
+    <button id="tab-crop" role="tab" aria-selected="true" aria-controls="panel-crop" data-module="crop">Crop <span id="badge-crop" class="badge">starting</span></button>
+    <button id="tab-dnb" role="tab" aria-selected="false" aria-controls="panel-dnb" data-module="dnb" tabindex="-1">D&amp;B <span id="badge-dnb" class="badge">starting</span></button>
+  </nav>
+</header>
+<div id="status" role="status" aria-live="polite"></div>
+<main id="workspace">
+  <section id="panel-crop" class="module-panel" role="tabpanel" aria-labelledby="tab-crop">
+    <div class="placeholder">Starting Crop. Use the Tools tray menu for service controls.</div>
+  </section>
+  <section id="panel-dnb" class="module-panel inactive" role="tabpanel" aria-labelledby="tab-dnb" aria-hidden="true" inert>
+    <div class="placeholder">Starting D&amp;B. Use the Tools tray menu for service controls.</div>
+  </section>
+</main>
+</body>
+</html>

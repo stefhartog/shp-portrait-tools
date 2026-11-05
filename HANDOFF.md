@@ -1,109 +1,220 @@
 # SHP PhotoCraft Tools handoff
 
-## Scope and boundaries
+This is the consolidated current-state handoff for the migration, launcher/supervisor,
+native desktop, managed ComfyUI and subsequent UI refinements. It replaces the incremental
+conversation chronology. See [README.md](README.md) for setup/commands, [PROVENANCE.md](PROVENANCE.md)
+for exact sources and `docs/source/` for frozen original algorithm/graph notes.
 
-This private monorepo was created as a new, side-by-side project. No history rewrite,
-automatic cutover, desktop entry modification, old-server restart or PhotoCraft/ComfyUI
-configuration change is part of the migration. Existing launchers remain on the old projects.
-Do all new work here, not in the source folders listed in PROVENANCE.md.
+## Scope and accumulated decisions
 
-The public names are **SHP PhotoCraft Crop** and **SHP PhotoCraft D&B**. Each has an independent
-stdlib `ThreadingHTTPServer`, its original endpoint shapes and default port (8768/8765),
-and its own browser UI. The root distribution installs both plus `shpcrop`/`shpdnb` aliases.
-There is deliberately no module registry, plugin interface or combined server.
+The new private repository is `/home/stef/shp-photocraft-tools`,
+`stefhartog/shp-photocraft-tools`, on `main`. Migration was published as
+`3adb22f98ee88550f21de55b23d9b4157b66fd17`; later work adds the Tools desktop experience.
+The user requested consolidation, documentation updates, commit and push on 2026-11-05.
 
-## Shared code
+Original `/home/stef/shpcrop` and `/home/stef/dnb` source files/repos remain untouched.
+No personal presets, settings, photos, credentials, environments, models or generated files
+were copied. User-approved legacy Crop/D&B shortcut cleanup happened separately; PhotoCraft/
+OpenFill shortcuts were retained, including the misleadingly named PhotoCraft launcher.
+The distinct Tools installer does not remove or overwrite those launchers.
 
-- `shared/ui/__init__.py`: `stylesheet() -> bytes` uses `importlib.resources`.
-  `common.css` is the only shared stylesheet, copied from the original D&B `shp-ui` package.
-  Both servers serve the same resource at `/static/shp-ui.css`. The old Git dependency and
-  nested package manifest are gone.
-- `shared/photocraft/bridge.py`: the original clients' common JSON-lines `Client`, auth,
-  reconnect, errors, config detection, session/headless negotiation, document lookup,
-  scratch open/save/close helpers, merged-document `fetch()` and explicit `launch()`.
-  Module env overrides win over `SHP_PC_*`. Existing OpenFill credentials remain readable;
-  fallback config/log paths are new and module-separated.
+The launcher evolved from independent browser tabs to a thin combined shell, then to an
+owned GTK/WebKit window and tray. Ungoogled Chromium remains an explicit fallback, not the
+default. The web Services/details panel was removed in favor of native tray controls.
+PhotoCraft remains external/informational; the user explicitly requested a dedicated
+Tools-owned ComfyUI process, superseding the earlier reachability-only design.
 
-The original clients were compared before extraction: transport/session/fetch/launch were
-identical except env prefixes, own config paths and labels. These differences are represented
-by the two small subclasses' attributes, not duplicated clients.
+Real service/window activations and the later termination of all then-current ComfyUI
+instances were separately user-approved. Historical process IDs/status are not current-state
+claims. Publication does not authorize reopening/reloading live views, restarting services,
+running inference, changing PhotoCraft documents or reinstalling desktop assets.
 
-Do not move result application into the common bridge:
+## Architecture and preserved behavior
 
-- `modules/crop/photocraft_bridge.py`: signed canvas crop/resize, RGBA generated area, layer
-  copy and best-effort undo snapshot grouping. Crop is the only module that calls `image.crop`.
-- `modules/dnb/photocraft_bridge.py`: RGBA16 scratch layer plus separate mask document,
-  composite selection/revealSelection retry, Soft Light mode, one layer copy. It never
-  changes canvas size or groups undo by deleting history states.
+Each module retains an independent `ThreadingHTTPServer`, processing engine, UI and settings.
+Standalone defaults remain Crop **8768**, D&B **8765**, with compatible `shpcrop`/`shpdnb`
+aliases. No module registry, plugin framework or combined processing engine was introduced.
 
-Original best-effort cleanup, reconnect/retry and undo-grouping behavior is retained;
-this migration is not a redesign of PhotoCraft transactions.
+| Surface | Responsibility / invariant |
+|---|---|
+| `shared/ui/` | One `importlib.resources` CSS resource served identically by both modules; shared switches, controls and lifecycle script. No Git CSS dependency. |
+| `shared/photocraft/bridge.py` | Common JSON-lines transport, auth/config/env precedence, reconnect/errors, session/headless negotiation, document lookup and merged-document fetch. |
+| `modules/crop/photocraft_bridge.py` | Signed canvas crop/resize, generated RGBA layer and best-effort undo grouping. Crop alone calls `image.crop`. |
+| `modules/dnb/photocraft_bridge.py` | RGBA16 scratch layer, separate mask document, revealSelection retry, Soft Light mode and one layer copy. Never resizes the canvas. |
+| `launcher.py` / `supervisor.py` | Verified startup/reuse, fixed proxy, module controls, external status and owned lifecycle. |
+| `shared/health.py`, `supervision.py`, `lifecycle.py` | Identity, private work/stop gate, revision guards and desktop/browser leases. |
+| `desktop/controller.py` | Standalone system-Python GTK/WebKit window, tray, dialogs, geometry and guarded Quit/reload. |
+| `comfy.py` | Dedicated process watchdog, actual listener ownership and queue-aware shutdown. |
 
-## Crop
+Original PhotoCraft clients were compared before extraction; compatible transport/session/
+fetch/launch differed only by prefixes, config paths and labels, now subclass attributes.
+Do not combine the incompatible result-application semantics. Original best-effort cleanup,
+reconnect/retry and undo behavior remain; this is not a transaction redesign.
 
-`modules/crop/expand.py` is unchanged. This includes signed margins, Free height, model
-validation, WebSocket progress/polling fallback, ComfyUI graph, seam correction, variations
-and cancellation. No real ComfyUI graph was queued during migration validation.
+Crop's `expand.py` is unchanged: signed margins, Free height, validation, ComfyUI graph,
+WebSocket progress/polling fallback, seam correction, variations and cancellation.
+D&B's correction math, mask composition, ICC handling, output precision, scale cues, picker,
+preview crop and full-resolution processing remain. Analysis scripts use package-relative
+imports. Segmenter/model sessions are lazy; external missing files/inference failures
+produce actionable errors rather than successful-looking results. ExifTool comes from
+`PATH` / `DNB_EXIFTOOL`, never a copied tool tree.
 
-`server.py` retains its endpoint routes, lock-free job/cancel polling, JSON settings/presets,
-explicit Start ComfyUI and `--comfy`/`--dir`. HTML is the live source snapshot with only the
-window title renamed; this includes Free mode, Generate/Cancel, result zoom/pan, pane headers
-and compact shared controls. The data default moves to the new module data directory.
+## Supervisor, proxy and lifecycle
 
-## D&B
+Tools shell **18760** proxies `/crop/` and `/dnb/` to owned backends **18768 / 18765**.
+Both module documents use relative assets/API/image URLs, working standalone or prefixed
+without response rewriting. D&B's inherited standalone resize request is suppressed inside
+iframes. Same-sized mounted frames switch through visibility/inert/ARIA, not `display:none`,
+navigation or recreation; image/preview/zoom/prompt state survives switching.
 
-Python scripts are now proper package modules with relative imports; run retained analysis
-CLIs using `python -m shp_photocraft_tools.modules.dnb.<module>`. `research` installs the
-optional matplotlib/notebook dependencies for experiments.
+Startup locks serialize launcher clicks. Reuse checks package/interpreter/data/models/config,
+PID and random instance, not simply an open port. The supervisor manages only children it
+created with matching supervisor identity and private environment-only capabilities.
+Standalone/unrelated servers are never adopted or stopped; port collisions fail visibly.
+One unavailable module leaves the shell/other module accessible.
 
-The engine math, color management, mask composition, scale cues, output precision,
-picker, preview crop handling and full-resolution processing are retained. The original
-HANDOFF's latest uncommitted changes are archived in `docs/source/dnb-handoff.md`.
-The copied HTML includes the four independently collapsible mask-related sections and
-the uncommitted standalone-window resize behavior (1347x994); only its title changes.
+Module controls are `/api/modules/{crop|dnb}/{start|stop|restart}`. The exact loopback Host,
+same-origin JSON, non-simple `X-SHP-Control: 1` header, fixed allowlist, bounded bodies and
+confirmation types are checked. Owner routes/capabilities are not proxied or exposed.
+Stop/Restart cannot override active API work or Crop generation. Loaded work needs confirmation;
+the original instance and server-provided revision must still match. Other windows share
+backend work, so stale/changed-work confirmations are refused. Restart replaces only its frame.
+Only a never-ready owned startup child is eligible for forced startup cleanup.
 
-Writable files no longer live beside installed code: `paths.py` owns `DNB_DATA` and
-`DNB_MODELS`; the server's `ROOT` refers to its data directory. New preset directories are
-created on first write. The original `{presets,default}` schema is unchanged.
+The top-level shell owns browser leases: 20-second long polls, 90-second expiry,
+15-second final-close grace and two-minute startup reservation. The desktop owns an independent
+`desktop-<uuid>` lease from a Python thread, retained while hidden. The injected
+`__shpOwnedDesktop` marker disables only that webview's redundant JS lease; it adds no native
+privilege bridge. Other browser sessions keep independent leases. Direct backend pages do not
+extend supervised lifetime. Manual module commands persist unless given `--close-with-ui`.
 
-The import-time segmenter in `skin_mask_compare.py` is now lazy so an installed UI and
-`--help` work without shipping model binaries or allocating an inference session.
-Face/skin model loaders resolve external files through `model_path()` and report how to
-configure missing files. Inference and missing-file failures are not disguised as successful
-analysis. rtmlib's pose loader remains lazy as in the source.
+Last-session shutdown drains API/generation work before closing owned modules and ComfyUI.
+Module children detect parent loss and finish work before exit. Suspension/crash/lease expiry
+can shut down otherwise unused services; reopen the launcher. Only saved JSON/results persist.
+Refresh/reload clears browser-only state; module stop/restart clears in-memory work for every
+window using it. No automatic snapshot/recovery was introduced.
 
-Sony AF lookup now uses ExifTool on PATH or `DNB_EXIFTOOL` rather than an untracked unpacked
-tool relative to the old checkout. No third-party tool tree was copied.
+## Native desktop and tray
 
-## Data and safe validation
+The native helper uses `/usr/bin/python3` and GI GTK3/WebKit2-4.1/AppIndicator3;
+project uv Python stays separate. Bindings/display preflight opens no window or data.
+It needs a graphical display and tray host; GNOME uses AppIndicator support.
+The deterministic per-origin GApplication D-Bus ID guarantees single-instance activation.
+GLib program name, GDK program class, icon name and desktop `StartupWMClass` are all
+`shp-photocraft-tools`, matching the pinned desktop basename.
 
-Production defaults, env precedence and deliberate later JSON reuse are documented in README.
-This migration copies no private presets, settings, images, model weights, credentials,
-venvs, results or caches. Browser localStorage keys remain compatible but ports scope them.
-Default ports are unchanged; use alternate or ephemeral ports beside the original apps.
+GTK3's actual Wayland `app_id` followed its program class, not the D-Bus ID: merely changing
+`StartupWMClass` to the D-Bus name was insufficient. Actual protocol assertions now cover
+the correct identity; the user confirmed one GNOME dash icon without repinning/favorites edits.
+The intentional AppIndicator tray icon is separate.
 
-`tests/run.py` sets temporary data/model/token/exchange paths before importing either server,
-then runs the migrated Crop checks and unittest tests. `tests/preview.py` supplies synthetic
-images, fake Get/Send, stub ComfyUI and fake D&B detection/masks on ephemeral ports for browser
-checks; it never contacts the real services. Its real D&B correction is CPU-only.
+X hides to tray; relaunch/Show presents the same mounted webview. No tray host/lost tray host
+keeps or restores an accessible window. Show/Hide/Quit and Crop/D&B Start/Stop/Restart use
+the existing supervisor API. HTTP/control workers run off GTK's main thread; UI/dialog updates
+use the main loop. Epoch/pending-action guards prevent stale polls from overwriting controls.
+Disconnected/transitional/busy actions are disabled; failures surface rather than force-retry.
 
-Validation performed for the migration:
+Quit warns about unsent/view-state loss and rechecks busy state and work signature after
+confirmation. Cancel, stale or busy work keeps the window. Other browser leases retain services.
+If the supervisor is unavailable, closing only the desktop is explicitly confirmed without
+force-stopping processes. Guarded Reload UI recovers renderer/load errors without service restart.
+Native notifications overlay rather than resize the viewport.
 
-- Eight migrated Crop checks and seventeen new unittest checks pass with isolated paths.
-- Wheel and sdist contain both UIs and shared CSS, without model/token files.
-- The test suite also passes using a clean wheel installation outside the checkout.
-- Both named commands and both compatible aliases serve HTML and identical packaged CSS
-  from the installed wheel on ephemeral ports.
-- Browser interaction checks use the synthetic fixture, not the live apps. No GPU inference,
-  real PhotoCraft Get/Send or ComfyUI launch is used. Both layouts were checked at 1347x994
-  and 760px width without horizontal overflow. Crop Free mode, Generate/Cancel, result zoom/reset,
-  D&B synchronized zoom/reset, persisted section collapse, summary checkboxes/pickers and a
-  browser-created preset were exercised.
-- Original tracked-file hashes and the existing dirty D&B diff are checked unchanged.
+Same-origin navigation/downloads only; popups, external navigation and browser device/
+notification permissions are refused. Native prompt/confirm dialogs and Save chooser preserve
+cancel/overwrite handling. Failed/canceled downloads are never reported as completed.
 
-Real GPU/PhotoCraft integration was intentionally not repeated. The original technical
-documents record historical live checks; those are not claims of new migration validation.
-Known algorithmic limitations (scale heuristics, tattoos/nostrils, nonidentical Photoshop Soft
-Light) remain; see the archived notes rather than treating this packaging work as new tuning.
-At very small widths (observed at 344px), the inherited D&B preset toolbar can overflow.
-The original HTML/CSS was preserved rather than introducing a responsive-layout redesign.
+WebKit uses `<XDG_DATA_HOME>/shp-photocraft-tools/webview/{data,cache}` without moving old
+browser profiles. Debounced atomic `window.json` stores normal sizes, not maximized/fullscreen.
+Default GTK size **1399x949** includes the titlebar; WebView minimum is **363x626**.
+X11 coordinates restore; Wayland placement remains compositor-controlled.
+
+## External services and managed ComfyUI
+
+One PhotoCraft tray line reports **Reachable / Unreachable (TCP)** without auth/document access.
+Equal module endpoints share one probe, including failure results. Different endpoints show
+an actionable mismatch; module auth/env compatibility remains independent.
+Tools never starts/stops PhotoCraft for status.
+
+Optional `comfy` launcher config and installer `--comfy-dir` select an existing runtime and
+dedicated port **18788**; 8188 is disallowed. The watchdog launches that checkout's
+`venv`/`.venv` Python, existing models/custom nodes, with isolated
+`comfy-{user,input,output,temp}` state directories. No installation/download/adoption.
+Occupied dedicated ports fail. Supervised Crop receives the managed URL; its retained startup
+API is intercepted by the supervisor, and direct supervised calls cannot spawn a duplicate.
+
+Linux `/proc/net/tcp` listener inode plus child `/proc/<pid>/fd` verifies actual ownership;
+the real `/queue` supplies busy/readiness. Atomic instance-scoped status reports phases/errors
+through the tray. Native Quit/lifetime protection includes owned queue work. Modules close first;
+the watchdog drains the queue before stopping only its child, including after parent loss.
+If an established queue becomes unreadable, shutdown conservatively waits and reports it.
+Startup failures are visible and do not trigger a hidden retry loop.
+
+Standalone Crop retains its original ComfyUI URL/start API behavior. Crop's web AI panel no
+longer has a Start button/warning block; readiness retries remain, Generate is gated and genuine
+model/node errors go to the main status bar. Independent ComfyUI processes remain unowned.
+
+## Current UI and runtime files
+
+Both modules show **Get Image / Send Result**, with original semantics/tooltips. Shared CSS
+provides dark select/option styling, 74px labels, 42px readouts, 11px toolbar vertical padding
+and preset buttons 1px shorter than their dropdown. Global real-checkbox switches are
+**32x18**, grey off/blue on, with disabled dimming, keyboard focus and reduced-motion support.
+IDs, label associations, checked state and settings/preset handlers remain.
+
+Crop's empty instruction is removed; loaded dimension/margin text remains. Lowercase
+`turbo lora` / `seam colour correction` rows precede model/upscaler selection, aligned right
+with **zero inset**, matching D&B. Toggle rows have 2px vertical padding and compensated 6px
+inter-row margin; model rows have 4px vertical padding.
+D&B's four mask switches have no static "on" text; all six collapsible headers have no arrows.
+Native header click/keyboard collapse and independent switch/picker behavior remain.
+Shell tabs are centered, up to 260px each, shrink equally, and have no blue top stripe or
+repeated web title. The native window retains its title.
+
+Installer sources are `scripts/install_desktop.py` and `desktop/`; identical reinstalls are
+safe, differing Tools files are refused. Desktop trust failures explain manual Allow Launching.
+The installed wrapper uses this repo's `.venv` without network sync.
+Current external resource references are `/home/stef/dnb/models`,
+`/home/stef/dnb/tools/Image-ExifTool-13.60/exiftool` and `/home/stef/ComfyUI`.
+Config is `~/.config/shp-photocraft-tools/launcher.json`, with no credentials.
+Module data remains `~/.local/share/shp-photocraft-tools/{crop,dnb}`.
+Logs/lock and managed ComfyUI directories are under
+`<XDG_STATE_HOME>/shp-photocraft-tools/`.
+
+`SHPC_DATA` / `DNB_DATA` isolate standalone writes; `DNB_MODELS` / `DNB_EXIFTOOL` select
+external resources. Supervised modules use launcher-owned data directories. Original Crop
+`{presets,last}` / settings and D&B `{presets,default}` JSON schemas remain.
+Module `SHPC_PC_*` / `DNB_PC_*` overrides take precedence over `SHP_PC_*`; existing OpenFill
+token/exchange are read at connection time when configured. Browser keys stay module-prefixed
+but origin/profile scoped. Do not import secrets or reuse original writable data for checks.
+
+## Validation and limitations
+
+`tests/run.py` sets temporary data/model/token/exchange paths before imports, then runs eight
+migrated Crop checks and the complete unittest suite. `tests/preview.py` and
+`tests/shell_preview.py` use synthetic images, fake PhotoCraft, stub ComfyUI and fake model
+results with real CPU D&B correction, on free ports. Tests neither infer on GPU nor mutate
+PhotoCraft or start real ComfyUI.
+
+Opt-in `SHP_DESKTOP_SMOKE=1` exercises actual GTK/WebKit against synthetic children: real canvas
+readback/pointer capture/wheel zoom, generation/previews, retained iframe state, native dialogs/
+downloads, geometry/localStorage across restart, hide/relaunch, tray controls, stale/busy/Cancel
+guards, independent leases and final shutdown. It deliberately terminates only its own test
+renderer to verify guarded recovery. Computed styles cover dark controls, all ten switches,
+Crop zero-inset alignment and D&B arrowless header toggling/switch isolation.
+
+Migration checks additionally verified wheel installation outside the checkout, both command
+aliases, identical packaged CSS, usual/narrow layouts and unchanged source hashes/dirty D&B diff.
+Real GPU/PhotoCraft integration was not repeated. Separately approved managed ComfyUI activation
+verified runtime/custom-node startup and ownership with an idle queue, without inference.
+Source notes retain algorithmic limitations: scale heuristics, tattoos/nostrils and nonidentical
+Photoshop Soft Light. The inherited D&B preset toolbar can overflow around 344px width;
+no unrelated responsive redesign was included.
+
+Publication verification on **2026-11-05** passed **54 unittest checks with native smoke
+enabled, plus eight migrated Crop checks**. Wheel/sdist builds contain all module/shared/
+shell/native resources and the installer/docs. A local wheel installation outside the checkout
+passed all five command help checks, four standalone command/alias HTTP and identical-asset
+checks, and a full regression rerun (native smoke skipped only in that installed-wheel rerun).
+The installed native helper's runtime preflight created no UI data.
+Validation used only temporary services; no live app/window was reloaded or restarted for publication.

@@ -23,6 +23,7 @@ gpu = [
 research = ["matplotlib>=3.11.2", "jupyter>=1.1.1"]
 
 [project.scripts]
+shp-photocraft-tools = "shp_photocraft_tools.launcher:main"
 shp-photocraft-crop = "shp_photocraft_tools.modules.crop.server:main"
 shp-photocraft-dnb = "shp_photocraft_tools.modules.dnb.ui_server:main"
 shpcrop = "shp_photocraft_tools.modules.crop.server:main"

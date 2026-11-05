@@ -76,7 +76,7 @@ class DnbTests(unittest.TestCase):
     def test_assets_and_unknown_routes(self):
         html, headers = self.get("/")
         self.assertIn(b"<title>SHP PhotoCraft D&amp;B</title>", html)
-        self.assertLess(html.index(b"/static/shp-ui.css"), html.index(b"<style>"))
+        self.assertLess(html.index(b"static/shp-ui.css"), html.index(b"<style>"))
         for route in ("/static/shp-ui.css", "/static/shp-ui.css?v=1"):
             css, headers = self.get(route)
             self.assertEqual(headers["Content-Type"], "text/css; charset=utf-8")

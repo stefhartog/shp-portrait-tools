@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <title>SHP PhotoCraft D&amp;B</title>
-<link rel="stylesheet" href="/static/shp-ui.css">
+<link rel="stylesheet" href="static/shp-ui.css">
+<script src="static/lifecycle.js" defer></script>
 <style>
   #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); height:100vh; }
   #bar { grid-column: 1 / -1; }
@@ -35,11 +36,11 @@
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
+  details.grp > summary::after { display:none; }
   .sub { font-size:11px; color:var(--dim); font-weight:600; margin:10px 0 4px; }
   details.mask-group > summary { gap:8px; }
   details.mask-group > summary label { display:flex; align-items:center; gap:4px; margin-left:auto; flex:none; color:var(--dim); font-size:11px; font-weight:400; letter-spacing:0; text-transform:none; cursor:pointer; }
   details.mask-group > summary input { margin:0; }
-  details.mask-group > summary::after { flex:none; }
   .color-pick { display:flex; align-items:center; gap:6px; margin:4px 0; }
   .sub-title { display:flex; align-items:center; gap:8px; }
   .color-swatch { width:14px; height:14px; flex:none; padding:0; border:1px solid var(--line); border-radius:3px; background:var(--bg); cursor:pointer; }
@@ -60,7 +61,7 @@
 </head>
 <body>
 <div id="app">
-<div id="bar"><button id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get from PhotoCraft</button><button id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send to PhotoCraft</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<div id="bar"><button id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
 
 
@@ -73,26 +74,26 @@
     </div>
   </details>
   <details class="grp mask-group" id="g-mask" open>
-    <summary><span>Skin mask</span><label><input type="checkbox" id="maskOn" aria-label="Enable skin mask" title="Only correct skin: pixels outside the skin mask are left unchanged. Eyes, brows, lips, nostrils and off-colour pixels such as tattoos are always left out." checked>on</label></summary>
+    <summary><span>Skin mask</span><label><input type="checkbox" id="maskOn" aria-label="Enable skin mask" title="Only correct skin: pixels outside the skin mask are left unchanged. Eyes, brows, lips, nostrils and off-colour pixels such as tattoos are always left out." checked></label></summary>
     <div class="gbody">
       <div id="maskSliders"></div>
     </div>
   </details>
   <details class="grp mask-group" id="g-structure" open>
-    <summary><span>Structure protection</span><label><input type="checkbox" id="structureOn" aria-label="Enable structure protection" title="Reduce correction on detected folds, creases and contours.">on</label></summary>
+    <summary><span>Structure protection</span><label><input type="checkbox" id="structureOn" aria-label="Enable structure protection" title="Reduce correction on detected folds, creases and contours."></label></summary>
     <div class="gbody">
       <div id="structSliders"></div>
     </div>
   </details>
   <details class="grp mask-group" id="g-range" open>
-    <summary><span class="sub-title">Light range<button type="button" class="color-swatch" id="toneSwatch" aria-label="Pick light range" title="Click, then click a point in the Original preview to center the light range on its brightness"></button></span><label><input type="checkbox" id="toneOn" aria-label="Enable light range" title="Only correct midtones: the light range below is multiplied into the mask." checked>on</label></summary>
+    <summary><span class="sub-title">Light range<button type="button" class="color-swatch" id="toneSwatch" aria-label="Pick light range" title="Click, then click a point in the Original preview to center the light range on its brightness"></button></span><label><input type="checkbox" id="toneOn" aria-label="Enable light range" title="Only correct midtones: the light range below is multiplied into the mask." checked></label></summary>
     <div class="gbody">
       <div id="tone"></div>
       <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="120" style="width:100%;height:60px;background:#12141a;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
     </div>
   </details>
   <details class="grp mask-group" id="g-color" open>
-    <summary><span class="sub-title">Color range<button type="button" class="color-swatch" id="colorSwatch" aria-label="Pick color range" title="Click, then click a color in the Original preview"></button></span><label><input type="checkbox" id="colorOn" aria-label="Enable color range" title="Limit correction to colors near the picked hue and saturation." disabled>on</label></summary>
+    <summary><span class="sub-title">Color range<button type="button" class="color-swatch" id="colorSwatch" aria-label="Pick color range" title="Click, then click a color in the Original preview"></button></span><label><input type="checkbox" id="colorOn" aria-label="Enable color range" title="Limit correction to colors near the picked hue and saturation." disabled></label></summary>
     <div class="gbody">
       <div id="colorSliders"></div>
     </div>
@@ -151,7 +152,7 @@ const state = {
 
 /* ---------- small helpers ---------- */
 async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const r = await fetch(path.replace(/^\//, ''), body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const j = await r.json();
   if (!r.ok || j.error) throw new Error(j.error || r.statusText);
   return j;
@@ -463,7 +464,7 @@ function showImages() {
   pans.forEach((p, i) => {
     let img = p.querySelector('img');
     if (!img) { p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img); img.onload = layout; }
-    img.src = `/img/${kinds[i]}?v=${state.version}-${state.avers}`;
+    img.src = `img/${kinds[i]}?v=${state.version}-${state.avers}`;
   });
 }
 function layout() {
@@ -659,7 +660,7 @@ $('presetRemove').onclick = async () => {
 };
 
 /* start at a fixed window size (app window only) */
-if (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible) { try { resizeTo(1347, 994); } catch (e) {} }
+if (window === window.top && (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible)) { try { resizeTo(1347, 994); } catch (e) {} }
 /* ---------- start ---------- */
 setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets(); loadList().catch(e => setStatus(e.message, true));
 </script>

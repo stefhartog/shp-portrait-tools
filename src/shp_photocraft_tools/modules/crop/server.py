@@ -21,6 +21,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from shp_photocraft_tools.shared.ui import stylesheet
+from shp_photocraft_tools.shared.health import identity
+from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 
 from . import expand as X
 from . import photocraft_bridge as PCB
@@ -187,6 +189,8 @@ COMFY_PROC = {"p": None}
 
 def api_comfy_start(req):
     """Start the local ComfyUI in the background (own session, so it keeps running if this page's server stops)."""
+    if os.environ.get("SHPC_TOOLS_COMFY") == "1":
+        raise ValueError("Tools owns this ComfyUI instance. Use Crop through the Tools shell to start/retry it.")
     if X.status(X.load_settings(SETTINGS_FILE))["reachable"]:
         return {"started": False, "message": "ComfyUI is already running"}
     p = COMFY_PROC["p"]
@@ -277,7 +281,7 @@ ROUTES = {"/api/comfy/start": api_comfy_start, "/api/presets": api_presets, "/ap
 NO_LOCK = {"/api/job", "/api/cancel"}  # must answer while a run is going
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
@@ -291,6 +295,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/health":
+            return self.send(200, json.dumps({**identity("crop", DATA),
+                "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
+        if path == "/static/lifecycle.js":
+            return self.send(200, script(), "text/javascript; charset=utf-8")
         if path in ("/", "/index.html"):
             return self.send(200, HTML.read_bytes(), "text/html; charset=utf-8")
         if path == "/static/shp-ui.css":
@@ -304,7 +313,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, data, "image/jpeg")
         self.send(404, b"not found", "text/plain")
 
-    def do_POST(self):
+    def do_api_POST(self):
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
@@ -324,18 +333,22 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description="SHP PhotoCraft Crop web UI")
     ap.add_argument("--port", type=int, default=8768)
+    ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--comfy", default=None, help="ComfyUI address (default http://127.0.0.1:8188 or $SHPC_COMFY)")
     ap.add_argument("--dir", nargs="*", default=[], help="folders whose pictures can be opened from the page")
     a = ap.parse_args()
     DIRS.extend(a.dir)
     if a.comfy:
         X.COMFY_URL = a.comfy.rstrip("/")
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
+                        busy=running, loaded=lambda: STATE["img"] is not None)
     print(f"SHP PhotoCraft Crop: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
 
 
 if __name__ == "__main__":

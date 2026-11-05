@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=SHP PhotoCraft Tools
+Comment=Show the PhotoCraft Tools window and tray controller
+Exec=@LAUNCHER@
+Icon=shp-photocraft-tools
+Terminal=false
+Categories=Graphics;Photography;
+StartupNotify=true
+StartupWMClass=shp-photocraft-tools

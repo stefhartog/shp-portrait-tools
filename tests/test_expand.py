@@ -238,7 +238,7 @@ def test_static_assets():
             with urlopen(base + path) as response:
                 html = response.read().decode()
                 assert response.headers["Content-Type"] == "text/html; charset=utf-8"
-                assert html.index('<link rel="stylesheet" href="/static/shp-ui.css">') < html.index("<style>")
+                assert html.index('<link rel="stylesheet" href="static/shp-ui.css">') < html.index("<style>")
                 assert '<div class="tabs pane-header">' in html
         for path in ("/static/shp-ui.css", "/static/shp-ui.css?v=1"):
             with urlopen(base + path) as response:
