@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageCms
 
 from shp_photocraft_tools.modules.crop.photocraft_bridge import Bridge as CropBridge
 from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge
@@ -29,6 +29,8 @@ class FakePhotoCraft:
         self.documents = [{"index": 1, "name": "portrait:one.png", "width": 64, "height": 48}]
         self.files = []
         self.history = ["Original"]
+        self.icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        self.file_profiles = []
 
     def session(self):
         return {"active": self.active, "documents": self.documents.copy()}
@@ -42,10 +44,12 @@ class FakePhotoCraft:
         if method == "session.list":
             return self.session()
         if method in ("app.save", "doc.save"):
-            Image.new("RGB", (64, 48), "red").save(self.bridge.exchange / params["path"])
+            Image.new("RGB", (64, 48), "red").save(self.bridge.exchange / params["path"], icc_profile=self.icc)
         if method in ("app.open", "doc.open"):
             filename = self.bridge.read_root / params["path"]
             self.files.append(cv2.imread(str(filename), cv2.IMREAD_UNCHANGED))
+            with Image.open(filename) as image:
+                self.file_profiles.append(image.info.get("icc_profile"))
             self.active = max(d["index"] for d in self.documents) + 1
             self.documents.append({"index": self.active, "name": filename.name})
         return {}
@@ -55,8 +59,8 @@ class FakePhotoCraft:
         if command == "document.activate":
             self.active = params["document"]
         if command == "image.duplicate":
-            self.active = 2
-            self.documents.append({"index": 2, "name": params["name"]})
+            self.active = max(d["index"] for d in self.documents) + 1
+            self.documents.append({"index": self.active, "name": params["name"]})
         if command == "file.close":
             self.documents = [d for d in self.documents if d["index"] != params["document"]]
         if command == "layer.list":
@@ -134,9 +138,21 @@ class BridgeTests(unittest.TestCase):
         np.testing.assert_array_equal(imported_mask, mask)
         props = [p for c, p in b.client.calls if c == "layer.setProps"]
         self.assertEqual(props[0]["blend"], "Soft Light")
+        self.assertEqual(b.client.file_profiles, [b.client.icc, None])
         self.assertEqual(sum(c == "select.loadSelection" for c, p in b.client.calls), 2)
         self.assertEqual(sum(c == "layer.copyToDocument" for c, p in b.client.calls), 1)
         self.assertFalse(any(c in ("image.crop", "history.newSnapshot") for c, p in b.client.calls))
+        self.assertEqual(b.client.active, 1)
+        self.assertEqual(len(b.client.documents), 1)
+        self.assertEqual(list(b.exchange.iterdir()), [])
+
+    def test_dnb_refuses_missing_profile_before_copy_and_cleans_scratch(self):
+        b = self.bridge(DnbBridge)
+        b.client.icc = None
+        with self.assertRaisesRegex(ControlError, "destination ICC profile"):
+            b.send(np.full((48, 64, 3), 32768, np.uint16),
+                   np.full((48, 64), 255, np.uint8), b.client.documents[0])
+        self.assertFalse(any(c == "layer.copyToDocument" for c, p in b.client.calls))
         self.assertEqual(b.client.active, 1)
         self.assertEqual(len(b.client.documents), 1)
         self.assertEqual(list(b.exchange.iterdir()), [])
@@ -175,6 +191,21 @@ class BridgeTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_disconnected_warning_uses_configured_control_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            token = Path(tmp) / "control.token"
+            token.write_text("test-only\n")
+            for port in (7878, 17878):
+                with self.subTest(port=port), patch(
+                        "shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection",
+                        side_effect=ConnectionRefusedError("fixture disconnected")):
+                    client = Client(port, token, timeout=2)
+                    with self.assertRaises(ControlError) as raised:
+                        client.call("anything")
+                    self.assertEqual(str(raised.exception),
+                                     f"PhotoCraft not running or contollable (port {port})")
+                    self.assertIsNone(client._sock)
+
     def test_authentication_reconnect_and_refusal(self):
         requests = []
         drop = [True]

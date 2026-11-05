@@ -8,41 +8,114 @@ an optional combined shell, and an owned desktop window/tray controller.
 | **SHP PhotoCraft Crop** | `uv run shp-photocraft-crop` | http://127.0.0.1:8768/ |
 | **SHP PhotoCraft D&B** | `uv run --extra gpu shp-photocraft-dnb` | http://127.0.0.1:8765/ |
 
-Crop generates new image area using ComfyUI. D&B creates a 16-bit Soft Light layer with a
+Crop generates new image area using ComfyUI, with **FLUX.2** and **FLUX.1 Fill** methods.
+D&B creates a 16-bit Soft Light layer with a
 combined skin/color/light/structure mask. Their processing engines, UIs, settings and result
 application remain separate; there is no plugin framework or combined processing server.
 
-This private repository lives at `/home/stef/shp-photocraft-tools`. It was created beside,
-not in place of, `/home/stef/shpcrop` and `/home/stef/dnb`; those source projects remain
-untouched. Old Crop/D&B shortcuts were later removed at the user's request, while
-PhotoCraft/OpenFill shortcuts were retained. The distinct Tools launcher uses alternate ports.
+This private repository lives at `/home/stef/shp-photocraft-tools`. The migration originally
+copied the separate Crop/D&B projects without changing them; those old local checkouts have
+since been removed. They are not install prerequisites. PhotoCraft/OpenFill shortcuts were
+retained. The distinct Tools launcher uses alternate ports.
 
 ## Setup
 
-Use Python 3.13 and [uv](https://docs.astral.sh/uv/). The root `.python-version`,
-`pyproject.toml` and `uv.lock` define both modules and all packaged resources.
+### 1. Baseline environment (all modes)
+
+Use Linux, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/). Linux is required for the
+supervisor's process/listener ownership checks; the native desktop also needs a graphical
+session. The root `.python-version`, `pyproject.toml` and `uv.lock` define both modules
+and all packaged resources. Clone the private repo using an account with access:
 
 ```sh
+git clone https://github.com/stefhartog/shp-photocraft-tools.git /home/stef/shp-photocraft-tools
 cd /home/stef/shp-photocraft-tools
-uv sync --extra gpu
+uv python install 3.13
+uv sync --locked
 ```
 
-The `gpu` extra provides D&B's CUDA 13/cuDNN libraries and needs a compatible NVIDIA driver.
-Without it, `uv sync` supports Crop, HTTP startup and CPU-only synthetic checks, not necessarily
-D&B GPU inference. The optional `research` extra supplies plotting/notebook dependencies.
+Use your own checkout path on another account/machine. Baseline dependencies include NumPy,
+Pillow, OpenCV, `onnxruntime-gpu` and rtmlib even if you only use Crop; there are no per-module
+dependency extras. OpenCV may need OS GL/runtime libraries (for example `libGL.so.1`).
+`uv sync --locked` supports HTTP startup and synthetic CPU checks without CUDA, but is not
+a promise of full CPU-only D&B analysis: its pose helper explicitly requests CUDA.
+
+For **D&B analysis on NVIDIA**, install a driver compatible with CUDA 13 and add the
+project's user-space libraries (uv does not install/update the driver):
+
+```sh
+uv sync --locked --extra gpu
+```
+
+The `gpu` extra supplies CUDA 13/cuDNN libraries for ONNX Runtime. It does not configure
+ComfyUI's separate PyTorch environment or provide weights. Driver/GPU support and sufficient
+VRAM must be checked on the target machine. The optional `research` extra supplies plotting/notebook dependencies.
 Use uv's root project resolution: its `onnxruntime` override prevents rtmlib's CPU distribution
 from overwriting `onnxruntime-gpu`. Plain wheel installation with pip does not inherit this override.
 
 Model weights are **not shipped or downloaded by the installer**. Provide D&B's three ONNX
 files listed in [MODELS.md](MODELS.md), through `DNB_MODELS` or `<D&B data>/models/`.
 Standalone UI startup and `--help` work without them; analysis reports missing files.
-rtmlib may download/cache pose weights on first real analysis.
+rtmlib downloads separate YOLOX/RTMW pose weights on first analysis; see that document for
+cache location, explicit prefetch and offline preparation.
 
 Sony autofocus-point subject selection needs ExifTool with Perl on `PATH`, or
 `DNB_EXIFTOOL=/absolute/path/to/exiftool`. Otherwise the existing no-AF-point selection applies.
-Crop needs an already configured ComfyUI runtime and the models/custom nodes described in
-[the Crop technical notes](docs/source/crop-handoff.md): ComfyUI-GGUF,
-comfyui-inpaint-nodes and `SeamColorCorrect`.
+Use an OS ExifTool package or the full distribution from [exiftool.org](https://exiftool.org/);
+when using the Perl script, keep its adjacent `lib/` tree. It is not a D&B model or a required
+dependency for ordinary analysis.
+
+### 2. Processing services and PhotoCraft
+
+**Crop generation:** prepare a separate [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+checkout with a supported PyTorch/GPU installation, its own `venv/` or `.venv/`, the custom
+nodes and exact model files in [MODELS.md](MODELS.md#crop-comfyui-models-and-nodes).
+The Tools environment does not install that runtime. In particular, the local
+`SeamColorCorrect` node is supplied unchanged in `comfyui/custom_nodes/seam-color-correct/`;
+copy it into ComfyUI as described in MODELS. It is included in source checkouts and source
+releases, not the Tools wheel, and does not install itself automatically.
+Do not treat frozen `docs/source/` instructions as current installation instructions.
+
+**PhotoCraft Get/Send:** use a PhotoCraft build supporting its authenticated JSON-lines control
+and automation APIs. Enable control on loopback port **7878** and use the same token file
+and permitted exchange/read directories on both sides. Tools neither installs PhotoCraft
+nor enables control in an already running instance. Existing
+`~/.config/openfill-photocraft/control.token` and `exchange/` are reused when present;
+OpenFill processing itself is not required.
+
+For a new independent configuration, choose absolute paths and start PhotoCraft explicitly
+(replace `photocraft` with your executable):
+
+```sh
+mkdir -p "$HOME/.config/shp-photocraft-tools/photocraft/exchange"
+export SHP_PC_TOKEN_FILE="$HOME/.config/shp-photocraft-tools/photocraft/control.token"
+export SHP_PC_EXCHANGE="$HOME/.config/shp-photocraft-tools/photocraft/exchange"
+export SHP_PC_READ_ROOT="$HOME"
+export SHP_PC_PORT=7878
+photocraft --control "$SHP_PC_PORT" --control-token-file "$SHP_PC_TOKEN_FILE" \
+  --automation-read-root "$SHP_PC_READ_ROOT" --automation-write-root "$SHP_PC_EXCHANGE"
+```
+
+Use the token produced/provisioned by your PhotoCraft build; do not invent a separate token
+for Tools or commit it. Protect its file permissions. Launch Tools from an environment carrying
+these variables, or configure the same module-specific defaults described below. An app-menu
+launch does not inherit exports from an unrelated terminal. Get/Send requires an open document;
+Get exports a merged duplicate and Send intentionally changes that document. File-based use
+with standalone `--dir` does not need PhotoCraft.
+
+### 3. Choose native desktop or browser/CLI
+
+The standalone HTTP commands need **no GTK, WebKit or AppIndicator**. After environment/model
+setup, run either and open its printed URL in a normal browser:
+
+```sh
+uv run --no-sync shp-photocraft-crop --comfy http://127.0.0.1:8188 --dir /path/to/pictures
+DNB_EXIFTOOL=/absolute/path/to/exiftool uv run --no-sync shp-photocraft-dnb --dir /path/to/pictures
+```
+
+Omit `DNB_EXIFTOOL` if using ExifTool from `PATH` or not using Sony AF. Standalone commands
+do not read `launcher.json`, start managed ComfyUI, or stop when a browser tab closes by default.
+Start your independent ComfyUI separately for Crop, or use the supervised setup below.
 
 ## Desktop launcher
 
@@ -57,15 +130,35 @@ uv run --no-sync python scripts/install_desktop.py \
 
 `--exiftool` and `--comfy-dir` are optional; `--desktop-dir` overrides the XDG desktop folder.
 Resources are referenced, not copied or modified. The current installation references
-`/home/stef/dnb/models`, `/home/stef/dnb/tools/Image-ExifTool-13.60/exiftool` and
-`/home/stef/ComfyUI`. The installer is idempotent for identical content and refuses different
+`~/.local/share/shp-photocraft-tools/dnb/models`,
+`~/.local/share/shp-photocraft-tools/dnb/tools/Image-ExifTool-13.60/exiftool` and
+`/home/stef/ComfyUI`. Models and the complete local ExifTool distribution were copied and
+hash-verified from the old D&B folder before its later removal. No old-folder symlinks are
+needed. The installer is idempotent for identical content and refuses different
 existing files; review a specifically named Tools file before replacing it.
 
 The native helper uses `/usr/bin/python3` with system GI bindings for **GTK 3, WebKit2 4.1
-and AppIndicator3**. Install those OS runtimes and a working tray host first on another machine;
+and AppIndicator3** (`python3-gi`/PyGObject, including Gdk/Gio/GLib). Install those OS runtimes
+and a working tray host first on another machine;
 GNOME normally needs an AppIndicator extension. The launcher checks bindings/display before
 opening a window and reports missing components. The helper never imports the project's
 ML packages; the supervisor and modules run in the uv environment.
+Package names vary by distribution: Debian-family examples are `python3-gi`,
+`gir1.2-gtk-3.0`, `gir1.2-webkit2-4.1`, and `gir1.2-appindicator3-0.1` where available.
+This helper imports the **AppIndicator3** namespace specifically; an Ayatana-only package
+is not automatically interchangeable. Check without starting a window:
+
+```sh
+/usr/bin/python3 src/shp_photocraft_tools/desktop/controller.py \
+  --url http://127.0.0.1:18760/ \
+  --data-dir "${XDG_DATA_HOME:-$HOME/.local/share}/shp-photocraft-tools/webview" --check
+~/.local/bin/shp-photocraft-tools
+```
+
+The installer requires all three D&B model files even if only Crop will be used. To use the
+shell without installing desktop files, create `launcher.json` with the absolute paths and
+ports shown below, then run `uv run --no-sync shp-photocraft-tools --config /absolute/path/to/launcher.json --no-browser`
+and open http://127.0.0.1:18760/ promptly. This mode needs neither GI nor Ungoogled Chromium.
 
 | Service | Tools address |
 |---|---|
@@ -86,7 +179,8 @@ One failed module does not prevent opening the shell or using the other module.
 The launcher presents **one owned GTK/WebKit window**. Launching again shows the same window;
 **Close (X) hides to the tray**, preserving both module views. The GTK program class/Wayland
 app ID, desktop basename and `StartupWMClass` all match `shp-photocraft-tools`, giving one
-GNOME dash application. The separate tray icon is intentional.
+GNOME dash application. The separate tray icon is intentional: it uses a transparent
+greyscale version of the same artwork with a white outer border, while the window and launcher keep the coloured icon.
 
 The tray provides **Show Tools**, **Hide Tools**, **Quit Tools**, and **Crop / D&B** status
 submenus with **Start / Stop / Restart**. Busy work blocks unsafe actions. Loaded images
@@ -157,6 +251,7 @@ Standalone Crop still defaults to `http://127.0.0.1:8188`, overridden by `--comf
 ~/.local/share/applications/shp-photocraft-tools.desktop
 ~/Desktop/shp-photocraft-tools.desktop        # actual XDG desktop folder
 ~/.local/share/icons/hicolor/scalable/apps/shp-photocraft-tools.svg
+~/.local/share/icons/hicolor/scalable/apps/shp-photocraft-tools-tray.svg
 ~/.config/shp-photocraft-tools/launcher.json
 ```
 
@@ -180,9 +275,40 @@ Previous browser profiles are retained, not migrated.
 ## Using Crop and D&B
 
 **Crop:** **Get Image** from PhotoCraft, or choose a file supplied through standalone `--dir`.
+Select **method** in the settings pane:
+
+| Method | Generation and post-processing |
+|---|---|
+| **FLUX.2** (existing default) | GGUF reference-latent generation, optional Turbo LoRA, neural upscaler or Lanczos-only resizing, and optional seam correction. Existing saved settings are unchanged. |
+| **FLUX.1 Fill** | Native Fill conditioning; full Fill weights loaded FP8, CLIP-L + scaled FP8 T5 on CPU, 28 steps, guidance 30, 0.5 MP and feather 64 by default. Always colour matches and seam corrects, then pastes the original back at final resolution. Lanczos-only resizing by default, or an optional neural upscale model followed by exact-size Lanczos resizing. No LoRA. |
+
+Guidance, steps, megapixels, feather and model are saved separately for Fill; switching methods
+does not reinterpret FLUX.2 values. Fill's upscaler choice is also separate: **Lanczos (no model)**
+or any installed model offered by ComfyUI. FLUX.2 offers the same choices, retaining its
+existing neural model default. Neural upscaling
+runs after colour matching and before final-size seam correction/paste-back; it adds processing
+time/VRAM and can change generated detail. Only selecting a model requires upscale nodes/weights.
+The LoRA and seam toggle appear only for FLUX.2. Fill always uses the fully corrected pathway.
+Presets save both sets and the
+selected text-encoding device: **CPU** (default, lower VRAM) or **Default (GPU / auto)**,
+which lets ComfyUI manage GPU placement/offloading. Fitting depends on available memory;
+this is not a guarantee that both encoders and diffusion weights stay on the GPU.
+Presets also save the
+selected method; older settings/presets without a method load as FLUX.2. Factory settings
+reset both sets and select FLUX.2. Only the selected method's nodes/models gate Generate;
+see [MODELS.md](MODELS.md#crop-comfyui-models-and-nodes) for method-specific setup.
+
+Crop constructs its API graph in Python; no saved workflow JSON must be installed or opened
+in ComfyUI. Fill is based on the successful fully corrected comparison-workflow branch,
+not its raw/A/B outputs, and does not use Nunchaku or Turbo/Hyper LoRAs.
+
 Choose a ratio or Free, then drag the frame/corners/side handles. Each side can crop or expand,
 but generation requires new area. **Generate** creates 1-4 variations and becomes **Cancel**
-while working. Result tabs select the variation sent by **Send Result**. Wheel zoom, drag pan
+while working. Each completed variation appears immediately in a result tab while the rest
+continue generating; you can inspect completed results without interrupting the batch.
+New results do not replace the result you are viewing. Send stays disabled until generation
+stops. Cancel or a later variation's failure preserves completed results for selection/Send.
+Result tabs select the variation sent by **Send Result**. Wheel zoom, drag pan
 and double-click fit remain. Send resizes the source canvas and copies the generated RGBA layer,
 retaining best-effort single-undo grouping.
 
@@ -190,21 +316,109 @@ The empty-image instruction is removed; loaded dimensions/margins remain. Lowerc
 **turbo lora** and **seam colour correction** occupy separate right-aligned rows above
 model/upscaler selection, without a right inset.
 
-**D&B:** **Get Image** analyzes the portrait and updates synchronized previews. Detail level,
-Skin mask, Structure protection, Light range, Color range and Image analysis are independent
+**D&B:** **Get Image** analyzes the portrait and updates synchronized previews.
+**tau** sits alongside **edge**, in normal numeric direction (0.01–0.4, step 0.01; default 1).
+Lower tau more strongly suppresses corrections of large local log-luminance deviations;
+higher tau permits more correction. Edge instead controls guided-filter smoothing: lower
+values preserve weaker boundaries. Tau is included in existing presets; loading a positive
+legacy value outside the slider range preserves its actual value in the readout and requests;
+the handle stays at the nearest endpoint until moved. Slider bounds remain 0.01–0.4.
+
+Detail level, Skin mask, Structure protection, Light range, Color range and Image analysis are independent
 collapsible sections. Headers toggle them without arrows; mask switches have no static "on"
 text. Switches/pickers remain visible and independent when collapsed. Wheel zoom/drag pan,
 double-click reset, Shift-click crop changes and Ctrl-click tab cycling remain.
 
 **Send Result** copies a normal 16-bit RGB Soft Light layer and mask into the fetched document
-in one layer-copy operation; it never resizes the canvas. Manual load/apply/save endpoints
+in one layer-copy operation; it never resizes the canvas. Send tags its scratch RGB layer
+with the destination's actual ICC profile (read from a temporary merged duplicate), without
+converting the correction samples. This prevents cross-document colour conversion from moving
+neutral gray or changing correction strength in wide-gamut/linear documents. The mask remains
+separate and untagged; the destination's profile is never changed. Send fails visibly if the
+profile cannot be obtained. Manual load/apply/save endpoints
 remain available. Saved output includes the full-resolution JPEG, combined mask PNG,
-unmasked 16-bit RGB layer PNG and settings JSON. Correction math and ICC behavior are unchanged.
+unmasked 16-bit RGB layer PNG and settings JSON. Calculation, preview and manual-save colour
+handling are unchanged.
+
+### Skin tools inside D&B
+
+The **Skin tool** selector switches between **D&B layers** (the existing default),
+**Skin mask**, and **Frequency separation**, without fetching the picture again.
+All three use the same combined skin × picked color × light range × structure-protection
+mask. D&B strength, edge, tau and detail bands are correction controls only: they do not
+change the standalone mask or frequency split. Mask controls and the subject scale remain
+shared; edit Skin mask/feather, Structure protection, Light range and Color range in
+**Skin Mask mode**. Those sections are hidden in D&B and Frequency Separation to reduce
+clutter, but their values and on/off switches still apply in both. Switching modes does
+not reset the mask; presets still save the entire tool bundle. Image analysis/S and mask
+preview tabs remain available across modes. Frequency settings are separate preset fields.
+Old presets still select D&B.
+
+The preset star indicates edits to shared settings, including settings hidden in the current
+mode. Switching skin tabs or recalculating pixel radii from S does not mark a preset unsaved;
+Save clears the star across all three tabs. Presets still store and restore the chosen mode.
+Option tooltips appear only over their first-column labels, not sliders or value readouts.
+
+**Skin mask → Send Mask** adds a reusable grayscale RGB layer, not a mask on the selected
+PhotoCraft layer. Its numeric gray values match the displayed combined mask.
+With every mask component disabled the output is white (the whole image).
+
+**Frequency separation** has Gaussian or Median separation, controlled by
+**Radius** (a calibration in px at S = 181 px / 63 mm, default **6**). There are no direct pixel sliders.
+On each new image/Get, or an edit to S or calibration, the radius becomes
+`calibration × S / 181`, rounded to whole pixels and limited to 1–100 px (current values are shown in
+the Radius/Blur label tooltips). Thus S181 → 6 px, S362 → 12 px and S90.5 → 3 px.
+**Blur** is 100–500% (step 1%, default 200%): actual Blur Gaussian sigma is
+the **rounded/clamped separation radius × percentage / 100**, not a multiple of calibration.
+S181/calibration6 gives radius6/Blur12; S362 gives radius12/Blur24 at 200%.
+At radius100 and 500%, Blur is 500 px; there is no hidden 100 px Blur cap.
+Calibration (0.5–30 px in 0.1 steps) and percentage are saved independently. On preset
+load both radii are recalculated using the current S, never overridden by stored pixels.
+Legacy presets without a percentage derive it from `100 × blur_radius / radius`, limited
+to 100–500%; missing calibration defaults to 6. This migration is in memory only until
+saved. Legacy API requests without `blur_percent` retain their explicit pixel radii.
+No new detection runs: the existing full-resolution S is reused even when loading in D&B.
+If no valid S was estimated, enter it manually in Image analysis; no scale is guessed.
+For Gaussian, radius means sigma; for Median it is the square neighborhood's radius,
+rounded to the nearest pixel after preview scaling. These are not D&B's millimeter bands.
+Preview radii scale with the preview resolution; Send and Save calculate at full resolution.
+Color uses ordinary full-image Gaussian or Median filtering, completely independent of
+the skin mask. Median can be slower on large pictures/radii and OpenCV internally quantizes
+floating-point median values; Detail is derived from the actual resulting Color.
+
+**Send Layers** adds one **SHP Frequency Separation** folder in a single undo step:
+**Detail** (Linear Light) on top, **Blur** (Normal, combined skin layer mask) in the middle,
+and **Color** (Normal) at the bottom. **The folder, Detail and Color have no mask.**
+Color + Detail alone reconstructs the full fetched original within RGB16 rounding tolerance.
+Only Blur uses the skin mask: its extra Gaussian filter divides skin-weighted Color by
+the blurred mask, excluding non-skin samples before filtering without introducing black
+edges. Outside support it keeps Color unchanged. The same combined mask then feathers
+Blur as its actual layer mask, applying opacity once, not baking it into the pixels.
+This cannot undo color mixing already present in the ordinary full-image Color split.
+Blur is active immediately, smoothing skin tones under the unmasked Detail.
+Color and Detail tabs show unmasked layer data; **Blur** shows its feathered skin mask
+applied over Color, without Detail. **Result** shows the actual sent stack,
+including the active skin-masked Blur. There is no initial black paint-in mask.
+
+Separation stays in the fetched image's native numeric color space, even when analysis
+uses an sRGB conversion. All RGB16 scratch layers carry the actual destination ICC,
+without conversion of their values. A changed destination size/profile requires another
+Get. Frequency separation currently requires an **opaque** merged source; transparent
+images fail explicitly rather than silently losing transparency. No new models or
+dependencies are required. Manual Save writes `skinmask.png` and settings, plus RGB16
+`color.png`, `detail.png`, `blur.png` for frequency mode; settings include the layer recipe.
+Get/analysis still has the same model/GPU requirements as D&B.
 
 Both modules use the same **grey-off / blue-on horizontal switches**, dark dropdowns,
-compact preset controls and **Get Image / Send Result** labels. Native checkbox state,
-keyboard focus, labels, disabled behavior and settings handlers remain. Centered shell tabs
-keep both iframes mounted at the same size, preserving image/preview/zoom/prompt state.
+compact preset controls and **Get Image** action. D&B's Send label follows its selected
+skin-tool mode. Native checkbox state,
+keyboard focus, labels, disabled behavior and settings handlers remain. The Tools top tabs
+are **Crop · Skin Mask · Frequency Separation · D&B**. All three skin tabs reuse one
+D&B iframe/backend and the same fetched image, mask, settings and PhotoCraft identity.
+No view is reloaded when switching; presets synchronize the selected skin tab.
+Left/right arrow keys cycle all four tabs. The internal Skin tool selector is hidden only
+after a Tools handshake; standalone D&B keeps its selector and needs no shell.
+The two backend iframes stay mounted at the same size, preserving image/zoom/prompt state.
 Refreshing resets browser-only views; stopping a backend discards its in-memory work.
 
 ## Data and compatibility
@@ -238,7 +452,7 @@ Browser keys remain `shpx-*` / `dnb-*`, scoped to each origin and browser/WebKit
 
 ## Standalone and isolated runs
 
-Use alternate ports beside the originals; these commands do not automatically start/stop
+Use alternate ports beside other instances; these commands do not automatically start/stop
 PhotoCraft, ComfyUI or existing servers:
 
 ```sh
@@ -277,6 +491,7 @@ src/shp_photocraft_tools/
   modules/dnb/                engine/inference helpers, mask-send semantics and UI/server
 tests/                        isolated integration/regression fixtures
 desktop/, scripts/            desktop template/icon and per-user installer
+comfyui/custom_nodes/         separately installed SeamColorCorrect node source
 docs/source/                  frozen original technical notes
 ```
 
@@ -294,6 +509,10 @@ The second command additionally opens a temporary real GTK/WebKit test window on
 graphical display/tray host; it does not reload the live Tools window. Tests cover module math,
 graph/cancel/variations, settings/presets, separate Get/Send semantics, transport auth/reconnect,
 ICC/masks/save, proxy/ownership/confirmation/lifetime, desktop controls and ComfyUI queue safety.
+When `photocraft-cli` is installed, `tests/test_dnb_transfer.py` also launches an isolated stdio
+engine (never the desktop session). It reproduces the old neutral-gray shift and checks
+neutral/nonneutral corrections, exact masks and one-step copy across RGB profiles and bit depths.
+Run it alone with `uv run --no-sync python -m unittest discover -s tests -p test_dnb_transfer.py -v`.
 Wheel/sdist include both module UIs, shared assets, shell and native helper.
 
 [HANDOFF.md](HANDOFF.md) records the consolidated implementation decisions and validation

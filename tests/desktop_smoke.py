@@ -157,8 +157,16 @@ class Smoke(module.Desktop):
             self.evaluate("""
                 const c=window.fixtureCrop;
                 return {done:c.contentWindow.eval('X.hasResult&&!X.running'),
+                        partial:c.contentWindow.eval('X.hasResult&&X.running'),
+                        selected:c.contentWindow.eval('X.sel'),
+                        count:c.contentDocument.getElementById('xResTabs').children.length,
                         status:c.contentDocument.getElementById('status').textContent};
                 """, self.result)
+        elif self.phase == "fill-settings":
+            self.evaluate("""
+                const crop=fixtureCrop.contentWindow.fillSettingsCheck,skin=fixtureDnb.contentWindow.skinToolsCheck;
+                return crop&&skin ? {crop,skin} : null;
+                """, self.fill_settings_checked)
         elif self.phase == "dialog":
             self.dialog_action = "ok"
             self.phase = "dialog-wait"
@@ -258,9 +266,14 @@ class Smoke(module.Desktop):
         elif self.phase == "reload-wait":
             if not self.dialog_open and not self.reload_available:
                 self.evaluate("""
+                    if(!window.recoverySkinRequested&&document.getElementById('tab-frequency')?.onclick){
+                      document.getElementById('tab-frequency').click();window.recoverySkinRequested=true;
+                    }
                     const frames=[...document.querySelectorAll('iframe')];
                     const ready=frames.length===2&&frames.every(f=>f.contentDocument?.readyState==='complete'
-                        &&f.contentDocument.getElementById(f.title.endsWith('Crop')?'xGet':'pcGet'));
+                        &&f.contentDocument.getElementById(f.title.endsWith('Crop')?'xGet':'pcGet'))
+                        &&frames.find(f=>f.title.endsWith('D&B')).contentDocument.getElementById('toolModeRow').hidden
+                        &&frames.find(f=>f.title.endsWith('D&B')).contentWindow.eval("state.mode==='frequency'");
                     return {ready,stored:ready?localStorage.getItem('native-fixture'):null};
                     """, self.recovered)
         elif self.phase == "tray-cancel-wait":
@@ -361,10 +374,17 @@ class Smoke(module.Desktop):
             return
         if any(switch["transitioning"] for switches in result["switches"] for switch in switches):
             return
+        # WebKit can report no running animation one paint before the final color.
+        if not hasattr(self, "switch_color_deadline"):
+            self.switch_color_deadline = time.monotonic() + 1
+        if time.monotonic() < self.switch_color_deadline and any(
+                switch["background"] != ("rgb(76, 141, 255)" if switch["checked"] else "rgb(58, 63, 75)")
+                for switches in result["switches"] for switch in switches):
+            return
         self.expect(result["native"] and result["crypto"] == "function" and result["beacon"] == "function",
                     f"Missing browser APIs: {result}")
         self.expect(not result["repeatedTitle"], "Repeated shell title remains")
-        self.expect(len(result["dnbHeaders"]) == 6
+        self.expect(len(result["dnbHeaders"]) == 7
                     and all(header["arrow"] == "none" and header["label"] == ""
                             for header in result["dnbHeaders"]),
                     f"D&B collapse arrows or static switch labels remain: {result['dnbHeaders']}")
@@ -424,6 +444,27 @@ class Smoke(module.Desktop):
         self.evaluate("""
             window.fixtureCrop=document.querySelector('iframe[title="SHP PhotoCraft Crop"]');
             window.fixtureDnb=document.querySelector('iframe[title="SHP PhotoCraft D&B"]');
+            fixtureDnb.contentWindow.eval(`{
+              const original=getSettings(),check=(ok,msg)=>{if(!ok)throw Error(msg);};
+              check(sliders.tau.num.value==='1','tau default not shown');
+              check(sliders.tau.rng.min==='0.01'&&sliders.tau.rng.max==='0.4'
+                &&sliders.tau.rng.step==='0.01','tau range incorrect');
+              snapNow();
+              sliders.tau.rng.value='0.35';sliders.tau.rng.dispatchEvent(new Event('input'));
+              check(state.tau===0.35&&params().tau===0.35,'tau not wired to request');
+              check($('presetSel').selectedOptions[0].textContent.endsWith(' *'),'tau preset star missing');
+              const saved=getSettings();applySettings(original);applySettings(saved);
+              check(state.tau===0.35&&sliders.tau.num.value==='0.35','tau preset load missing');
+              for(const tau of [3,0.005]){
+                applySettings({...original,tau});
+                check(state.tau===tau&&getSettings().tau===tau&&params().tau===tau
+                  &&+sliders.tau.num.value===tau&&sliders.tau.rng.max==='0.4'
+                  &&sliders.tau.rng.min==='0.01','Legacy tau lost or bounds changed');
+              }
+              sliders.tau.rng.value='0.4';sliders.tau.rng.dispatchEvent(new Event('input'));
+              check(state.tau===0.4&&+sliders.tau.num.value===0.4,'Legacy tau slider edit failed');
+              applySettings(original);snapNow();
+            }`);
             if(document.querySelector('#services,#services-toggle,#confirm,[data-control]'))
               throw Error('Shell service details remain');
             if(fixtureCrop.contentDocument.querySelector('#xComfy,#xModelMsg'))
@@ -467,6 +508,7 @@ class Smoke(module.Desktop):
         self.expect(module.work_signature(self.original_request("/api/status")) == self.before_recovery,
                     "Renderer recovery restarted services or changed loaded work")
         self.steps.append("actual renderer termination, guarded Reload cancellation and recovery without service restart")
+        self.steps.append("recreated skin frame handshake honors queued Frequency tab")
         for name in ("crop", "dnb"):
             children = self.module_items[name].get_submenu().get_children()
             self.expect([c.get_label() for c in children] == ["Start", "Stop", "Restart"], "Tray submenu structure wrong")
@@ -501,17 +543,277 @@ class Smoke(module.Desktop):
     def loaded(self, result):
         if not result["loaded"]:
             return
+        self.phase = "fill-settings"
+        self.evaluate("""
+            fixtureDnb.contentWindow.eval(`(async()=>{
+              const check=(ok,message)=>{if(!ok)throw Error(message);};
+              try{
+                const wait=async test=>{
+                  for(let i=0;i<200;i++){if(test())return;await new Promise(r=>setTimeout(r,25));}
+                  throw Error('Shell mode synchronization timed out');
+                };
+                const shell=parent.document,frame=parent.fixtureDnb,src=frame.src,identity=state.pcFetched;
+                await wait(()=>$('toolModeRow').hidden);
+                check(getComputedStyle($('toolModeRow')).display==='none','Embedded selector still visible');
+                check([...shell.querySelectorAll('[role="tab"]')].map(t=>t.dataset.view).join(',')===
+                  'crop,mask,frequency,dnb','Shell tab order wrong');
+                const sharedBefore=JSON.stringify([params().mask,params().tone,params().color,params().structure]);
+                const zoomBefore=JSON.stringify(view);
+                for(const mode of ['mask','frequency','dnb']){
+                  shell.getElementById('tab-'+mode).click();
+                  await wait(()=>state.mode===mode&&!state.busy);
+                  check(shell.querySelectorAll('iframe').length===2&&frame===parent.fixtureDnb&&frame.src===src,
+                    'Shell duplicated/reloaded skin frame');
+                  check(state.pcFetched===identity&&JSON.stringify(view)===zoomBefore&&
+                    JSON.stringify([params().mask,params().tone,params().color,params().structure])===sharedBefore,
+                    'Shell navigation lost loaded identity/mask/view');
+                  check(shell.getElementById('panel-dnb').getAttribute('aria-labelledby')==='tab-'+mode&&
+                    !shell.getElementById('panel-dnb').inert,'Shared panel ARIA/inert wrong');
+                }
+                const selected=shell.getElementById('tab-dnb');
+                selected.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+                check(shell.getElementById('tab-crop').getAttribute('aria-selected')==='true','Arrow wrap failed');
+                shell.getElementById('tab-crop').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}));
+                await wait(()=>shell.getElementById('tab-dnb').getAttribute('aria-selected')==='true');
+                setBusy(true);
+                shell.getElementById('tab-mask').click();shell.getElementById('tab-frequency').click();
+                await new Promise(r=>setTimeout(r,50));
+                check(state.mode==='dnb','Shell switched modes while busy');
+                setBusy(false);clearTimeout(markDirty.t);
+                await wait(()=>state.mode==='frequency'&&shell.getElementById('tab-frequency').getAttribute('aria-selected')==='true');
+                shell.getElementById('tab-dnb').click();
+                await wait(()=>state.mode==='dnb');clearTimeout(markDirty.t);
+                const standalone=shell.createElement('iframe');standalone.hidden=true;standalone.src='dnb/';
+                shell.body.append(standalone);
+                await wait(()=>standalone.contentDocument?.readyState==='complete'&&
+                  standalone.contentDocument?.querySelector('#toolMode'));
+                check(!standalone.contentDocument.getElementById('toolModeRow').hidden,
+                  'Unconnected standalone selector hidden');
+                window.postMessage({type:'shp-tools-mode',mode:'mask',request:999},location.origin);
+                standalone.contentWindow.eval("parent.postMessage({type:'shp-skin-mode',mode:'mask',request:null},location.origin)");
+                await new Promise(r=>setTimeout(r,50));
+                check(state.mode==='dnb'&&shell.getElementById('tab-dnb').getAttribute('aria-selected')==='true',
+                  'Untrusted message source changed mode');
+                standalone.contentWindow.eval("$('toolMode').value='mask';$('toolMode').onchange()");
+                check(standalone.contentWindow.eval('state.mode')==='mask','Standalone mode selector broken');
+                standalone.remove();
+                const original=getSettings(),S=$('S').value;
+                check(state.frequency.radius_at_s181===6,'Calibration default missing');
+                check(!sliders.frequencyRadius&&!sliders.blurRadius,'Direct px sliders remain');
+                check(sliders.blurPercent.rng.min==='100'&&sliders.blurPercent.rng.max==='500'
+                  &&state.frequency.blur_percent===200,'Blur ratio bounds/default wrong');
+                for(const [scale,radius] of [[181,6],[362,12],[90.5,3],[10000,100],[1,1]]){
+                  $('S').value=scale;$('S').onchange();clearTimeout(markDirty.t);
+                  check(state.frequency.radius===radius,'S scaling/rounding/bounds wrong');
+                  check(state.frequency.blur_radius===2*radius,'Blur not derived from actual radius');
+                }
+                check(sliders.frequencyCalibration.lab.title.includes('limited'),'Clamp not explained');
+                check(!$('frequencyScaleNote')&&!$('g-frequency').querySelector('p'),'Frequency info text remains');
+                check(sliders.frequencyCalibration.lab.textContent==='Radius'&&sliders.blurPercent.lab.textContent==='Blur'
+                  &&sliders.frequencyCalibration.lab.title.includes('S = 181')&&sliders.blurPercent.lab.title.includes('percentage'),
+                  'Frequency slider names or label tooltips wrong');
+                check(![...document.querySelectorAll('aside .row, aside .row input, aside .row select')].some(e=>e.title),
+                  'Option tooltip outside label column');
+                check([...document.querySelectorAll('aside .row')].filter(r=>r.querySelector('input[type=range]'))
+                  .every(r=>r.querySelector('label').title),'Slider label tooltip missing');
+                $('S').value=181;$('S').onchange();clearTimeout(markDirty.t);
+                $('toolMode').value='frequency';$('toolMode').onchange();clearTimeout(markDirty.t);
+                check(state.frequency.radius===6,'Mode switch changed radius');
+                sliders.frequencyCalibration.rng.value='8';sliders.frequencyCalibration.rng.dispatchEvent(new Event('input'));
+                clearTimeout(markDirty.t);
+                check(state.frequency.radius===8&&params().frequency.radius_at_s181===8,'Calibration edit not applied');
+                applySettings({...original,frequency:{method:'median',radius:17,blur_radius:9}});
+                clearTimeout(markDirty.t);
+                check(state.frequency.radius_at_s181===6&&state.frequency.radius===6&&state.frequency.blur_percent===100,
+                  'Legacy ratio migration or derived radius incorrect');
+                applySettings({...original,frequency:{...original.frequency,radius:19,radius_at_s181:8}});
+                clearTimeout(markDirty.t);
+                check(state.frequency.radius===8&&state.frequency.blur_radius===16,'Stale preset radius overrides calculation');
+                const fetched=await api('/api/pc/fetch',{});
+                applyLoaded({...fetched,S:362});state.pcFetched=true;
+                check(state.frequency.radius===16&&state.frequency.blur_radius===32,
+                  'New image did not derive both radii');
+                sliders.blurPercent.rng.value='500';sliders.blurPercent.rng.dispatchEvent(new Event('input'));
+                $('S').value=10000;$('S').onchange();clearTimeout(markDirty.t);
+                check(state.frequency.radius===100&&state.frequency.blur_radius===500,'Blur silently capped');
+                applyLoaded({...fetched,S:null});state.pcFetched=true;
+                check($('S').value===''&&sliders.frequencyCalibration.lab.title.includes('No valid scale'),
+                  'Missing scale guessed silently');
+                applySettings(original);clearTimeout(markDirty.t);
+                applyLoaded(fetched);state.pcFetched=true;
+                check(state.frequency.radius===Math.max(1,Math.round(6*fetched.S/181)),
+                  'New load used last manual radius');
+                const idle=async()=>{while(state.busy)await new Promise(r=>setTimeout(r,25));};
+                const choose=async mode=>{
+                  $('toolMode').value=mode;$('toolMode').dispatchEvent(new Event('change'));
+                  clearTimeout(markDirty.t);await apply();await idle();
+                  check(!$('status').classList.contains('err'),$('status').textContent);
+                  check(['g-mask','g-structure','g-range','g-color'].every(id=>$(id).hidden===(mode!=='mask')),
+                    'Mask control visibility incorrect for '+mode+' (now '+state.mode+')');
+                };
+                await choose('mask');
+                sliders.feather.rng.value='2.3';sliders.feather.rng.dispatchEvent(new Event('input'));
+                sliders.toneStrength.rng.value='0.7';sliders.toneStrength.rng.dispatchEvent(new Event('input'));
+                $('structureOn').checked=true;$('structureOn').onchange();
+                sliders.protect.rng.value='0.4';sliders.protect.rng.dispatchEvent(new Event('input'));
+                clearTimeout(markDirty.t);await apply();await idle();
+                const shared=()=>JSON.stringify([params().mask,params().tone,params().color,params().structure]);
+                const edited=shared();
+                const maskPixels=await (await fetch('img/mask')).text();
+                for(const mode of ['dnb','frequency']){
+                  await choose(mode);
+                  check(shared()===edited,'Hidden shared mask state changed in '+mode);
+                  check(await (await fetch('img/mask')).text()===maskPixels,'Shared mask processing changed in '+mode);
+                }
+                await choose('frequency');
+                check($('g-bands').hidden&&!$('g-frequency').hidden,'Frequency controls not isolated');
+                check($('pcSend').textContent==='Send Layers'&&state.pcFetched,'Frequency send unavailable');
+                check([...$('tabsB').querySelectorAll('[data-k="color"],[data-k="detail"],[data-k="blur"]')].every(t=>!t.hidden),
+                  'Frequency layer previews hidden');
+                snapNow();
+                sliders.frequencyCalibration.rng.value='5';sliders.frequencyCalibration.rng.dispatchEvent(new Event('input'));
+                sliders.blurPercent.rng.value='300';sliders.blurPercent.rng.dispatchEvent(new Event('input'));
+                $('frequencyMethod').value='median';$('frequencyMethod').dispatchEvent(new Event('change'));
+                check(params().frequency.radius===5&&params().frequency.blur_radius===15&&params().frequency.method==='median',
+                  'Frequency controls not wired');
+                check($('presetSel').selectedOptions[0].textContent.endsWith(' *'),'Frequency preset star missing');
+                const saved=getSettings();
+                clearTimeout(markDirty.t);await apply();await idle();
+                await pcSend();check(!$('status').classList.contains('err'),'Frequency Send failed');
+                await storePreset('p:Skin fixture','Skin fixture');
+                const starred=()=>$('presetSel').selectedOptions[0].textContent.endsWith(' *');
+                const border=id=>getComputedStyle($(id)).borderTopWidth;
+                check(!starred(),'Saved preset still starred');
+                const loadedS=$('S').value;
+                await choose('dnb');
+                check(!starred(),'Mode navigation marked saved preset unsaved');
+                check(border('g-bands')==='0px'&&border('g-file')!=='0px','Detail level divider wrong');
+                $('S').value=+loadedS+20;$('S').onchange();clearTimeout(markDirty.t);
+                check(!starred(),'Derived S radius marked preset unsaved');
+                sliders.feather.rng.value='3.1';sliders.feather.rng.dispatchEvent(new Event('input'));clearTimeout(markDirty.t);
+                for(const mode of ['dnb','frequency','mask']){await choose(mode);check(starred(),'Hidden shared edit not starred in '+mode);}
+                check(border('g-mask')==='0px','Skin mask divider remains');
+                await storePreset('p:Skin fixture','Skin fixture');
+                for(const mode of ['frequency','dnb','mask']){await choose(mode);check(!starred(),'Save did not clear star in '+mode);}
+                sliders.feather.rng.value='2.3';sliders.feather.rng.dispatchEvent(new Event('input'));
+                $('S').value=loadedS;$('S').onchange();clearTimeout(markDirty.t);
+                await choose('frequency');
+                check(JSON.stringify(getSettings())===JSON.stringify(saved),'Fixture state not restored before final save');
+                await storePreset('p:Skin fixture','Skin fixture');
+                await choose('mask');
+                check($('g-bands').hidden&&$('g-frequency').hidden&&$('pcSend').textContent==='Send Mask',
+                  'Mask mode has correction controls');
+                check(!paneKinds().some(k=>['layer','layerm','detail'].includes(k)),'Stale mode preview');
+                await pcSend();check(!$('status').classList.contains('err'),'Mask Send failed');
+                $('presetSel').value='p:Skin fixture';$('presetSel').onchange();
+                clearTimeout(markDirty.t);await apply();await idle();
+                await wait(()=>shell.getElementById('tab-frequency').getAttribute('aria-selected')==='true');
+                check(state.mode==='frequency'&&JSON.stringify(getSettings())===JSON.stringify(saved),
+                  'Skin tool preset did not restore');
+                await api('/api/presets/delete',{name:'Skin fixture'});
+                applySettings(original);clearTimeout(markDirty.t);await apply();await idle();snapNow();
+                check(state.mode==='dnb'&&!$('g-bands').hidden&&$('g-frequency').hidden&&$('S').value===S,
+                  'D&B or loaded scale lost');
+                window.skinToolsCheck={ok:true};
+              }catch(e){window.skinToolsCheck={error:String(e)};}
+            })()`);
+            fixtureCrop.contentWindow.eval(`(async()=>{
+              const check=(ok,message)=>{if(!ok)throw Error(message);};
+              try{
+                const original=(await api('/api/status',{})).settings,seq=X.seq;
+                check(![...document.querySelectorAll('aside .row, aside .row input, aside .row select')].some(e=>e.title)
+                  &&[...document.querySelectorAll('aside .row')].filter(r=>r.querySelector('input[type=range]'))
+                  .every(r=>r.querySelector('label').title),'Crop option tooltip outside label column');
+                const select=$('smethod');
+                select.value='flux1_fill';select.dispatchEvent(new Event('change'));
+                while(X.settingsSaving)await new Promise(r=>setTimeout(r,25));
+                check(isFill()&&X.ready,'Fill method did not become ready');
+                check(+$('sguidance').value===30&&+$('ssteps').value===28
+                  &&+$('sfeathering').value===64,'Fill defaults were not shown');
+                check($('sunet').value==='flux1-fill-dev.safetensors','Wrong Fill model');
+                check(['lora','seam_correction'].every(k=>
+                  getComputedStyle($('s'+k).closest('.row')).display==='none'),
+                  'FLUX.2-only controls still visible');
+                check($('sguidance').max==='100','Fill guidance range incorrect');
+                const upscale=$('supscale');
+                check(upscale.value==='lanczos'&&!upscale.closest('.row').hidden,
+                  'Fill Lanczos default missing');
+                upscale.value=original.upscale;upscale.dispatchEvent(new Event('change'));
+                while(X.settingsSaving)await new Promise(r=>setTimeout(r,25));
+                check((await api('/api/status',{})).settings.fill_upscale===original.upscale,
+                  'Fill upscale option not saved');
+                const device=$('sfill_clip_device');
+                check(device.value==='cpu'&&!$('fillDeviceRow').hidden,'Fill device default missing');
+                device.value='default';device.dispatchEvent(new Event('change'));
+                while(X.settingsSaving)await new Promise(r=>setTimeout(r,25));
+                check((await api('/api/status',{})).settings.fill_clip_device==='default',
+                  'Fill encoding device not saved');
+                $('ssteps').value=31;$('ssteps').dispatchEvent(new Event('change'));
+                while(X.settingsSaving)await new Promise(r=>setTimeout(r,25));
+                const saved=(await api('/api/status',{})).settings;
+                check(saved.fill_steps===31&&saved.steps===original.steps,
+                  'Method settings overwritten');
+                await presetCall('/api/presets/save',{name:'Fill fixture'});
+                await saveSettings({method:'flux2'});
+                check($('sguidance').max==='10'&&+$('sfeathering').value===original.feathering,
+                  'FLUX.2 settings not restored');
+                check(getComputedStyle($('supscale').closest('.row')).display!=='none',
+                  'FLUX.2 upscaler did not reappear');
+                upscale.value='lanczos';upscale.dispatchEvent(new Event('change'));
+                while(X.settingsSaving)await new Promise(r=>setTimeout(r,25));
+                const flux2Saved=(await api('/api/status',{})).settings;
+                check(X.ready&&flux2Saved.upscale==='lanczos'
+                  &&flux2Saved.fill_upscale===original.upscale,'FLUX.2 Lanczos not independent');
+                await presetCall('/api/presets/load',{name:'Fill fixture'});
+                check(isFill()&&+$('ssteps').value===31,'Fill preset not restored');
+                check($('sfill_clip_device').value==='default','Fill preset lost encoding device');
+                check($('supscale').value===original.upscale,'Fill preset lost upscaler');
+                $('ssteps').value=32;$('ssteps').dispatchEvent(new Event('input'));
+                check($('presetSel').selectedOptions[0].textContent.endsWith(' *'),'Preset star missing');
+                await saveSettings(original);
+                await presetCall('/api/presets/delete',{name:'Fill fixture'});
+                check(X.seq===seq&&!!X.img,'Method selection lost loaded image');
+                window.fillSettingsCheck={ok:true};
+              }catch(e){window.fillSettingsCheck={error:String(e)};}
+            })()`);
+            return true;
+            """, lambda _: None)
+
+    def fill_settings_checked(self, result):
+        if result is None:
+            return
+        self.expect(result["crop"].get("ok"), f"Fill method UI: {result['crop']}")
+        self.expect(result["skin"].get("ok"), f"Skin tools UI: {result['skin']}")
+        self.steps.append("Fill method controls, separate settings, preset save/load/star and retained image")
+        self.steps.append("D&B / Skin Mask / Frequency modes, independent pixel radii, median preview, full-resolution Send and preset roundtrip")
+        self.original_request("/crop/api/test/variation-delay", {"seconds": 1})
+        self.saw_partial = False
         self.phase = "result"
         self.evaluate("""
             document.getElementById('tab-crop').click();
             fixtureCrop.contentDocument.querySelector('#xRatios [data-i="3"]').click();
+            fixtureCrop.contentDocument.getElementById('xVar').value='4';
             fixtureCrop.contentDocument.getElementById('xRun').click();
             return true;
             """, lambda _: None)
 
     def result(self, result):
+        if result.get("partial") and not self.saw_partial:
+            self.saw_partial = True
+            self.expect(result["count"] < 4, "Partial results waited for whole batch")
+            self.steps.append("completed variation visible while remaining variations generate")
+        if result.get("partial") and result["count"] >= 2 and not getattr(self, "picked_partial", False):
+            self.picked_partial = True
+            self.evaluate("""
+                fixtureCrop.contentDocument.getElementById('xResTabs').children[1].click();
+                return true;
+                """, lambda _: None)
+            return
         if not result["done"]:
             return
+        self.expect(self.saw_partial and result["count"] == 4, "Incremental four-result preview failed")
+        self.expect(getattr(self, "picked_partial", False) and result["selected"] == 1,
+                    "Later results stole the selected partial preview")
         self.phase = "result-check"
         self.evaluate("""
             const c=fixtureCrop,d=fixtureDnb;

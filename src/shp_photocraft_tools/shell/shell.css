@@ -19,6 +19,7 @@ body { display:flex; flex-direction:column; background:var(--bg, #17191c); color
 .placeholder { padding:30px; color:#bac2ca; }
 @media (max-width:640px) {
   .shell-header { padding:5px 7px 0; }
-  .shell-header [role="tab"] { padding:8px 12px; }
+  .shell-header [role="tab"] { padding:8px 5px; font-size:11px; white-space:normal; }
+  .badge { display:block; }
   .badge { margin-left:3px; }
 }

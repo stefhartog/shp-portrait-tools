@@ -61,6 +61,7 @@ def main():
     entry = (ROOT / "desktop" / f"{NAME}.desktop.in").read_text().replace("@LAUNCHER@", quoted_launcher)
     files = {launcher: wrapper, config_path: json.dumps(config, indent=2) + "\n",
              application: entry, desktop / f"{NAME}.desktop": entry, icon: (ROOT / "desktop" / f"{NAME}.svg").read_text()}
+    files[icon.with_name(f"{NAME}-tray.svg")] = (ROOT / "desktop" / f"{NAME}-tray.svg").read_text()
     for path, content in files.items():
         if path.exists() and path.read_text() != content:
             parser.error(f"Refusing to overwrite an existing different file: {path}. Review/remove that specific new-tools file to reinstall.")

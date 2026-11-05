@@ -114,19 +114,26 @@ def api_run(req):
     for k in [k for k in STATE["imgs"] if k.startswith("xvar")]:
         del STATE["imgs"][k]
 
+    def publish(index, result):
+        preview = jpeg_bytes(result["canvas"], 92, 2400)
+        STATE["imgs"][f"xvar{index}"] = preview
+        if index == 0:
+            STATE["imgs"]["xresult"] = preview
+
     def work():
         try:
-            results = X.expand_variations(img, margins, prompt, job, seed, settings, variations)
-            for i, r in enumerate(results):
-                STATE["imgs"][f"xvar{i}"] = jpeg_bytes(r["canvas"], 92, 2400)
-            STATE["imgs"]["xresult"] = jpeg_bytes(results[0]["canvas"], 92, 2400)
+            X.expand_variations(img, margins, prompt, job, seed, settings, variations, on_result=publish)
             with job.lock:
                 job.state, job.fraction, job.text, job.message = "done", 1.0, "Done", ""
         except Exception as e:  # shown on the page
             cancelled = job.cancel or isinstance(e, X.Cancelled)
             with job.lock:
                 job.state = "cancelled" if cancelled else "error"
-                job.message = "Cancelled: nothing was changed." if cancelled else (str(e) if isinstance(e, X.ExpandError) else f"{type(e).__name__}: {e}")
+                if cancelled:
+                    job.message = (f"Cancelled. Kept {len(job.results)} completed result(s)." if job.results
+                                   else "Cancelled: nothing was changed.")
+                else:
+                    job.message = str(e) if isinstance(e, X.ExpandError) else f"{type(e).__name__}: {e}"
 
     STATE["thread"] = threading.Thread(target=work, daemon=True)
     STATE["thread"].start()
@@ -257,7 +264,7 @@ def api_preset_load(req):
     if name is None:
         X.fill_settings(SETTINGS_FILE, reset=True)
     elif name in d["presets"]:
-        X.fill_settings(SETTINGS_FILE, d["presets"][name])
+        X.fill_settings(SETTINGS_FILE, {**X.DEFAULTS, **d["presets"][name]})
     else:
         raise ValueError("no such preset")
     d["last"] = name

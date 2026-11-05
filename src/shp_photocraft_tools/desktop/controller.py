@@ -119,7 +119,7 @@ def external_lines(external):
 
 
 class Desktop(Gtk.Application):
-    def __init__(self, url, data, icon=None):
+    def __init__(self, url, data, icon=None, tray_icon=None):
         self.base = validate_url(url)
         # GTK3's Wayland app_id follows the program class, not the D-Bus application ID.
         GLib.set_prgname("shp-photocraft-tools")
@@ -129,6 +129,7 @@ class Desktop(Gtk.Application):
         super().__init__(application_id=f"org.shp.PhotoCraftTools.p{identifier}",
                          flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.data, self.icon = data, icon
+        self.tray_icon = tray_icon
         self.connection = Connection(self.base)
         self.window = self.view = self.indicator = None
         self.quitting = self.dialog_open = False
@@ -263,7 +264,7 @@ class Desktop(Gtk.Application):
 
     def create_tray(self):
         self.indicator = AppIndicator3.Indicator.new(
-            self.get_application_id(), str(self.icon) if self.icon and self.icon.is_file() else "applications-graphics",
+            self.get_application_id(), str(self.tray_icon) if self.tray_icon and self.tray_icon.is_file() else "shp-photocraft-tools-tray",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS)
         self.indicator.set_title("SHP PhotoCraft Tools")
         menu = Gtk.Menu()
@@ -638,6 +639,7 @@ def main():
     parser.add_argument("--url", required=True)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--icon", type=Path)
+    parser.add_argument("--tray-icon", type=Path)
     parser.add_argument("--check", action="store_true", help="check bindings/display only; no window or services")
     args = parser.parse_args()
     validate_url(args.url)
@@ -647,7 +649,7 @@ def main():
     if args.check:
         print("GTK3/WebKit2 4.1/AppIndicator3 and graphical display available")
         return
-    app = Desktop(args.url, args.data_dir, args.icon)
+    app = Desktop(args.url, args.data_dir, args.icon, args.tray_icon)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda: (app.request_quit(), True)[1])
     raise SystemExit(app.run([sys.argv[0]]))
 

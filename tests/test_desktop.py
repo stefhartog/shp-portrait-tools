@@ -20,6 +20,7 @@ class DesktopCommandTests(unittest.TestCase):
         self.assertEqual(command[0], "/usr/bin/python3")
         self.assertTrue(command[1].endswith("desktop/controller.py"))
         self.assertIn("--data-dir", command)
+        self.assertTrue(command[command.index("--tray-icon") + 1].endswith("shp-photocraft-tools-tray.svg"))
         self.assertEqual(command[command.index("--url") + 1], "http://127.0.0.1:18760/")
         self.assertEqual(run.call_args.args[0], [*command, "--check"])
 

@@ -32,6 +32,7 @@ from . import dodge_burn as D
 from . import skin_mask as K
 from . import skin_mask_compare as M
 from . import photocraft_bridge as PCB
+from . import frequency_separation as FS
 from .paths import DATA, MODELS
 
 ROOT = DATA
@@ -40,7 +41,8 @@ PRESETS = ROOT / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
 STATE = {"img": None, "path": None, "S": None, "centre": None, "imgs": {}, "version": 0, "region_key": None, "region": None,
-         "masks": None, "icc": None, "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None}
+         "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True,
+         "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None}
 DIRS = []
 
 
@@ -51,9 +53,10 @@ def u8(x):
 def encode(bgr_or_gray, fmt=".jpg", q=90, icc=None):
     """Encode for the browser / file. A JPEG carries the picture's ICC profile when there is one, so the browser (and
     Photoshop / PhotoCraft) show the colours as in the original instead of reading them as sRGB."""
-    if icc and fmt == ".jpg" and bgr_or_gray.ndim == 3:
+    if icc and fmt in (".jpg", ".png") and bgr_or_gray.ndim == 3:
         buf = io.BytesIO()
-        Image.fromarray(cv2.cvtColor(bgr_or_gray, cv2.COLOR_BGR2RGB)).save(buf, "JPEG", quality=q, icc_profile=icc)
+        Image.fromarray(cv2.cvtColor(bgr_or_gray, cv2.COLOR_BGR2RGB)).save(
+            buf, "JPEG" if fmt == ".jpg" else "PNG", quality=q, icc_profile=icc)
         return buf.getvalue()
     ok, buf = cv2.imencode(fmt, bgr_or_gray, [cv2.IMWRITE_JPEG_QUALITY, q] if fmt == ".jpg" else [])
     return buf.tobytes()
@@ -97,9 +100,15 @@ def list_images():
 
 
 def parse_params(p):
-    bands = [(float(b[0]), float(b[1]), float(b[2]), max(float(b[3]), 1e-3)) for b in p["bands"] if float(b[1]) > float(b[0])]
-    if not bands:
+    mode = p.get("mode", "dnb")
+    if mode not in ("dnb", "mask", "frequency"):
+        raise ValueError("mode must be dnb, mask or frequency")
+    bands = [(float(b[0]), float(b[1]), float(b[2]), max(float(b[3]), 1e-3)) for b in p.get("bands", []) if float(b[1]) > float(b[0])]
+    if not bands and mode == "dnb":
         raise ValueError("no valid band (HI must be larger than LO)")
+    S = float(p["S"])
+    if not math.isfinite(S) or S <= 0:
+        raise ValueError("S must be a positive finite scale (pixels per 63 mm)")
     tone = p.get("tone", {})
     on = bool(tone.get("on", True))
     tone_pairs = D.tone_from_mid(float(tone.get("mid", 0.52)), float(tone.get("range", 0.87)), float(tone.get("taper", 0.16)))
@@ -123,10 +132,11 @@ def parse_params(p):
                     "saturation_range": min(1.0, max(0.01, color_saturation_range)),
                     "blur_mm": color_blur_mm, "smooth_mm": color_smooth_mm, "strength": color_strength}
     return dict(
+        mode=mode, frequency=FS.settings(p) if mode == "frequency" else None,
         protect=min(1.0, max(0.0, float(st.get("protect", 0.0)))), protect_mm=max(0.5, float(st.get("mm", 4.0))),
         protect_thr=max(0.005, float(st.get("thr", 0.1))),
         tone_strength=min(1.0, max(0.0, float(tone.get("strength", 1.0)))), color_filter=color_filter, analysis=p.get("analysis", {}),
-        mask_flags=mask_flags, S=float(p["S"]), bands=bands, strength=float(p.get("strength", 1.0)), edge=max(float(p.get("edge", 0.12)), 1e-3),
+        mask_flags=mask_flags, S=S, bands=bands, strength=float(p.get("strength", 1.0)), edge=max(float(p.get("edge", 0.12)), 1e-3),
         tau=float(p.get("tau", 1.0)), max_ev=float(p.get("max_ev", 1.0)),
         shadows=tone_pairs[0] if on else None, highlights=tone_pairs[1] if on else None,
     )
@@ -156,6 +166,15 @@ def add_color_range(img, mask, color_filter, px_per_mm):
     cm = D.color_range_mask(img, c["hue"], c["saturation"], c["hue_range"], c["saturation_range"],
                            c["blur_mm"] * px_per_mm, c["strength"], c["smooth_mm"] * px_per_mm)
     return cm if mask is None else mask * cm
+
+
+def tool_mask(img, masks, p, S):
+    flags = p["mask_flags"]
+    mask = combine_mask(masks, flags, S / D.IPD_MM) if flags["on"] and masks else None
+    mask = add_color_range(img, mask, p["color_filter"], S / D.IPD_MM)
+    total, structure = D.combined_mask(img, S, mask, p["shadows"], p["highlights"],
+                                       p["tone_strength"], p["protect"], p["protect_mm"], p["protect_thr"])
+    return mask, total, structure
 
 
 CROP_SIDES = {"detail": 2.5, "crop": 6.0}  # side of the preview crop in units of S (63 mm); anything else = whole image
@@ -200,6 +219,12 @@ def api_load(req):
     if raw is None:
         raise ValueError(f"cannot read {path}")
     img = raw.astype(np.float32) / (65535.0 if raw.dtype == np.uint16 else 255.0)
+    source_img = img
+    with Image.open(path) as source:
+        source_icc = source.info.get("icc_profile")
+    original = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    opaque = not (original.ndim == 3 and original.shape[2] == 4 and
+                  np.any(original[..., 3] != np.iinfo(original.dtype).max))
     h, w = img.shape[:2]
     raw8 = raw if raw.dtype == np.uint8 else (raw / 257.0).astype(np.uint8)
     mode, icc_out, converted, colour_note = colour_plan(path, raw8)
@@ -225,7 +250,9 @@ def api_load(req):
             skin_colour = {"hue": float(hsv[0]), "saturation": float(hsv[1]), "light": skin_light,
                            "rgb": np.round(np.clip(bgr[::-1], 0, 1) * 255).astype(int).tolist()}
     STATE.update(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
-                 seen=seen, pbox=pbox, last=None, struct=None, avers=0)
+                 seen=seen, pbox=pbox, last=None, struct=None, avers=0,
+                 source_img=source_img, source_icc=source_icc, source_opaque=opaque)
+    BRIDGE["doc"] = None
     return {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
             "seconds": round(time.time() - t0, 1), "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour}
 
@@ -342,6 +369,8 @@ def api_run(req):
     p = parse_params(req)
     view = req.get("view", "crop")
     reg, k, mreg = get_region(view, p["S"])
+    if p["mode"] != "dnb":
+        return run_skin_preview(p, reg, k, mreg)
     flags = p["mask_flags"]
     mask = combine_mask(mreg, flags, p["S"] * k / D.IPD_MM) if (flags["on"] and mreg) else None
     mask = add_color_range(reg, mask, p["color_filter"], p["S"] * k / D.IPD_MM)
@@ -377,6 +406,49 @@ def api_run(req):
     return {"version": STATE["version"], "avers": STATE["avers"], "stats": stats}
 
 
+def source_region(shape):
+    x, y, w, h = STATE["region_box"]
+    src = STATE["source_img"][y:y + h, x:x + w]
+    return cv2.resize(src, (shape[1], shape[0]), interpolation=cv2.INTER_AREA) if src.shape != shape else src
+
+
+def frequency_layers(img, mask, p, scale=1):
+    if not STATE["source_opaque"]:
+        raise ValueError("frequency separation currently needs an opaque merged image; flatten transparency before Get")
+    f = p["frequency"]
+    return FS.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale)
+
+
+def run_skin_preview(p, reg, k, mreg):
+    t = time.time()
+    mask, total, structure = tool_mask(reg, mreg, p, p["S"] * k)
+    show = np.ones(reg.shape[:2], np.float32) if total is None else total
+    STATE["last"] = {"reg": reg, "k": k, "skin": mask, "mreg": mreg, "S": p["S"] * k,
+                     "off": STATE["region_off"], "mm": p["protect_mm"], "thr": p["protect_thr"]}
+    STATE["struct"] = ((p["S"] * k, p["protect_mm"], p["protect_thr"]), structure) if structure is not None else None
+    imgs = {"orig": encode(u8(reg), ".jpg", 92, STATE["icc"]), "mask": encode(u8(show), ".png")}
+    if p["mode"] == "mask":
+        imgs["result"] = encode(u8(show), ".jpg", 92)
+    else:
+        src = source_region(reg.shape)
+        layers = frequency_layers(src, show, p, k)
+        icc = STATE["source_icc"]
+        imgs["orig"] = encode(u8(src), ".jpg", 92, icc)
+        imgs.update({key: encode(u8(a), ".png", icc=icc) for key, a in layers.items()})
+        quantized = {key: FS.rgb16(a).astype(np.float32) / 65535 for key, a in layers.items()}
+        opacity = u8(show).astype(np.float32) / 255
+        masked_blur = quantized["color"] + (quantized["blur"] - quantized["color"]) * opacity[..., None]
+        imgs["blur"] = encode(u8(masked_blur), ".png", icc=icc)
+        result = FS.composite(quantized, opacity)
+        imgs["result"] = encode(u8(result), ".jpg", 92, icc)
+    STATE["imgs"] = imgs
+    STATE["version"] += 1
+    render_analysis(p["analysis"])
+    return {"version": STATE["version"], "avers": STATE["avers"], "stats": {
+        "preview_px": [reg.shape[1], reg.shape[0]], "seconds": round(time.time() - t, 2),
+        "mask_used": total is not None, "mask_pct": round(100 * float((show > 0.5).mean()), 1)}}
+
+
 def api_save(req):
     """Writes the three files for a layer-based workflow (Photoshop / PhotoCraft):
     1_result: the picture with the settings applied, 2_skinmask: the combined mask to apply to layer 3, and
@@ -384,6 +456,8 @@ def api_save(req):
     if STATE["img"] is None:
         raise ValueError("load an image first")
     p = parse_params(req)
+    if p["mode"] != "dnb":
+        return save_skin(req, p)
     t = time.time()
     img = STATE["img"]
     flags = p["mask_flags"]
@@ -412,6 +486,27 @@ def api_save(req):
                     soft_light="W3C soft-light formula; Photoshop's soft light differs slightly",
                     colour=("embedded ICC profile written into the result JPEG" if STATE["icc"] else "no profile written (source had none)"))
     (out / "settings.json").write_text(json.dumps(settings, indent=2))
+    return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
+
+
+def save_skin(req, p):
+    t = time.time()
+    _, total, _ = tool_mask(STATE["img"], STATE["masks"], p, p["S"])
+    mask = np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+    layers = frequency_layers(STATE["source_img"], mask, p) if p["mode"] == "frequency" else {}
+    stem = Path(STATE["path"]).stem
+    out = ROOT / "results" / f"{stem}_{p['mode']}_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
+    out.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(out / "skinmask.png"), u8(mask)):
+        raise ValueError("could not write skin mask")
+    for key, pixels in layers.items():
+        (out / f"{key}.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(pixels), STATE["source_icc"] or SRGB_ICC))
+    (out / "settings.json").write_text(json.dumps({**req, "image": STATE["path"],
+        "layer_recipe": ("Detail: Linear Light, unmasked; Blur: Normal with skinmask.png; Color: Normal, unmasked. "
+                         "Group: Normal, unmasked. Top-down: Detail / Blur / Color."
+                         if layers else "skinmask.png: reusable grayscale layer in Normal mode."),
+        "pixels": "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
+                  "Median uses equal votes among positive-mask samples. RGB16, source numeric space."}, indent=2))
     return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
 
 
@@ -445,6 +540,16 @@ def api_pc_send(req):
         raise ValueError("get a picture from PhotoCraft first")
     p = parse_params(req)
     img = STATE["img"]
+    if p["mode"] != "dnb":
+        _, total, _ = tool_mask(img, STATE["masks"], p, p["S"])
+        mask = np.ones(img.shape[:2], np.float32) if total is None else total
+        if p["mode"] == "mask":
+            r = bridge().send_mask(u8(mask), BRIDGE["doc"])
+        else:
+            layers = frequency_layers(STATE["source_img"], mask, p)
+            r = bridge().send_frequency({key: FS.rgb16(a) for key, a in layers.items()}, u8(mask),
+                                        BRIDGE["doc"], STATE["source_icc"])
+        return {"sent": True, **r}
     flags = p["mask_flags"]
     full_mask = combine_mask(STATE["masks"], flags, p["S"] / D.IPD_MM) if STATE["masks"] else None
     mask = full_mask if flags["on"] else None

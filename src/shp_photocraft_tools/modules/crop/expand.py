@@ -5,7 +5,8 @@ contains the picture or lies inside it) into the margins on each side: positive 
 
 Generation: `expand_variations()` uploads the picture to ComfyUI (http://127.0.0.1:8188 or SHPC_COMFY), queues the graph
 from `build_graph()` (FLUX.2 [dev] GGUF, reference-latent outpaint, colour match, upscale, seam correction, feathered paste
-of the original) and reads the finished picture back. No other backend is involved.
+of the original), or native FLUX.1 Fill with Lanczos final resizing, and reads the finished picture back.
+No external workflow JSON or other backend is involved.
 """
 import base64
 import io
@@ -34,6 +35,12 @@ MAX_VARIATIONS = 4
 CLIP_NAME = os.environ.get("SHPC_CLIP", "mistral_3_small_flux2_fp8.safetensors")
 VAE_NAME = os.environ.get("SHPC_VAE", "flux2-vae.safetensors")
 LORA_NAME = os.environ.get("SHPC_LORA", "Flux_2-Turbo-LoRA_comfyui.safetensors")
+FILL_CLIP_L = os.environ.get("SHPC_FILL_CLIP_L", "clip_l.safetensors")
+FILL_T5 = os.environ.get("SHPC_FILL_T5", "t5xxl_fp8_e4m3fn_scaled.safetensors")
+FILL_VAE = os.environ.get("SHPC_FILL_VAE", "ae.safetensors")
+FILL_PROMPT = ("A realistic photograph, a natural continuation of the existing scene into the surrounding empty canvas, "
+               "consistent lighting, colors, perspective, depth of field and detail. Seamless scene continuation, "
+               "no frame, no border, no flat gray margins.")
 BASE_PROMPT = ("Outpaint this image. The flat gray margin around the photo is empty canvas and must NOT remain: fill the "
                "entire gray margin with new realistic scene content that naturally continues the photograph in every "
                "direction, with matching lighting, colors, perspective, depth of field and detail. No gray, no border, "
@@ -44,12 +51,23 @@ SETTINGS = {
     "guidance": (float, 1, 10, 3.5), "steps": (int, 1, 50, 8), "megapixels": (float, 0.25, 2, 0.5),
     "feathering": (int, 0, 512, 128), "lora": (bool, 0, 1, True), "seam_correction": (bool, 0, 1, True),
     "unet": (str, 0, 0, "flux2-dev-q3_k_m.gguf"), "upscale": (str, 0, 0, "4xNomos8k_atd_jpg.safetensors"),
+    "method": (str, 0, 0, "flux2"),
+    "fill_guidance": (float, 1, 100, 30.0), "fill_steps": (int, 1, 50, 28),
+    "fill_megapixels": (float, 0.25, 2, 0.5), "fill_feathering": (int, 0, 512, 64),
+    "fill_unet": (str, 0, 0, "flux1-fill-dev.safetensors"),
+    "fill_clip_device": (str, 0, 0, "cpu"),
+    "fill_upscale": (str, 0, 0, "lanczos"),
 }
 DEFAULTS = {k: v[3] for k, v in SETTINGS.items()}
 REQUIRED_NODES = ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly", "ImagePadForOutpaint",
                   "ImageScaleToTotalPixels", "ReferenceLatent", "EmptyFlux2LatentImage", "Flux2Scheduler",
                   "SamplerCustomAdvanced", "INPAINT_ColorMatch", "UpscaleModelLoader", "ImageUpscaleWithModel",
                   "SeamColorCorrect", "ImageCompositeMasked"]
+FILL_REQUIRED_NODES = ["LoadImage", "ImagePadForOutpaint", "ImageScaleToTotalPixels", "GetImageSize",
+                       "MaskToImage", "ImageScale", "ImageToMask", "UNETLoader", "DualCLIPLoader", "VAELoader",
+                       "CLIPTextEncode", "FluxGuidance", "ConditioningZeroOut", "InpaintModelConditioning",
+                       "KSampler", "VAEDecode", "INPAINT_ColorMatch", "SeamColorCorrect", "InvertMask",
+                       "ImageCompositeMasked", "PreviewImage"]
 
 
 class ExpandError(RuntimeError):
@@ -139,7 +157,12 @@ def load_settings(path):
         saved = json.loads(Path(path).read_text())
     except (OSError, ValueError):
         saved = {}
-    return {k: saved[k] if isinstance(saved.get(k), type(d)) else d for k, d in DEFAULTS.items()}
+    cur = {k: saved[k] if isinstance(saved.get(k), type(d)) else d for k, d in DEFAULTS.items()}
+    if cur["method"] not in ("flux2", "flux1_fill"):
+        raise ExpandError(f"unknown generation method: {cur['method']}")
+    if cur["fill_clip_device"] not in ("cpu", "default"):
+        raise ExpandError(f"unknown Fill text encoding device: {cur['fill_clip_device']}")
+    return cur
 
 
 def fill_settings(path, values=None, reset=False):
@@ -157,6 +180,10 @@ def fill_settings(path, values=None, reset=False):
             raise ExpandError(f"{k} must be between {lo} and {hi}")
         if kind is str and not v.strip():
             raise ExpandError(f"{k} must not be empty")
+        if k == "method" and v not in ("flux2", "flux1_fill"):
+            raise ExpandError(f"unknown generation method: {v}")
+        if k == "fill_clip_device" and v not in ("cpu", "default"):
+            raise ExpandError(f"unknown Fill text encoding device: {v}")
         cur[k] = v
     if reset or values:
         p = Path(path)
@@ -170,6 +197,11 @@ def fill_settings(path, values=None, reset=False):
 def build_graph(image_name, margins, prompt, seed, s):
     """The API-format ComfyUI graph for one expansion. `s` is the settings dict. Outputs: node "out" (the picture, original
     pasted back through a feathered mask) and node "mask" (1 where the picture is new, soft inside the original)."""
+    method = s.get("method", "flux2")
+    if method == "flux1_fill":
+        return build_fill_graph(image_name, margins, prompt, seed, s)
+    if method != "flux2":
+        raise ExpandError(f"unknown generation method: {method}")
     left, top, right, bottom = margins
     g = {
         "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
@@ -216,6 +248,66 @@ def build_graph(image_name, margins, prompt, seed, s):
                                                                 "band": 128, "strength": 1.0, "max_offset": 24,
                                                                 "min_offset": 1.5, "max_spread": 10}}
         g["26"]["inputs"]["destination"] = ["27", 0]
+    if s["upscale"] == "lanczos":
+        del g["22"], g["23"]
+        g["25"]["inputs"]["image"] = ["21", 0]
+    return g
+
+
+def build_fill_graph(image_name, margins, prompt, seed, s):
+    """Native Fill conditioning and only the fully corrected comparison-workflow pathway."""
+    left, top, right, bottom = margins
+    g = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "2": {"class_type": "ImagePadForOutpaint", "inputs": {
+            "image": ["1", 0], "left": left, "top": top, "right": right, "bottom": bottom,
+            "feathering": int(s["fill_feathering"])}},
+        "3": {"class_type": "ImageScaleToTotalPixels", "inputs": {
+            "image": ["2", 0], "upscale_method": "lanczos", "megapixels": float(s["fill_megapixels"]),
+            "resolution_steps": 16}},
+        "4": {"class_type": "GetImageSize", "inputs": {"image": ["3", 0]}},
+        "5": {"class_type": "MaskToImage", "inputs": {"mask": ["2", 1]}},
+        "6": {"class_type": "ImageScale", "inputs": {
+            "image": ["5", 0], "upscale_method": "bilinear", "width": ["4", 0], "height": ["4", 1], "crop": "disabled"}},
+        "7": {"class_type": "ImageToMask", "inputs": {"image": ["6", 0], "channel": "red"}},
+        "8": {"class_type": "UNETLoader", "inputs": {
+            "unet_name": s["fill_unet"], "weight_dtype": "fp8_e4m3fn"}},
+        "9": {"class_type": "DualCLIPLoader", "inputs": {
+            "clip_name1": FILL_CLIP_L, "clip_name2": FILL_T5, "type": "flux",
+            "device": s.get("fill_clip_device", "cpu")}},
+        "10": {"class_type": "VAELoader", "inputs": {"vae_name": FILL_VAE}},
+        "11": {"class_type": "CLIPTextEncode", "inputs": {
+            "clip": ["9", 0], "text": FILL_PROMPT + (f" The new area should show: {prompt.strip()}" if prompt.strip() else "")}},
+        "12": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["11", 0], "guidance": float(s["fill_guidance"])}},
+        "13": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["11", 0]}},
+        "14": {"class_type": "InpaintModelConditioning", "inputs": {
+            "positive": ["12", 0], "negative": ["13", 0], "vae": ["10", 0], "pixels": ["3", 0],
+            "mask": ["7", 0], "noise_mask": False}},
+        "16": {"class_type": "KSampler", "inputs": {
+            "model": ["8", 0], "seed": int(seed), "steps": int(s["fill_steps"]), "cfg": 1.0,
+            "sampler_name": "euler", "scheduler": "simple", "positive": ["14", 0], "negative": ["14", 1],
+            "latent_image": ["14", 2], "denoise": 1.0}},
+        "18": {"class_type": "VAEDecode", "inputs": {"samples": ["16", 0], "vae": ["10", 0]}},
+        "21": {"class_type": "INPAINT_ColorMatch", "inputs": {
+            "target": ["18", 0], "reference": ["3", 0], "exclude_mask": ["7", 0], "strength": 1.0}},
+        "24": {"class_type": "GetImageSize", "inputs": {"image": ["2", 0]}},
+        "25": {"class_type": "ImageScale", "inputs": {
+            "image": ["21", 0], "upscale_method": "lanczos", "width": ["24", 0], "height": ["24", 1], "crop": "disabled"}},
+        "27": {"class_type": "SeamColorCorrect", "inputs": {
+            "original": ["2", 0], "generated": ["25", 0], "new_area": ["2", 1],
+            "band": 128, "strength": 1.0, "max_offset": 24, "min_offset": 1.5, "max_spread": 10}},
+        "28": {"class_type": "InvertMask", "inputs": {"mask": ["2", 1]}},
+        "26": {"class_type": "ImageCompositeMasked", "inputs": {
+            "destination": ["27", 0], "source": ["2", 0], "x": 0, "y": 0, "resize_source": False, "mask": ["28", 0]}},
+        "out": {"class_type": "PreviewImage", "inputs": {"images": ["26", 0]}},
+        "29": {"class_type": "MaskToImage", "inputs": {"mask": ["2", 1]}},
+        "mask": {"class_type": "PreviewImage", "inputs": {"images": ["29", 0]}},
+    }
+    if s.get("fill_upscale", "lanczos") != "lanczos":
+        g["22"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": s["fill_upscale"]}}
+        g["23"] = {"class_type": "ImageUpscaleWithModel", "inputs": {
+            "upscale_model": ["22", 0], "image": ["21", 0]}}
+        g["25"]["inputs"]["image"] = ["23", 0]
     return g
 
 
@@ -223,6 +315,7 @@ STAGES = {"UnetLoaderGGUF": "Loading the model", "CLIPLoader": "Loading the text
           "VAEEncode": "Encoding the picture", "SamplerCustomAdvanced": "Generating", "VAEDecode": "Decoding",
           "INPAINT_ColorMatch": "Matching colours", "ImageUpscaleWithModel": "Upscaling", "SeamColorCorrect": "Correcting the seam",
           "ImageCompositeMasked": "Pasting the original back"}
+STAGES.update(UNETLoader="Loading the Fill model", DualCLIPLoader="Loading the text encoders", KSampler="Generating")
 
 
 # ---------------------------------------------------------------- ComfyUI client
@@ -427,19 +520,47 @@ def status(settings, url=None):
         return {"ok": False, "reachable": False, "message": str(e), "unets": [], "upscalers": []}
 
     def options(node, field):
-        spec = (info.get(node, {}).get("input", {}).get("required", {}) or {}).get(field)
+        inputs = info.get(node, {}).get("input", {})
+        spec = ((inputs.get("required", {}) or {}).get(field)
+                or (inputs.get("optional", {}) or {}).get(field))
         if not spec:
             return []
         first = spec[0]
         return list(first) if isinstance(first, list) else list(((spec[1] if len(spec) > 1 else {}) or {}).get("options", []))
 
-    unets, upscalers = options("UnetLoaderGGUF", "unet_name"), options("UpscaleModelLoader", "model_name")
-    missing = [n for n in REQUIRED_NODES if n not in info]
+    method = settings.get("method", "flux2")
+    if method not in ("flux2", "flux1_fill"):
+        raise ExpandError(f"unknown generation method: {method}")
+    fill = method == "flux1_fill"
+    unets = options("UNETLoader" if fill else "UnetLoaderGGUF", "unet_name")
+    upscalers = options("UpscaleModelLoader", "model_name")
+    required = list(FILL_REQUIRED_NODES if fill else REQUIRED_NODES)
+    if not fill and settings["upscale"] == "lanczos":
+        required = [node for node in required if node not in ("UpscaleModelLoader", "ImageUpscaleWithModel")]
+    if fill and settings.get("fill_upscale", "lanczos") != "lanczos":
+        required += ["UpscaleModelLoader", "ImageUpscaleWithModel"]
+    missing = [n for n in required if n not in info]
     problems = ["ComfyUI lacks the nodes: " + ", ".join(missing)] if missing else []
-    wanted = [("diffusion model", unets, settings["unet"]), ("upscale model", upscalers, settings["upscale"]),
-              ("text encoder", options("CLIPLoader", "clip_name"), CLIP_NAME), ("VAE", options("VAELoader", "vae_name"), VAE_NAME)]
+    if fill:
+        wanted = [("FLUX.1 Fill model", unets, settings["fill_unet"]),
+                  ("CLIP-L", options("DualCLIPLoader", "clip_name1"), FILL_CLIP_L),
+                  ("T5 encoder", options("DualCLIPLoader", "clip_name2"), FILL_T5),
+                  ("Fill VAE", options("VAELoader", "vae_name"), FILL_VAE)]
+        if settings.get("fill_upscale", "lanczos") != "lanczos":
+            wanted.append(("Fill upscale model", upscalers, settings["fill_upscale"]))
+        for node, field, value in (("UNETLoader", "weight_dtype", "fp8_e4m3fn"),
+                                   ("DualCLIPLoader", "type", "flux"),
+                                   ("DualCLIPLoader", "device", settings.get("fill_clip_device", "cpu"))):
+            if value not in options(node, field):
+                problems.append(f"ComfyUI {node} lacks {field} '{value}'; update the node/runtime")
+    else:
+        wanted = [("diffusion model", unets, settings["unet"]),
+                  ("text encoder", options("CLIPLoader", "clip_name"), CLIP_NAME),
+                  ("VAE", options("VAELoader", "vae_name"), VAE_NAME)]
+        if settings["upscale"] != "lanczos":
+            wanted.append(("upscale model", upscalers, settings["upscale"]))
     problems += [f"{label} '{want}' is not installed" for label, have, want in wanted if want not in have]
-    if settings["lora"] and LORA_NAME not in options("LoraLoaderModelOnly", "lora_name"):
+    if not fill and settings["lora"] and LORA_NAME not in options("LoraLoaderModelOnly", "lora_name"):
         problems.append(f"LoRA '{LORA_NAME}' is not installed (untick the LoRA setting to run without it)")
     return {"ok": not problems, "reachable": True, "message": "; ".join(problems), "unets": unets, "upscalers": upscalers}
 
@@ -452,9 +573,10 @@ def _png(im):
     return buf.getvalue()
 
 
-def expand_variations(picture, margins, prompt, job, seed=-1, settings=None, variations=1, url=None):
+def expand_variations(picture, margins, prompt, job, seed=-1, settings=None, variations=1, url=None,
+                      on_result=None):
     """Run `variations` (1-4) generations with different seeds one after another. Fills job.results; job.result is
-    the selected one (the first until the user picks). Cancelling raises Cancelled and keeps nothing."""
+    the selected one (the first until the user picks). Completed results survive cancellation."""
     n = int(variations)
     if not 1 <= n <= MAX_VARIATIONS:
         raise ExpandError(f"variations must be between 1 and {MAX_VARIATIONS}")
@@ -472,12 +594,18 @@ def expand_variations(picture, margins, prompt, job, seed=-1, settings=None, var
     name = comfy.upload(_png(kept), f"shpcrop_{os.getpid()}.png")
     results = []
     for i in range(n):
+        if job.cancel:
+            raise Cancelled()
         job.index = i
         r = expand(comfy, name, kept.size, pad, prompt, job, base + i, s)
         r["margins"] = tuple(margins)  # the signed margins relative to the original picture, for Send to PhotoCraft
         results.append(r)
-    with job.lock:
-        job.results, job.selected, job.result = results, 0, results[0]
+        if on_result is not None:
+            on_result(i, r)
+        with job.lock:
+            job.results.append(r)
+            if job.result is None:
+                job.selected, job.result = 0, r
     return results
 
 

@@ -17,6 +17,7 @@
   #xAdv .toggle-row > input { margin:0; }
   #xAdv .toggle-row + .toggle-row { margin-top:6px; }
   #xAdv .model-row { padding:4px 0; }
+  #xAdv .row[hidden] { display:none; }
   .ratios { display:grid; grid-template-columns:repeat(6, 1fr); gap:4px; margin:6px 0; }
   .ratios button, .seg button { padding:5px 2px; font-size:12px; white-space:nowrap; }
   .ratios button.on, .seg button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
@@ -46,7 +47,7 @@
   <details class="grp" open>
     <summary>AI</summary>
     <div class="gbody">
-      <div class="row"><label>variations</label><input type="range" id="xVar" min="1" max="4" step="1" value="1" title="How many different results to generate (1 to 4, one after another). You pick which one to send."><input type="text" class="val" id="xVarVal" readonly tabindex="-1" value="1"></div>
+      <div class="row"><label for="xVar" title="How many different results to generate (1 to 4, one after another). You pick which one to send." style="cursor:help">variations</label><input type="range" id="xVar" min="1" max="4" step="1" value="1"><input type="text" class="val" id="xVarVal" readonly tabindex="-1" value="1"></div>
       <div id="xAdv"></div>
       <textarea id="xPrompt" placeholder="Optional: describe what the new area should show. Empty continues the scene." title="Optional prompt for the new area. Empty = continue the scene."></textarea>
       <div id="xInfo"></div>
@@ -104,13 +105,13 @@ function xInfo() {
   const [l,t,r,b] = xMargins(), h = fH(), [a,bb] = xRatio();
   const added = Math.max(l, t, r, b) > 0, sg = v => v > 0 ? '+' + v : v < 0 ? '\u2212' + (-v) : '0';
   $('xInfo').innerHTML = `<b>${X.W} \u00d7 ${X.H}</b> \u2192 <b>${X.fw} \u00d7 ${h}</b> (${X.free ? 'free' : a + ':' + bb})<br>left ${sg(l)}, top ${sg(t)}, right ${sg(r)}, bottom ${sg(b)} px (\u2212 = cropped)` + (added ? '' : '<br>Nothing to generate: drag a corner outwards to add space.');
-  if (!X.running) $('xRun').disabled = !X.img || !added || !X.ready;
+  if (!X.running) $('xRun').disabled = !X.img || !added || !X.ready || X.settingsSaving;
 }
 function xButtons() {
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => b.classList.toggle('on', !X.free && b.dataset.i === String(BASE_RATIOS.findIndex(r => r[0]===X.ratio[0] && r[1]===X.ratio[1])))); $('xFree').classList.toggle('on', X.free);
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => { const [a,c] = BASE_RATIOS[+b.dataset.i]; b.textContent = X.land || a === c ? `${a}:${c}` : `${c}:${a}`; });
   $('xSend').disabled = !(X.hasResult && X.hasDoc) || X.running;
-  $('xGet').disabled = X.running; $('xFiles').disabled = X.running; $('xVar').disabled = X.running; document.querySelectorAll('#xAdv input,#xAdv select').forEach(e => e.disabled = X.running);
+  $('xGet').disabled = X.running; $('xFiles').disabled = X.running; $('xVar').disabled = X.running; document.querySelectorAll('#xAdv input,#xAdv select').forEach(e => e.disabled = X.running || X.settingsSaving);
 }
 BASE_RATIOS.forEach((r, i) => { const b = document.createElement('button'); b.dataset.i = i; b.title = 'Click again to flip it (landscape / portrait).';
   b.onclick = () => { if (!X.free && X.ratio === r) { xSetOrientation(!X.land); return; } X.free = false; X.ratio = r; if (X.img) xResetFrame(); xRefresh(true); }; $('xRatios').append(b); });
@@ -245,22 +246,28 @@ function xTab(v) {
   [...$('xResTabs').children].forEach((b, i) => b.classList.toggle('on', v === 'result' && i === X.sel)); xDraw();
 }
 $('xTabFrame').onclick = () => xTab('frame');
-function xClearTabs() { $('xResTabs').innerHTML = ''; X.sel = 0; X.vars = []; X.rv = null; }
-function xMakeTabs(n, sel) {
-  const box = $('xResTabs'); box.innerHTML = ''; X.sel = sel; X.vars = new Array(n).fill(null);
-  for (let i = 0; i < n; i++) {
+function xClearTabs() { $('xResTabs').innerHTML = ''; X.sel = 0; X.vars = []; X.rv = null; X.pickRequest = (X.pickRequest || 0) + 1; }
+function xMakeTabs(n) {
+  const box = $('xResTabs');
+  for (let i = X.vars.length; i < n; i++) {
     const b = document.createElement('button'); b.className = 'tab'; b.textContent = n > 1 ? `Result ${i + 1}` : 'Result';
     b.title = 'Show this result. The result shown here is the one Send Result and Save use.';
-    b.onclick = () => xPick(i); box.append(b);
+    b.onclick = () => xPick(i); box.append(b); X.vars.push(null);
   }
+  [...box.children].forEach((b, i) => { b.textContent = n > 1 ? `Result ${i + 1}` : 'Result'; b.classList.toggle('on', X.view === 'result' && i === X.sel); });
 }
-async function xPick(i) {
-  if (X.running) return;
+async function xPick(i, announce = true) {
+  const request = X.pickRequest = (X.pickRequest || 0) + 1;
   if (i !== X.sel || !X.resEl) { try { await api('/api/select', {index:i}); } catch (e) { setStatus(e.message, true); return; } }
+  if (request !== X.pickRequest) return;
   const el = new Image(); el.onload = () => {
+    if (request !== X.pickRequest) return;
     X.sel = i; X.resEl = el; X.hasResult = true; xTab('result'); xRefresh(false);
-    const n = X.vars.length; setStatus(n > 1 ? `Result ${i + 1} of ${n} selected: Send Result uses this one.` : 'Generated. Use Send Result to send it to PhotoCraft.', false, true);
+    if (!X.running && announce) {
+      const n = X.vars.length; setStatus(n > 1 ? `Result ${i + 1} of ${n} selected: Send Result uses this one.` : 'Generated. Use Send Result to send it to PhotoCraft.', false, true);
+    }
   };
+  el.onerror = () => { if (request === X.pickRequest) setStatus('Could not load the generated preview. Select its result tab to retry.', true); };
   el.src = `img/xvar${i}?` + Date.now();
 }
 async function xGet() {
@@ -278,11 +285,16 @@ async function xRun() {
   X.poll = setInterval(xPoll, 600); xPoll();
 }
 async function xPoll() {
-  let j; try { j = await api('/api/job', {}); } catch (e) { return; }
+  if (X.polling) return;
+  X.polling = true;
+  let j; try { j = await api('/api/job', {}); } catch (e) { return; } finally { X.polling = false; }
+  const first = !X.vars.length && j.count > 0;
+  xMakeTabs(j.count);
+  if (first) xPick(j.selected || 0, false);
   if (j.state === 'running') { setStatus(`Generating ${Math.round(j.fraction*100)}%${j.text ? ': ' + j.text : ''}`); $('status').classList.add('busy'); return; }
   clearInterval(X.poll); X.running = false; busy = false; xRunMode(false); xInfo();
   if (j.state === 'done') {
-    xMakeTabs(j.count, j.selected || 0); xPick(j.selected || 0);
+    setStatus(`Done. ${j.count} result(s) available.`, false, true);
   } else { setStatus(j.message || j.state, j.state === 'error'); xRefresh(false); }
 }
 function xRunMode(running) {
@@ -314,10 +326,14 @@ async function loadList() {
 }
 
 const SETKEYS = ['guidance','steps','megapixels','feathering','unet','upscale','lora','seam_correction'];
+const FILLKEYS = ['guidance','steps','megapixels','feathering','unet','upscale'];
+let savedSettings = {};
+const isFill = () => $('smethod').value === 'flux1_fill';
+const settingKey = k => isFill() && FILLKEYS.includes(k) ? 'fill_' + k : k;
 const SL = {};
 function slider(parent, key, label, min, max, step, tip) {
-  const row = document.createElement('div'); row.className = 'row'; row.title = tip;
-  const lab = document.createElement('label'); lab.textContent = label; lab.style.cursor = 'help';
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = label; lab.title = tip; lab.style.cursor = 'help'; lab.htmlFor = 's' + key;
   const rng = document.createElement('input'); rng.type = 'range'; rng.id = 's' + key; rng.min = min; rng.max = max; rng.step = step;
   const num = document.createElement('input'); num.type = 'text'; num.readOnly = true; num.tabIndex = -1; num.className = 'val';
   rng.addEventListener('input', () => { num.value = rng.value; if (typeof updateStar === 'function') updateStar(); });
@@ -326,6 +342,7 @@ function slider(parent, key, label, min, max, step, tip) {
 }
 (function buildAdvanced() {
   const root = $('xAdv');
+  root.insertAdjacentHTML('beforeend', `<div class="row model-row"><label for="smethod">method</label><select id="smethod" style="flex:1"><option value="flux2">FLUX.2</option><option value="flux1_fill">FLUX.1 Fill</option></select></div>`);
   slider(root, 'guidance', 'guidance', 1, 10, 0.5, 'Prompt strength. Higher is more contrasty and saturated.');
   slider(root, 'steps', 'steps', 1, 50, 1, 'Sampling steps: 8 with the Turbo LoRA, about 20 without.');
   slider(root, 'megapixels', 'megapixels', 0.25, 2, 0.25, 'Size the AI works at (the result is upscaled afterwards). Smaller is faster and often cleaner.');
@@ -333,21 +350,50 @@ function slider(parent, key, label, min, max, step, tip) {
   root.insertAdjacentHTML('beforeend', `
     <div class="row toggle-row"><label for="slora">turbo lora</label><input type="checkbox" id="slora" role="switch"></div>
     <div class="row toggle-row"><label for="sseam_correction">seam colour correction</label><input type="checkbox" id="sseam_correction"></div>
-    <div class="row model-row"><label>model</label><select id="sunet" style="flex:1" title="GGUF diffusion model."></select></div>
-    <div class="row model-row"><label>upscaler</label><select id="supscale" style="flex:1" title="Upscale model for the generated area."></select></div>`);
+    <div class="row model-row"><label for="sunet" id="sunetLabel" title="GGUF diffusion model." style="cursor:help">model</label><select id="sunet" style="flex:1"></select></div>
+    <div class="row model-row"><label for="supscale" id="supscaleLabel" title="Upscale model for the generated area." style="cursor:help">upscaler</label><select id="supscale" style="flex:1"></select></div>
+    <div class="row model-row" id="fillDeviceRow" hidden><label for="sfill_clip_device" title="Default lets ComfyUI choose GPU/offloading according to available memory. CPU uses less VRAM." style="cursor:help">text encoding</label><select id="sfill_clip_device" style="flex:1"><option value="cpu">CPU</option><option value="default">Default (GPU / auto)</option></select></div>
+    <div id="fillInfo" hidden>Native Fill · FP8 model · colour match + seam correction · exact-size final resize</div>`);
 })();
 function fillSelect(id, options, value) {
   const sel = $(id); sel.innerHTML = '';
   const all = options.includes(value) || !value ? options : [value, ...options];
   all.forEach(o => sel.append(new Option(o, o))); sel.value = value;
 }
-function showSettings(v) { SETKEYS.forEach(k => { const e = $('s' + k); if (e.type === 'checkbox') e.checked = !!v[k]; else if (SL[k]) SL[k](v[k]); }); }
+function showSettings(v) {
+  savedSettings = {...v};
+  $('smethod').value = v.method || 'flux2';
+  const fill = isFill();
+  $('sguidance').max = fill ? 100 : 10;
+  $('sguidance').step = fill ? 1 : 0.5;
+  $('ssteps').closest('.row').querySelector('label').title = fill ? 'Native Fill sampling steps (default 28).' : 'Sampling steps: 8 with the Turbo LoRA, about 20 without.';
+  $('sunetLabel').title = fill ? 'Full FLUX.1 Fill safetensors weights, loaded FP8. Not FLUX dev, Kontext or Nunchaku.' : 'GGUF diffusion model.';
+  ['lora','seam_correction'].forEach(k => { $('s' + k).closest('.row').hidden = fill; });
+  $('supscaleLabel').title = 'Lanczos only, or a neural upscale model followed by exact-size Lanczos resizing. Neural upscale uses additional time and VRAM.';
+  $('fillInfo').hidden = !fill;
+  $('fillDeviceRow').hidden = !fill;
+  $('sfill_clip_device').value = v.fill_clip_device || 'cpu';
+  SETKEYS.forEach(k => {
+    const e = $('s' + k), value = v[settingKey(k)];
+    if (e.type === 'checkbox') e.checked = !!value;
+    else if (SL[k]) SL[k](value);
+  });
+}
 let statusRetry = null;
+let statusRequest = 0;
 async function loadStatus() {
   clearTimeout(statusRetry);
+  const request = ++statusRequest;
   let r;
-  try { r = await api('/api/status', {}); } catch (e) { X.ready = false; setStatus(e.message, true); xInfo(); return; }
-  fillSelect('sunet', r.unets, r.settings.unet); fillSelect('supscale', r.upscalers, r.settings.upscale); showSettings(r.settings);
+  try { r = await api('/api/status', {}); } catch (e) {
+    if (request !== statusRequest) return;
+    X.ready = false; setStatus(e.message, true); xInfo(); return;
+  }
+  if (request !== statusRequest) return;
+  showSettings(r.settings);
+  fillSelect('sunet', r.unets, r.settings[settingKey('unet')]);
+  fillSelect('supscale', ['lanczos', ...r.upscalers], r.settings[settingKey('upscale')]);
+  $('supscale').querySelector('option[value="lanczos"]').textContent = 'Lanczos (no model)';
   X.ready = r.ok;
   if (!X.running) $('xRun').title = r.message || 'Generate the new area with ComfyUI. The picture itself is not changed.';
   if (r.reachable === false) {
@@ -358,16 +404,27 @@ async function loadStatus() {
   xInfo();
 }
 async function saveSettings(values) {
+  ++statusRequest; X.settingsSaving = true; X.ready = false; xInfo();
   try { await api('/api/settings', {values}); setStatus('Settings saved', false, true); }
   catch (e) { setStatus(e.message, true); }
-  await loadStatus(); updateStar();
+  await loadStatus(); X.settingsSaving = false; xInfo(); updateStar();
 }
-SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[k]: e.type === 'checkbox' ? e.checked : e.value}); });
+SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[settingKey(k)]: e.type === 'checkbox' ? e.checked : e.value}); });
+$('smethod').onchange = () => saveSettings({method: $('smethod').value});
+$('sfill_clip_device').onchange = () => saveSettings({fill_clip_device: $('sfill_clip_device').value});
 
 /* ---------- presets ---------- */
 const presets = {presets: {}, last: null};
 let presetSnap = '';
-const curSettings = () => { const o = {}; SETKEYS.forEach(k => { const e = $('s' + k); o[k] = e.type === 'checkbox' ? e.checked : (e.tagName === 'SELECT' || isNaN(+e.value) ? e.value : +e.value); }); return JSON.stringify(o); };
+const curSettings = () => {
+  const o = {...savedSettings, method: $('smethod').value};
+  if (isFill()) o.fill_clip_device = $('sfill_clip_device').value;
+  SETKEYS.filter(k => !isFill() || FILLKEYS.includes(k)).forEach(k => {
+    const e = $('s' + k);
+    o[settingKey(k)] = e.type === 'checkbox' ? e.checked : (e.tagName === 'SELECT' || isNaN(+e.value) ? e.value : +e.value);
+  });
+  return JSON.stringify(o);
+};
 function updateStar() {
   const o = $('presetSel').selectedOptions[0]; if (!o) return;
   o.textContent = o.dataset.label + (curSettings() !== presetSnap ? ' *' : '');
@@ -401,7 +458,7 @@ $('presetRemove').onclick = () => {
   const v = $('presetSel').value; if (v === 'builtin' || !confirm(`Delete the preset "${v.slice(2)}"?`)) return;
   presetCall('/api/presets/delete', {name: v.slice(2)});
 };
-window.addEventListener('focus', () => { if (!X.running) loadStatus().then(updateStar); });
+window.addEventListener('focus', () => { if (!X.running && !X.settingsSaving) loadStatus().then(updateStar); });
 if (localStorage.getItem('shpx-land') === '0') X.land = false;
 xButtons(); xSyncSize(); xDraw();
 loadList().catch(e => setStatus(e.message, true)); loadPresets();

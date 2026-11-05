@@ -63,8 +63,7 @@ class Client:
         try:
             self._sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         except OSError as e:
-            raise ControlError(f"PhotoCraft is not answering on {self.host}:{self.port}. Start it with the OpenFill launcher "
-                               f"('PhotoCraft with OpenFill') or press 'Launch PhotoCraft'.") from e
+            raise ControlError(f"PhotoCraft not running or contollable (port {self.port})") from e
         self._file = self._sock.makefile("rwb")
         reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
         if not reply.get("ok"):

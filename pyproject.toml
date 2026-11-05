@@ -36,5 +36,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/shp_photocraft_tools"]
 
+[tool.hatch.build.targets.sdist.force-include]
+"comfyui" = "comfyui"
+
 [tool.uv]
 override-dependencies = ["onnxruntime; sys_platform == 'never'"]

@@ -30,6 +30,15 @@ def main():
         def send(self, layer, mask, document):
             return {"layer": 9, "document": document["name"]}
 
+        def send_mask(self, mask, document):
+            assert mask.shape == (600, 800) and mask.dtype == np.uint8
+            return {"layer": 10, "document": document["name"]}
+
+        def send_frequency(self, layers, mask, document, source_icc):
+            assert set(layers) == {"color", "blur", "detail"}
+            assert all(a.shape == (600, 800, 3) and a.dtype == np.uint16 for a in layers.values())
+            return {"layer": 11, "document": document["name"]}
+
     if name == "crop":
         from shp_photocraft_tools.modules.crop import server as module
         from test_expand import StubComfy
@@ -46,6 +55,11 @@ def main():
             return {"started": True}
 
         module.ROUTES["/api/test/job"] = job
+        def variation_delay(request):
+            StubComfy.state["delay"] = min(3, max(0, float(request.get("seconds", 0))))
+            return {}
+
+        module.ROUTES["/api/test/variation-delay"] = variation_delay
     else:
         from shp_photocraft_tools.modules.dnb import ui_server as module
 

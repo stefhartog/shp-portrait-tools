@@ -35,6 +35,8 @@
   .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
+  details.grp[hidden], .tab[hidden], #toolModeRow[hidden] { display:none; }
+  #g-bands, #g-mask { border-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
   details.grp > summary::after { display:none; }
   .sub { font-size:11px; color:var(--dim); font-weight:600; margin:10px 0 4px; }
@@ -63,8 +65,16 @@
 <div id="app">
 <div id="bar"><button id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
-
-
+  <div class="row" id="toolModeRow"><label for="toolMode">Skin tool</label><select id="toolMode" style="flex:1">
+    <option value="dnb">D&amp;B layers</option><option value="mask">Skin mask</option><option value="frequency">Frequency separation</option>
+  </select></div>
+  <details class="grp" id="g-frequency" open hidden>
+    <summary>Frequency separation</summary>
+    <div class="gbody">
+      <div class="row"><label for="frequencyMethod" title="Full-image separation into unmasked Color and Detail. Gaussian: Radius is the sigma; Median: Radius is the square neighbourhood radius. Only the extra Blur layer samples skin before filtering and uses the skin mask to feather its effect." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">Gaussian</option><option value="median">Median</option></select></div>
+      <div id="frequencySliders"></div>
+    </div>
+  </details>
   <details class="grp" id="g-bands" open>
     <summary>Detail level</summary>
     <div class="gbody">
@@ -102,7 +112,7 @@
     <summary>Image analysis</summary>
     <div class="gbody">
       <div id="info">No photo loaded.</div>
-      <div class="row"><label>px / 63 mm</label><input type="number" id="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." min="10" max="5000" step="1"></div>
+      <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
     </div>
   </details>
   <div id="manual" hidden>
@@ -128,7 +138,10 @@
       <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
       <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
       <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Layer</button>
-      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button></div>
+      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button>
+      <button class="tab" data-k="color" hidden title="Full-image low frequencies, no skin mask.">Color</button>
+      <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button>
+      <button class="tab" data-k="blur" hidden title="Blur through its feathered skin mask over Color, without Detail.">Blur</button></div>
       <span class="opts" id="optsAn" hidden>
       <label title="Detected faces (box, eyes/nose/mouth points, face mesh features) and bodies (skeleton). Yellow = AF/target subject, gray = others, orange box = region used for the skin mask."><input type="checkbox" id="anDetect" checked>faces &amp; bodies</label>
       <label title="Skin mask in green; magenta = eyes, brows, lips, nostrils left out; orange = off-colour skin (e.g. tattoos) left out."><input type="checkbox" id="anSkin" checked>skin</label>
@@ -143,6 +156,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const state = {
+  mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200}, pcFetched: false,
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
   strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0,
   tone: {mid:0.52, range:0.87, taper:0.16, strength:1}, maskFeather: 1.0, structure: {protect:0, mm:4, thr:0.1},
@@ -162,7 +176,7 @@ function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textConten
 function slider(parent, label, min, max, step, value, onInput, opts={}) {
   const row = document.createElement('div'); row.className = 'row';
   const lab = document.createElement('label'); lab.textContent = label;
-  if (opts.tip) { row.title = opts.tip; lab.style.cursor = 'help'; }
+  if (opts.tip) { lab.title = opts.tip; lab.style.cursor = 'help'; }
   const rng = document.createElement('input'); rng.type = 'range';
   const num = document.createElement('input'); num.type = 'text'; num.readOnly = true; num.tabIndex = -1; num.className = 'val';
   const log = !!opts.log;
@@ -170,11 +184,17 @@ function slider(parent, label, min, max, step, value, onInput, opts={}) {
   const fromT = t => log ? min * Math.pow(max/min, t/1000) : parseFloat(t);
   rng.min = log ? 0 : min; rng.max = log ? 1000 : max; rng.step = log ? 1 : step;
   const fmt = v => (log ? (v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : v.toFixed(0)) : v);
-  const set = (v, fire) => { v = Math.min(max, Math.max(min, v)); rng.value = toT(v); num.value = fmt(v); if (fire) onInput(parseFloat(num.value)); };
+  const set = (v, fire) => {
+    if (opts.preserveValue && !fire && Number.isFinite(+v) && +v > 0) {
+      rng.value = toT(Math.min(max, Math.max(min, +v))); num.value = fmt(+v);
+      return;
+    }
+    v = Math.min(max, Math.max(min, v)); rng.value = toT(v); num.value = fmt(v); if (fire) onInput(parseFloat(num.value));
+  };
   rng.addEventListener('input', () => set(fromT(rng.value), true));
   set(value, false);
   row.append(lab, rng, num); parent.append(row);
-  return { set, row, rng, num };
+  return { set, row, rng, num, lab };
 }
 function markDirty() {
   if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
@@ -184,6 +204,55 @@ function markDirty() {
 }
 
 const sliders = {};
+const FREQUENCY_RADIUS_TIP = 'Radius calibration in px at reference S = 181 pixels per 63 mm (default 6 px). Actual separation radius = calibration × S / 181, rounded to whole full-image pixels and limited to 1–100 px.';
+const FREQUENCY_BLUR_TIP = 'Extra skin-aware Gaussian sigma as a percentage of the actual rounded/clamped separation radius, not of the Radius calibration. Default 200% (double); 100–500%. The skin mask excludes non-skin samples before filtering and feathers Blur once.';
+sliders.frequencyCalibration = slider($('frequencySliders'), 'Radius', 0.5, 30, 0.1, state.frequency.radius_at_s181, v => {
+  state.frequency.radius_at_s181 = v; scaleFrequencyRadius(); markDirty();
+}, {tip:FREQUENCY_RADIUS_TIP});
+sliders.blurPercent = slider($('frequencySliders'), 'Blur', 100, 500, 1, state.frequency.blur_percent, v => {
+  state.frequency.blur_percent = v; scaleFrequencyRadius(); markDirty();
+}, {tip:FREQUENCY_BLUR_TIP});
+$('frequencyMethod').onchange = () => { state.frequency.method = $('frequencyMethod').value; markDirty(); };
+let shellConnected = false, shellUiReady = false, pendingShellMode = null;
+function announceMode(request=null) {
+  if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:state.mode, request}, location.origin);
+}
+function switchMode(mode, request=null) {
+  if (mode !== 'mask') setPickingColor(false);
+  if (state.mode !== mode) {
+    state.mode = mode; syncMode(); state.version = 0; clearPanels(); markDirty();
+  }
+  announceMode(request);
+}
+$('toolMode').onchange = () => switchMode($('toolMode').value);
+window.addEventListener('message', event => {
+  const data = event.data;
+  if (parent === window || event.source !== parent || event.origin !== location.origin ||
+      !data || typeof data !== 'object') return;
+  if (data.type === 'shp-tools-probe') {
+    if (shellUiReady) parent.postMessage({type:'shp-skin-ready'}, location.origin);
+  } else if (data.type === 'shp-tools-connect') {
+    shellConnected = true; $('toolModeRow').hidden = true; announceMode();
+  } else if (shellConnected && data.type === 'shp-tools-mode' &&
+             ['mask','frequency','dnb'].includes(data.mode) && Number.isSafeInteger(data.request)) {
+    if (state.busy) pendingShellMode = data;
+    else switchMode(data.mode, data.request);
+  }
+});
+function scaleFrequencyRadius() {
+  const S = Number($('S').value);
+  if (!Number.isFinite(S) || S <= 0) {
+    sliders.frequencyCalibration.lab.title = FREQUENCY_RADIUS_TIP + ' No valid scale: enter S (px / 63 mm) to calculate it.';
+    sliders.blurPercent.lab.title = FREQUENCY_BLUR_TIP;
+    return;
+  }
+  const raw = state.frequency.radius_at_s181 * S / 181;
+  state.frequency.radius = Math.min(100, Math.max(1, Math.round(raw)));
+  state.frequency.blur_radius = state.frequency.radius * state.frequency.blur_percent / 100;
+  sliders.frequencyCalibration.lab.title = `${FREQUENCY_RADIUS_TIP} Current: ${state.frequency.radius_at_s181} × ${S} / 181 = ${raw.toFixed(2)} px → ${state.frequency.radius} px${raw < 1 || raw > 100 ? ' (limited to 1–100 px)' : ''}.`;
+  sliders.blurPercent.lab.title = `${FREQUENCY_BLUR_TIP} Current: ${state.frequency.radius} × ${state.frequency.blur_percent}% = ${state.frequency.blur_radius} px.`;
+}
+$('S').onchange = () => { scaleFrequencyRadius(); markDirty(); };
 
 /* ---------- bands ---------- */
 const bandSliders = [];
@@ -202,7 +271,8 @@ function renderBands() {
 }
 /* ---------- global + tone sliders ---------- */
 sliders.strength = slider($('globals'), 'strength', 0, 4, 0.01, state.strength, v => { state.strength = v; markDirty(); }, {tip:'Multiplies the gain of the band.'});
-sliders.edge = slider($('globals'), 'edge', 0, 0.2, 0.005, state.edge, v => { state.edge = v; markDirty(); }, {tip:'Brightness step that counts as an edge.'});
+sliders.edge = slider($('globals'), 'edge', 0, 0.2, 0.005, state.edge, v => { state.edge = v; markDirty(); }, {tip:'Guided-filter edge smoothing threshold in log luminance. Lower preserves weaker boundaries; higher smooths across more boundaries. Separate from tau deviation suppression.'});
+sliders.tau = slider($('globals'), 'tau', 0.01, 0.4, 0.01, state.tau, v => { state.tau = v; markDirty(); }, {preserveValue:true, tip:'Deviation suppression scale in natural-log luminance units. Lower suppresses correction of large local brightness deviations more strongly; higher allows more correction. Unlike edge, this does not set the guided-filter smoothing threshold. Legacy preset values outside 0.01–0.4 remain in the readout until the slider is moved.'});
 sliders.toneStrength = slider($('tone'), 'strength', 0, 1, 0.01, state.tone.strength, v => { state.tone.strength = v; markDirty(); }, {tip:'How strongly the tone range limits the correction (1 = fully, 0 = not at all).'});
 sliders.toneMid = slider($('tone'), 'midpoint', 0, 1, 0.01, state.tone.mid, v => { state.tone.mid = v; setToneSwatch(); drawTone(); markDirty(); }, {tip:'Brightness (0 black, 1 white) at the centre of the corrected range.'});
 sliders.toneRange = slider($('tone'), 'range', 0.05, 1.2, 0.01, state.tone.range, v => { state.tone.range = v; drawTone(); markDirty(); }, {tip:'Total width of the corrected brightness range; nothing outside it changes.'});
@@ -286,12 +356,13 @@ async function loadList() {
   list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
 }
 function applyLoaded(r) {
-    state.loaded = true; syncCropButtons(); state.estS = r.S;
+    state.loaded = true; state.pcFetched = false; syncCropButtons(); state.estS = r.S;
     state.color.hue = state.color.saturation = state.color.rgb = null;
     $('colorOn').checked = false; setColorSwatch(null); setPickingColor(false);
     if (r.skin_colour) { state.color.hue = r.skin_colour.hue; state.color.saturation = r.skin_colour.saturation; setColorSwatch(r.skin_colour.rgb); $('colorOn').checked = true; setToneMid(r.skin_colour.light); drawTone(); }
     syncColorControls();
-    $('S').value = r.S ? Math.round(r.S) : '';
+    $('S').value = Number.isFinite(r.S) && r.S > 0 ? r.S : '';
+    scaleFrequencyRadius();
     $('info').innerHTML = `<b>${r.name}</b> ${r.width}×${r.height}<br><span class="hint">colour: ${r.colour}</span><br>` + (r.S
       ? `estimated S = <b>${Math.round(r.S)}</b> px (${r.confidence}); ${r.desc}`
       : `<span style="color:var(--warn)">no scale estimate (${r.desc}); enter S by hand</span>`);
@@ -316,10 +387,16 @@ function setBusy(b) {
   const st = $('status');
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
+  $('toolMode').disabled = b;
+  $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.pcFetched;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = b || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
   });
+  if (!b && pendingShellMode) {
+    const requested = pendingShellMode; pendingShellMode = null;
+    switchMode(requested.mode, requested.request);
+  }
 }
 function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSkin').checked, structure: $('anStruct').checked}; }
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => $(id).onchange = async () => {
@@ -329,7 +406,7 @@ function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSki
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).checked = v === '1'; });
 function params() {
-  return { S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: state.mode, frequency: {...state.frequency}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -366,7 +443,7 @@ async function pcGet() {
   setBusy(true); setStatus('Getting the picture from PhotoCraft...');
   try {
     const r = await api('/api/pc/fetch', {});
-    applyLoaded(r); $('pcSend').disabled = false;
+    applyLoaded(r); state.pcFetched = true;
   } catch (e) { setStatus(e.message, true); }
   setBusy(false);
   if (state.loaded) apply();
@@ -374,8 +451,8 @@ async function pcGet() {
 async function pcSend() {
   if (state.busy || !state.loaded) return;
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
-  setBusy(true); setStatus('Sending the layer and mask to PhotoCraft...');
-  try { const r = await api('/api/pc/send', p); setStatus(`Sent: layer added to ${r.document}.`, false, true); }
+  setBusy(true); setStatus('Sending ' + (state.mode === 'frequency' ? 'frequency-separation folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
+  try { const r = await api('/api/pc/send', p); setStatus(`Sent to ${r.document}.`, false, true); }
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
 }
@@ -394,6 +471,22 @@ function syncTabs() {
   [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === tabSel[k])));
   $('optsAn').hidden = tabSel.B !== 'analysis';
   $('optsLayer').hidden = tabSel.B !== 'layer' && tabSel.B !== 'layerm';
+}
+function syncMode() {
+  const dnb = state.mode === 'dnb', frequency = state.mode === 'frequency';
+  $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
+  $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
+  ['g-mask', 'g-structure', 'g-range', 'g-color'].forEach(id => { $(id).hidden = state.mode !== 'mask'; });
+  $('tabsB').querySelectorAll('.tab').forEach(t => {
+    t.hidden = ['layer', 'layerm'].includes(t.dataset.k) ? !dnb : ['color', 'detail', 'blur'].includes(t.dataset.k) ? !frequency : false;
+  });
+  if ([...$('tabsB').querySelectorAll('.tab')].some(t => t.dataset.k === tabSel.B && t.hidden)) tabSel.B = 'mask';
+  const result = $('tabsA').querySelector('[data-k="result"]');
+  result.textContent = dnb ? 'Result' : frequency ? 'Result' : 'Skin mask';
+  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Sent stack: unmasked Color and Detail, plus active skin-masked Blur. Inspect individual layers on the right.' : 'The reusable combined grayscale skin mask.';
+  $('pcSend').textContent = dnb ? 'Send Result' : frequency ? 'Send Layers' : 'Send Mask';
+  $('pcSend').title = dnb ? 'Add Soft Light with its mask.' : frequency ? 'Add an unmasked Normal folder: Detail (Linear Light, unmasked), Blur (skin mask), Color (unmasked).' : 'Add a grayscale layer; do not change any existing layer mask.';
+  syncTabs();
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();
@@ -450,7 +543,7 @@ function imagePoint(p, e) {
   return u < 0 || u > 1 || v < 0 || v > 1 ? null : {u, v};
 }
 function cyclePaneTab(index) {
-  const key = index === 0 ? 'A' : 'B', tabs = [...$(`tabs${key}`).querySelectorAll('.tab')];
+  const key = index === 0 ? 'A' : 'B', tabs = [...$(`tabs${key}`).querySelectorAll('.tab')].filter(t => !t.hidden);
   const current = tabs.findIndex(t => t.dataset.k === tabSel[key]);
   const next = tabs[(current + 1) % tabs.length];
   tabSel[key] = next.dataset.k;
@@ -556,6 +649,7 @@ document.querySelectorAll('details.grp').forEach(d => {
 
 /* ---------- presets ---------- */
 const FACTORY = {
+  mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200},
   bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
   strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12,
   tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
@@ -566,6 +660,7 @@ const FACTORY = {
 };
 function getSettings() {
   return {
+    mode: state.mode, frequency: {...state.frequency},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
     strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge,
     tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
@@ -578,11 +673,20 @@ function getSettings() {
 }
 function applySettings(o) {
   const f = JSON.parse(JSON.stringify(FACTORY));
-  const v = Object.assign({}, f, o || {}, {tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
+  const v = Object.assign({}, f, o || {}, {frequency: Object.assign({}, f.frequency, (o || {}).frequency), tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
+  state.mode = ['dnb', 'mask', 'frequency'].includes(v.mode) ? v.mode : 'dnb';
+  const legacyRatio = 100 * +v.frequency.blur_radius / +v.frequency.radius;
+  const percent = o?.frequency?.blur_percent ?? (o?.frequency ? legacyRatio : 200);
+  state.frequency = {method:v.frequency.method === 'median' ? 'median' : 'gaussian', radius:+v.frequency.radius, blur_radius:+v.frequency.blur_radius, radius_at_s181:+v.frequency.radius_at_s181, blur_percent:Math.min(500,Math.max(100,Number.isFinite(+percent)?+percent:200))};
+  sliders.frequencyCalibration.set(state.frequency.radius_at_s181, false);
+  sliders.blurPercent.set(state.frequency.blur_percent, false);
+  scaleFrequencyRadius();
+  syncMode();
   state.bands = [(v.bands && v.bands.length ? v.bands : f.bands)[0]].map(b => ({lo:+b.lo, hi:+b.hi, gain:1, taper:+b.taper, linked:!!b.linked}));
   state.strength = v.strength; sliders.strength.set(v.strength, false);
   state.maxEv = v.max_ev;
   state.tau = v.tau;
+  sliders.tau.set(v.tau, false);
   state.edge = Math.min(0.2, Math.max(0, v.edge)); sliders.edge.set(state.edge, false);
   state.tone.mid = v.tone.mid; sliders.toneMid.set(v.tone.mid, false); setToneSwatch();
   state.tone.range = v.tone.range; sliders.toneRange.set(v.tone.range, false);
@@ -604,14 +708,21 @@ function applySettings(o) {
   $('maskOn').checked = !!v.mask.on;
   $('view').value = v.view; syncCropButtons();
   renderBands(); drawTone(); markDirty();
+  announceMode();
 }
 const presets = {default: null, presets: {}};
 let presetSnap = '';
 const presetErr = (e) => setStatus(e.message, true);
-function snapNow() { presetSnap = JSON.stringify(getSettings()); updateStar(); }
+// Mode is navigation and radius/blur_radius are derived from S, so neither marks a preset unsaved.
+function presetKey() {
+  const {mode, ...o} = getSettings();
+  const {radius, blur_radius, ...frequency} = o.frequency;
+  return JSON.stringify({...o, frequency});
+}
+function snapNow() { presetSnap = presetKey(); updateStar(); }
 function updateStar() {
   const o = $('presetSel').selectedOptions[0]; if (!o) return;
-  o.textContent = o.dataset.label + (JSON.stringify(getSettings()) !== presetSnap ? ' *' : '');
+  o.textContent = o.dataset.label + (presetKey() !== presetSnap ? ' *' : '');
 }
 function presetButtons() {
   const v = $('presetSel').value;
@@ -632,6 +743,8 @@ async function loadPresets() {
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
   fillPresetList('default');
   applySettings(presetSettings('default')); snapNow();
+  shellUiReady = true;
+  if (parent !== window) parent.postMessage({type:'shp-skin-ready'}, location.origin);
 }
 $('presetSel').onchange = () => {
   applySettings(presetSettings($('presetSel').value)); presetButtons(); snapNow();

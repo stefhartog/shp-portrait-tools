@@ -186,6 +186,8 @@ def desktop_command(url):
     data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "shp-photocraft-tools" / "webview"
     icon = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "icons/hicolor/scalable/apps/shp-photocraft-tools.svg"
     command = ["/usr/bin/python3", str(helper), "--url", url, "--data-dir", str(data), "--icon", str(icon)]
+    tray_icon = icon.with_name("shp-photocraft-tools-tray.svg")
+    command.extend(["--tray-icon", str(tray_icon)])
     checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=15)
     if checked.returncode:
         raise LaunchError(f"Desktop runtime unavailable: {checked.stderr.strip()}. "

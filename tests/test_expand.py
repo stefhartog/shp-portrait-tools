@@ -5,6 +5,7 @@ import io
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -96,17 +97,24 @@ class StubComfy(BaseHTTPRequestHandler):
     def do_GET(self):
         st = StubComfy.state
         if self.path == "/object_info":
-            info = {n: {"input": {"required": {}}} for n in X.REQUIRED_NODES}
+            info = {n: {"input": {"required": {}}} for n in set(X.REQUIRED_NODES + X.FILL_REQUIRED_NODES)}
             info["UnetLoaderGGUF"]["input"]["required"]["unet_name"] = [[X.DEFAULTS["unet"], "other.gguf"]]
             info["UpscaleModelLoader"]["input"]["required"]["model_name"] = [[X.DEFAULTS["upscale"]]]
             info["CLIPLoader"]["input"]["required"]["clip_name"] = [[X.CLIP_NAME]]
-            info["VAELoader"]["input"]["required"]["vae_name"] = [[X.VAE_NAME]]
+            info["VAELoader"]["input"]["required"]["vae_name"] = [[X.VAE_NAME, X.FILL_VAE]]
             info["LoraLoaderModelOnly"]["input"]["required"]["lora_name"] = [[X.LORA_NAME]]
+            info["UNETLoader"]["input"]["required"].update(
+                unet_name=[[X.DEFAULTS["fill_unet"]]], weight_dtype=[["default", "fp8_e4m3fn"]])
+            info["DualCLIPLoader"]["input"]["required"].update(
+                clip_name1=[[X.FILL_CLIP_L, X.FILL_T5]], clip_name2=[[X.FILL_CLIP_L, X.FILL_T5]], type=[["flux"]])
+            info["DualCLIPLoader"]["input"]["optional"] = {"device": [["default", "cpu"]]}
             for n in st.get("drop", []):
                 info.pop(n, None)
             return self.reply(info)
         if self.path.startswith("/history/"):
             pid = self.path.rsplit("/", 1)[1]
+            if time.monotonic() < st.get("ready_at", 0):
+                return self.reply({})
             return self.reply({pid: st["history"]} if st.get("history") and st["prompt_id"] == pid else {})
         if self.path.startswith("/view?"):
             name = re.search(r"filename=([^&]+)", self.path).group(1)
@@ -136,7 +144,8 @@ class StubComfy(BaseHTTPRequestHandler):
                 im.save(buf, "PNG")
                 st.setdefault("files", {})[key] = buf.getvalue()
             st["prompt_id"] = f"p{len(st.setdefault('seeds', []))}"
-            st["seeds"].append(g["16"]["inputs"]["noise_seed"])
+            st["seeds"].append(g["16"]["inputs"].get("noise_seed", g["16"]["inputs"].get("seed")))
+            st["ready_at"] = time.monotonic() + st.get("delay", 0)
             if st.get("fail"):
                 st["history"] = {"status": {"status_str": "error", "messages": [
                     ["execution_error", {"node_type": "VAEDecode", "exception_message": "out of memory"}]]}, "outputs": {}}
