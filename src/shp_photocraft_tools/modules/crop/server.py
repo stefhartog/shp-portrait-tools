@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from shp_photocraft_tools.shared.ui import stylesheet
+from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 
@@ -311,6 +311,8 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, HTML.read_bytes(), "text/html; charset=utf-8")
         if path == "/static/shp-ui.css":
             return self.send(200, stylesheet(), "text/css; charset=utf-8")
+        if path == "/static/theme.js":
+            return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path == "/api/images":
             return self.send(200, json.dumps(list_images()).encode(), "application/json")
         if path in ("/img/xorig", "/img/xresult") or (path.startswith("/img/xvar") and path[9:].isdigit()):

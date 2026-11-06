@@ -384,7 +384,7 @@ class Smoke(module.Desktop):
         self.expect(result["native"] and result["crypto"] == "function" and result["beacon"] == "function",
                     f"Missing browser APIs: {result}")
         self.expect(not result["repeatedTitle"], "Repeated shell title remains")
-        self.expect(len(result["dnbHeaders"]) == 7
+        self.expect(len(result["dnbHeaders"]) == 8
                     and all(header["arrow"] == "none" and header["label"] == ""
                             for header in result["dnbHeaders"]),
                     f"D&B collapse arrows or static switch labels remain: {result['dnbHeaders']}")
@@ -594,10 +594,215 @@ class Smoke(module.Desktop):
                 await new Promise(r=>setTimeout(r,50));
                 check(state.mode==='dnb'&&shell.getElementById('tab-dnb').getAttribute('aria-selected')==='true',
                   'Untrusted message source changed mode');
-                standalone.contentWindow.eval("$('toolMode').value='mask';$('toolMode').onchange()");
-                check(standalone.contentWindow.eval('state.mode')==='mask','Standalone mode selector broken');
+                standalone.contentWindow.eval("$('toolMode').value='frequency';$('toolMode').onchange()");
+                check(standalone.contentWindow.eval('state.mode')==='frequency','Standalone mode selector broken');
+                standalone.contentWindow.eval("applySettings({mode:'skintone',skintone:{sat_min:93,sat_max:2,sat_amount:87}});clearTimeout(markDirty.t)");
+                check(standalone.contentWindow.eval("state.mode==='frequency'&&getSettings().skintone.sat_min===93&&getSettings().skintone.sat_max===2"),
+                  'Legacy mode/saturation preset not preserved in standalone');
+                check(standalone.contentDocument.querySelectorAll('#toolMode option').length===3,
+                  'Redundant standalone mode remains');
+                const routeLoaded=await api('/api/pc/fetch',{});
+                const routeBody={mode:'frequency',S:routeLoaded.S,generation:routeLoaded.generation};
+                await api('/api/test/hue-route',{available:false});
+                try {
+                  const raw=await fetch('api/hue-center',{method:'POST',
+                    headers:{'Content-Type':'application/json'},body:JSON.stringify(routeBody)});
+                  check(raw.status===404&&raw.headers.get('Content-Type')==='text/plain',
+                    'Old-backend route response not reproduced through actual proxy');
+                  let parseFailure;
+                  try {await raw.json();} catch(e) {parseFailure={name:e.name,message:e.message,stack:e.stack};}
+                  check(parseFailure?.name==='SyntaxError'&&parseFailure.message==='The string did not match the expected pattern.',
+                    'Reported WebKit JSON error not reproduced: '+JSON.stringify(parseFailure));
+                  console.log('Reproduced original Hue Center failure',JSON.stringify(parseFailure));
+                  for(const child of [window,standalone.contentWindow]){
+                    let error;
+                    try {await child.eval("api('/api/hue-center',"+JSON.stringify(routeBody)+")");}
+                    catch(e){error=e.message;}
+                    check(error?.includes('HTTP 404')&&error.includes('Restart Tools/D&B')&&
+                      !error.includes('expected pattern'),'Missing endpoint diagnostic unclear: '+error);
+                  }
+                  applyLoaded(routeLoaded);state.pcFetched=true;
+                  const previous=state.skintone.hue_center;
+                  await initializeHueCenter();
+                  check(state.skintone.hue_center===previous&&state.hueCenterNote.includes('Restart Tools/D&B'),
+                    'Old backend invented a Center or lost restart explanation');
+                } finally {await api('/api/test/hue-route',{available:true});}
+                const routeEstimate=await api('/api/hue-center',routeBody);
+                check(Number.isFinite(routeEstimate.center),'Real current proxy route rejected valid estimate');
                 standalone.remove();
+                const initialS=$('S').value;
+                await $('landmarkOpen').onclick();
+                await wait(()=>$('p0').querySelector('img')?.naturalWidth>0);
+                check(landmarkEdit&&!$('landmarkEditor').hidden,'Landmark editor unavailable');
+                $('landmarkSubject').value='0';$('landmarkSubject').onchange();
+                landmarkDraft().points={
+                  l_eye:{x:300,y:200,visible:true,source:'manual'},
+                  r_eye:{x:480,y:200,visible:true,source:'manual'}
+                };
+                landmarkChanged();await wait(()=>!$('landmarkApply').disabled);
+                check(Math.abs(landmarkEdit.proposal.S-180)<0.001,'Manual eye scale incorrect');
+                $('landmarkName').value='r_eye';
+                $('p0').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',shiftKey:true,bubbles:true}));
+                await wait(()=>!$('landmarkApply').disabled);
+                check(landmarkCurrentPoints().r_eye.x===490,'Landmark nudge failed');
+                $('landmarkMissing').click();
+                await wait(()=>landmarkEdit.proposal!==null);
+                check($('landmarkApply').disabled,'Missing eyes produced scale');
+                $('landmarkUndo').click();await wait(()=>!$('landmarkApply').disabled);
+                await $('landmarkApply').onclick();clearTimeout(markDirty.t);
+                await wait(()=>!state.busy);
+                check(!landmarkEdit&&Math.abs(+$('S').value-190)<0.001,'Apply landmark scale failed');
+                check(state.frequency.radius===Math.round(state.frequency.radius_at_s181*190/181),
+                  'Landmark scale did not update FS radius');
+                await $('landmarkOpen').onclick();
+                $('landmarkSubject').value='0';$('landmarkSubject').onchange();
+                check(landmarkCurrentPoints().r_eye.x===490,'Applied landmarks not retained');
+                $('landmarkReset').click();
+                $('landmarkCancel').click();
+                check(!landmarkEdit&&+$('S').value===190,'Cancel changed applied scale');
+                $('S').value=initialS;$('S').onchange();clearTimeout(markDirty.t);
+                while(state.busy)await new Promise(r=>setTimeout(r,25));
                 const original=getSettings(),S=$('S').value;
+                check(sliders.layerBlur.lab.textContent==='Layer blur'&&
+                  sliders.layerBlur.rng.min==='0'&&sliders.layerBlur.rng.max==='20'&&
+                  sliders.layerBlur.rng.step==='0.1'&&params().layer_blur_at_s181===0,
+                  'D&B Layer blur bounds/default incorrect');
+                snapNow();
+                const fsBeforeBlur=JSON.stringify(state.frequency);
+                sliders.layerBlur.rng.value='2.3';
+                sliders.layerBlur.rng.dispatchEvent(new Event('input'));
+                clearTimeout(markDirty.t);
+                check(params().layer_blur_at_s181===2.3&&
+                  $('presetSel').selectedOptions[0].textContent.endsWith(' *')&&
+                  sliders.layerBlur.lab.title.includes('px at S181')&&
+                  JSON.stringify(state.frequency)===fsBeforeBlur,'Layer blur not independently wired/starred');
+                snapNow();
+                $('S').value=90.5;$('S').onchange();clearTimeout(markDirty.t);
+                check(sliders.layerBlur.lab.title.includes('1.15 px')&&
+                  !$('presetSel').selectedOptions[0].textContent.endsWith(' *'),
+                  'S-derived Layer blur incorrect or dirtied preset');
+                await storePreset('p:Layer blur fixture','Layer blur fixture');
+                applySettings({});clearTimeout(markDirty.t);
+                check(state.layerBlur===0,'Legacy settings did not default Layer blur to zero');
+                $('presetSel').value='p:Layer blur fixture';$('presetSel').onchange();clearTimeout(markDirty.t);
+                check(state.layerBlur===2.3,'Layer blur preset not restored');
+                await api('/api/presets/delete',{name:'Layer blur fixture'});
+                applySettings(original);$('S').value=S;$('S').onchange();clearTimeout(markDirty.t);
+                const hueFiles=await api('/api/images');
+                for(const hue of [18,43]){
+                  const file=hueFiles.find(item=>item.name==='hue-'+hue+'.png');
+                  check(file,'Hue load fixture missing');
+                  $('imgPath').value=file.path;
+                  const realShowImages=showImages;
+                  let sawDisplayWait=false;
+                  try {
+                    showImages=async()=>{
+                      const shown=await realShowImages();
+                      check(!temporaryLog.load.includes('Ready in '),
+                        'Ready was reported before display completion');
+                      sawDisplayWait=true;
+                      await new Promise(r=>setTimeout(r,40));
+                      return shown;
+                    };
+                    await loadImage();
+                    while(state.busy)await new Promise(r=>setTimeout(r,25));
+                    check(sawDisplayWait,'Automatic preview did not await pane loading');
+                  } finally {showImages=realShowImages;}
+                  check(/Image loaded in [0-9]+[.][0-9]{2}s/.test(temporaryLog.load)&&
+                    temporaryLog.load.includes('Image analyzed in ')&&
+                    temporaryLog.load.includes('Mask generated in ')&&
+                    temporaryLog.load.includes('Hue Center initialized in ')&&
+                    temporaryLog.load.includes('Preview computed in ')&&
+                    temporaryLog.load.includes('Preview images loaded in ')&&
+                    temporaryLog.load.includes('Ready in '),
+                    'Per-stage Load timings missing after automatic preview: '+temporaryLog.load);
+                  check(pans.every(p=>p.querySelector('img')?.complete&&
+                    p.querySelector('img')?.naturalWidth>0),'Ready before preview images loaded');
+                  const retainedTimings=temporaryLog.load;
+                  check(Math.abs(state.skintone.hue_center-hue)<.2&&
+                    Math.abs(+skintoneSliders.hue_center.num.value-hue)<.2,
+                    'New local image did not initialize measured Hue Center');
+                  skintoneSliders.hue_center.rng.value='32';
+                  skintoneSliders.hue_center.rng.dispatchEvent(new Event('input'));
+                  clearTimeout(markDirty.t);await apply();
+                  while(state.busy)await new Promise(r=>setTimeout(r,25));
+                  check(state.skintone.hue_center===32,'Preview overwrote manual Hue Center');
+                  check(temporaryLog.load===retainedTimings,
+                    'Automatic/manual Apply replaced persistent load timings');
+                  switchMode('mask');clearTimeout(markDirty.t);await apply();
+                  while(state.busy)await new Promise(r=>setTimeout(r,25));
+                  check(state.skintone.hue_center===32,'Mask/mode recomputation overwrote manual Center');
+                }
+                const versionBeforeFailedLoad=state.version;
+                $('imgPath').value='/missing-stage-fixture.png';
+                await loadImage();
+                check($('status').classList.contains('err')&&
+                  temporaryLog.load.includes('Image load/analysis failed:')&&
+                  !temporaryLog.load.includes('Ready in ')&&
+                  state.version===versionBeforeFailedLoad,'Failed load claimed success or applied old image');
+                const failedTimings=temporaryLog.load;
+                await apply();
+                check(temporaryLog.load===failedTimings,
+                  'Later Apply claimed failed Load was ready');
+                await pcGet();while(state.busy)await new Promise(r=>setTimeout(r,25));
+                check(state.pcFetched&&state.hueCenterNote.includes('estimated from original Color')&&
+                  state.skintone.hue_center!==32,'Get did not re-estimate Center');
+                check(temporaryLog.load.includes('Image loaded in ')&&
+                  temporaryLog.load.includes('Ready in '),'Get timings missing');
+                const realDisplay=showImages;
+                try {
+                  beginLoadTimings('Testing image display failure');
+                  showImages=()=>{
+                    const shown=realDisplay();
+                    pans[0].querySelector('img').src='img/missing-timing-fixture';
+                    return shown;
+                  };
+                  await apply();
+                  check($('status').classList.contains('err')&&
+                    temporaryLog.load.includes('Preview display failed')&&
+                    !temporaryLog.load.includes('Ready in '),
+                    'Image display failure was overwritten with Ready');
+                } finally {showImages=realDisplay;}
+                beginLoadTimings('Testing absent detection');
+                applyLoaded({generation:state.imageGeneration+1,S:null,has_mask:false,
+                  name:'no-scale fixture',width:800,height:600,colour:'test',confidence:'none',
+                  desc:'no detected subject',timings:{loaded:.1,analyzed:.2,mask:null}});
+                await apply();
+                check(temporaryLog.load.includes('Mask not generated:')&&
+                  temporaryLog.load.includes('Preview not generated:')&&
+                  !temporaryLog.load.includes('Ready in '),'Missing detection reported generated mask');
+                await pcGet();while(state.busy)await new Promise(r=>setTimeout(r,25));
+                const beforeEstimateApi=api;
+                let releaseEstimate;
+                try {
+                  api=async(path,body)=>path==='/api/hue-center'
+                    ?new Promise(resolve=>{releaseEstimate=(center=49,note='fixture')=>resolve({generation:body.generation,center,note});})
+                    :beforeEstimateApi(path,body);
+                  const estimating=initializeHueCenter();
+                  skintoneSliders.hue_center.rng.value='28';
+                  skintoneSliders.hue_center.rng.dispatchEvent(new Event('input'));
+                  clearTimeout(markDirty.t);releaseEstimate();await estimating;
+                  check(state.skintone.hue_center===28,'Late estimate overwrote manual edit');
+                  const stale=initializeHueCenter();
+                  applyLoaded({generation:state.imageGeneration+1,S:180,has_mask:true,name:'new fixture',
+                    width:800,height:600,seconds:0,colour:'test',confidence:'high',desc:'test'});
+                  releaseEstimate();await stale;
+                  check(state.skintone.hue_center===28,'Stale image estimate was applied');
+                  const outside=initializeHueCenter();releaseEstimate(355);await outside;
+                  check(state.skintone.hue_center===355&&skintoneSliders.hue_center.num.value==='355',
+                    'Measured hue outside slider window silently clamped');
+                  const empty=initializeHueCenter();
+                  releaseEstimate(null,'Hue Center not estimated: no usable masked coloured skin samples; previous Center retained.');
+                  await empty;
+                  check(state.skintone.hue_center===355&&temporaryLogText().includes('no usable masked'),
+                    'Empty estimate silently invented a Center or hid its explanation');
+                } finally {api=beforeEstimateApi;}
+                await pcGet();while(state.busy)await new Promise(r=>setTimeout(r,25));
+                applySettings({...original,skintone:{...original.skintone,hue_center:37}});
+                clearTimeout(markDirty.t);await apply();
+                while(state.busy)await new Promise(r=>setTimeout(r,25));
+                check(state.skintone.hue_center===37,'Preset Center overwritten by image estimate');
+                applySettings(original);clearTimeout(markDirty.t);
                 check(state.frequency.radius_at_s181===6,'Calibration default missing');
                 check(!sliders.frequencyRadius&&!sliders.blurRadius,'Direct px sliders remain');
                 check(sliders.blurPercent.rng.min==='100'&&sliders.blurPercent.rng.max==='500'
@@ -639,6 +844,24 @@ class Smoke(module.Desktop):
                 applyLoaded({...fetched,S:null});state.pcFetched=true;
                 check($('S').value===''&&sliders.frequencyCalibration.lab.title.includes('No valid scale'),
                   'Missing scale guessed silently');
+                check(!$('skintoneSummary'),
+                  'New image retained old Skintone analysis');
+                const rangeError='Skintone needs normalized RGB in 0-1; this source ranges from 0 to 1.5. Use an explicitly tone-mapped SDR copy for Skintone; other skin modes remain available.';
+                applyLoaded({...fetched,skintone_error:rangeError});state.pcFetched=true;
+                switchMode('skintone');clearTimeout(markDirty.t);
+                check(temporaryLogText().includes(rangeError),'Unsupported source explanation missing');
+                const rangeApi=api;
+                try {
+                  api=async(path,body)=>{
+                    if(path==='/api/run'&&body.mode==='frequency')throw Error(rangeError);
+                    return rangeApi(path,body);
+                  };
+                  await apply();
+                  check($('status').classList.contains('err')&&$('status').textContent===rangeError&&!state.busy,
+                    'Unsupported Skintone range was not a handled UI error');
+                  switchMode('mask');clearTimeout(markDirty.t);await apply();
+                  check(!$('status').classList.contains('err'),'Unsupported Skintone blocked other modes');
+                } finally {api=rangeApi;}
                 applySettings(original);clearTimeout(markDirty.t);
                 applyLoaded(fetched);state.pcFetched=true;
                 check(state.frequency.radius===Math.max(1,Math.round(6*fetched.S/181)),
@@ -665,10 +888,124 @@ class Smoke(module.Desktop):
                   check(shared()===edited,'Hidden shared mask state changed in '+mode);
                   check(await (await fetch('img/mask')).text()===maskPixels,'Shared mask processing changed in '+mode);
                 }
+                check(!$('g-skintone').hidden&&$('g-bands').hidden&&!$('g-frequency').hidden,
+                  'Combined controls not visible together');
+                for(const kind of ['color','detail']){
+                  check(!$('tabsB').querySelector('[data-k="'+kind+'"]').hidden,
+                    'Skintone '+kind+' preview unavailable');
+                }
+                check(!$('satDistribution')&&!$('skintoneSaturation')&&
+                  $('g-skintone').textContent.includes('One editable Hue LUT'),
+                  'Removed saturation section remains or combined stack is unexplained');
+                for(const [key,min,max] of [['hue_center',10,50],['hue_width',1,8]]){
+                  check(+skintoneSliders[key].rng.min===min&&+skintoneSliders[key].rng.max===max,
+                    'Wrong Skintone slider window: '+key);
+                }
+                check(state.skintone.hue_center===original.skintone.hue_center,'Saved image Center changed unexpectedly');
+                check($('hueDistribution').dataset.axisMin==='10'&&$('hueDistribution').dataset.axisMax==='50',
+                  'Chart windows do not match requested units/limits');
+                const legacyTone={...state.skintone,hue_center:355,hue_width:90,sat_min:5,sat_max:95};
+                const beforeLegacy=getSettings();
+                applySettings({...beforeLegacy,skintone:legacyTone});clearTimeout(markDirty.t);
+                check(JSON.stringify(state.skintone)===JSON.stringify(legacyTone)&&
+                  skintoneSliders.hue_center.num.value==='355'&&skintoneSliders.hue_width.num.value==='90',
+                  'Legacy preset silently clamped to slider window');
+                applySettings({...beforeLegacy,skintone:{...state.skintone,hue_width:0,sat_min:50,sat_max:50}});
+                clearTimeout(markDirty.t);await apply();await idle();
+                check(state.skintone.hue_width===0&&skintoneSliders.hue_width.num.value==='0'&&
+                  !$('status').classList.contains('err'),'Zero width/legacy saturation failed');
+                applySettings(beforeLegacy);clearTimeout(markDirty.t);await apply();await idle();
+                check($('hueDistribution').getContext('2d').getImageData(80,80,1,1).data[3]>0,
+                  'Skintone distribution not rendered');
+                const pixels=async kind=>{
+                  const image=new Image();image.src='img/'+kind+'?probe='+state.version;
+                  await image.decode();
+                  const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
+                  const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);
+                  return ctx.getImageData(0,0,canvas.width,canvas.height).data;
+                };
+                const beforeEffect=getSettings();
+                applySettings({...beforeEffect,skintone:{...state.skintone,hue_center:50,hue_width:3,sat_min:5,sat_max:20}});
+                clearTimeout(markDirty.t);await apply();await idle();
+                tabSel.A='result';syncTabs();showImages();
+                await wait(()=>$('p0').querySelector('img')?.complete&&$('p0').querySelector('img').naturalWidth>0);
+                const displayed=$('p0').querySelector('img');
+                check(!displayed.hidden&&displayed.getBoundingClientRect().width>0&&!$('p0').querySelector('.empty'),
+                  'Result is not a displayed decoded image');
+                const response=await fetch('img/result?v='+state.version);
+                check(response.headers.get('Content-Type')==='image/png','PNG Result has wrong MIME');
+                const originalPixels=await pixels('orig'),correctedPixels=await pixels('result');
+                let difference=0,lit=0;
+                for(let i=0;i<correctedPixels.length;i+=4){
+                  difference=Math.max(difference,...[0,1,2].map(c=>Math.abs(correctedPixels[i+c]-originalPixels[i+c])));
+                  if(correctedPixels[i]+correctedPixels[i+1]+correctedPixels[i+2]>20)lit++;
+                }
+                check(difference>20&&lit>1000,'Nonidentity Skintone result is blank or unchanged');
+                check((await pixels('color')).length===correctedPixels.length&&
+                  (await pixels('detail')).length===correctedPixels.length&&
+                  (await pixels('blur')).length===correctedPixels.length,'Color/Detail/Blur previews not decoded');
+                check($('status').textContent.startsWith('Visible correction'),'Correction effectiveness not reported');
+                applySettings({...getSettings(),skintone:{...state.skintone,hue_amount:0,sat_amount:0}});
+                clearTimeout(markDirty.t);await apply();await idle();
+                check($('status').textContent.includes('Hue Amount is zero'),'Hue-off Blur-only behavior is unexplained');
+                const neutralPixels=await pixels('result');
+                let neutralDifference=0;
+                for(let i=0;i<neutralPixels.length;i+=4)
+                  for(let c=0;c<3;c++)neutralDifference=Math.max(neutralDifference,Math.abs(neutralPixels[i+c]-originalPixels[i+c]));
+                check(neutralDifference<20,'Hue-off result differs excessively from softly blurred fixture');
+                displayed.dispatchEvent(new Event('error'));
+                check($('status').classList.contains('err')&&$('p0').querySelector('.empty'),
+                  'Preview load failure is silent');
+                applySettings(beforeEffect);clearTimeout(markDirty.t);await apply();await idle();
+                snapNow();
+                skintoneSliders.hue_center.rng.value='25';
+                skintoneSliders.hue_center.rng.dispatchEvent(new Event('input'));
+                clearTimeout(markDirty.t);
+                check(params().skintone.hue_center===25&&$('presetSel').selectedOptions[0].textContent.endsWith(' *'),
+                  'Skintone edit not wired/starred');
+                check(Object.keys(skintoneSliders).every(key=>key.startsWith('hue')),
+                  'Saturation correction controls remain');
+                await apply();await idle();await pcSend();
+                check(!$('status').classList.contains('err'),'Skintone Send failed');
+                const originalApi=api,requests=[];
+                try {
+                  api=async(path,body)=>{
+                    if(path==='/api/run')requests.push(body.skintone.hue_center);
+                    return originalApi(path,body);
+                  };
+                  const running=apply();
+                  skintoneSliders.hue_center.rng.value='32';
+                  skintoneSliders.hue_center.rng.dispatchEvent(new Event('input'));
+                  await running;
+                  await wait(()=>!state.busy&&!state.dirty);
+                  check(requests.length>=2&&requests[requests.length-1]===32,
+                    'Slider edit during processing left a stale preview');
+                } finally {api=originalApi;}
+                await storePreset('p:Tone fixture','Tone fixture');
+                const toneSaved=getSettings();
+                await choose('dnb');
+                check(!$('presetSel').selectedOptions[0].textContent.endsWith(' *'),'Skintone navigation dirtied preset');
+                $('presetSel').value='p:Tone fixture';$('presetSel').onchange();
+                clearTimeout(markDirty.t);await apply();await idle();
+                await wait(()=>shell.getElementById('tab-frequency').getAttribute('aria-selected')==='true');
+                check(JSON.stringify(getSettings())===JSON.stringify(toneSaved),'Skintone preset did not restore');
+                applySettings({...toneSaved,mode:'skintone',skintone:{...toneSaved.skintone,sat_min:93,sat_max:2,sat_amount:87}});
+                clearTimeout(markDirty.t);await apply();await idle();
+                await wait(()=>shell.getElementById('tab-frequency').getAttribute('aria-selected')==='true');
+                check(state.mode==='frequency'&&getSettings().skintone.sat_amount===87,
+                  'Legacy mode did not synchronize combined tab or discarded archived saturation');
+                await storePreset('p:Tone fixture','Tone fixture');
+                const legacyStored=await api('/api/presets');
+                check(legacyStored.presets['Tone fixture'].skintone.sat_min===93&&
+                  legacyStored.presets['Tone fixture'].skintone.sat_max===2,
+                  'Saving new hue settings destructively dropped legacy saturation values');
+                await api('/api/presets/delete',{name:'Tone fixture'});
+                applySettings({...getSettings(),skintone:original.skintone});
+                clearTimeout(markDirty.t);
                 await choose('frequency');
                 check($('g-bands').hidden&&!$('g-frequency').hidden,'Frequency controls not isolated');
                 check($('pcSend').textContent==='Send Layers'&&state.pcFetched,'Frequency send unavailable');
-                check([...$('tabsB').querySelectorAll('[data-k="color"],[data-k="detail"],[data-k="blur"]')].every(t=>!t.hidden),
+                check([...$('tabsB').querySelectorAll('[data-k="color"],[data-k="detail"]')].every(t=>!t.hidden),
                   'Frequency layer previews hidden');
                 snapNow();
                 sliders.frequencyCalibration.rng.value='5';sliders.frequencyCalibration.rng.dispatchEvent(new Event('input'));
@@ -715,7 +1052,7 @@ class Smoke(module.Desktop):
                 check(state.mode==='dnb'&&!$('g-bands').hidden&&$('g-frequency').hidden&&$('S').value===S,
                   'D&B or loaded scale lost');
                 window.skinToolsCheck={ok:true};
-              }catch(e){window.skinToolsCheck={error:String(e)};}
+              }catch(e){window.skinToolsCheck={error:String(e)+' '+(e.stack||'')};}
             })()`);
             fixtureCrop.contentWindow.eval(`(async()=>{
               const check=(ok,message)=>{if(!ok)throw Error(message);};

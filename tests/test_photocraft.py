@@ -1,11 +1,14 @@
 """Shared transport and module-specific send contracts. All PhotoCraft services are fakes."""
 
 import json
+import io
 import os
 import socketserver
+import struct
 import tempfile
 import threading
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageCms
 
 from shp_photocraft_tools.modules.crop.photocraft_bridge import Bridge as CropBridge
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge
+from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
 from shp_photocraft_tools.shared.photocraft import Client, ControlError, detect_config
 
 
@@ -145,6 +148,23 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(b.client.active, 1)
         self.assertEqual(len(b.client.documents), 1)
         self.assertEqual(list(b.exchange.iterdir()), [])
+
+    def test_tagged_rgb16_is_byte_identical_to_original_encoder(self):
+        rng = np.random.default_rng(42)
+        layer = rng.integers(0, 65536, (48, 64, 3), dtype=np.uint16)
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        rgba = np.dstack([layer, np.full(layer.shape[:2], 65535, np.uint16)])
+        ok, encoded = cv2.imencode(".png", rgba, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        self.assertTrue(ok)
+        png = encoded.tobytes()
+        chunk = b"iCCP" + b"Destination\0\0" + zlib.compress(icc)
+        original = (png[:33] + struct.pack(">I", len(chunk) - 4) + chunk
+                    + struct.pack(">I", zlib.crc32(chunk)) + png[33:])
+        actual = tagged_rgb16(layer, icc)
+        self.assertEqual(actual, original)
+        np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(actual, np.uint8), -1), rgba)
+        with Image.open(io.BytesIO(actual)) as image:
+            self.assertEqual(image.info["icc_profile"], icc)
 
     def test_dnb_refuses_missing_profile_before_copy_and_cleans_scratch(self):
         b = self.bridge(DnbBridge)

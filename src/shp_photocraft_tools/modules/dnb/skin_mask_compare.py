@@ -41,8 +41,8 @@ FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365
 L_EYE = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466]
 R_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
 LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]
-L_BROW = [276, 283, 282, 295, 285, 300, 293, 334, 296, 336]
-R_BROW = [46, 53, 52, 65, 55, 70, 63, 105, 66, 107]
+L_BROW = [276, 283, 282, 295, 285, 336, 296, 334, 293, 300]
+R_BROW = [46, 53, 52, 65, 55, 107, 66, 105, 63, 70]
 LIMBS = [("l_sho", "l_elb"), ("r_sho", "r_elb"), ("l_elb", "l_wri"), ("r_elb", "r_wri"),
          ("l_hip", "l_kne"), ("r_hip", "r_kne"), ("l_kne", "l_ank"), ("r_kne", "r_ank")]
 
@@ -177,16 +177,19 @@ def mask_B(img_u8, face_info, kp, sc):
     return out
 
 
-def pick_target(path, img):
+def pick_target(path, img, include_unscaled=False):
     subjects, bodies, af, target, faces = C.build_subjects(str(path), img)
     cands = [(i, C.combine(s[5])) for i, s in enumerate(subjects)]
     cands = [(i, r) for i, r in cands if r["S"] is not None]
-    if not cands:
+    if not cands and not include_unscaled:
         return None
-    i = target if target is not None and any(c[0] == target for c in cands) else min(cands, key=lambda c: c[1]["sigma"])[0]
+    if not subjects:
+        return None
+    i = (target if target is not None and any(c[0] == target for c in cands)
+         else min(cands, key=lambda c: c[1]["sigma"])[0] if cands else 0)
     kind, f, face_info, bi, est, cues = subjects[i]
     kp, sc = bodies[bi] if bi is not None else (None, None)
-    r = dict(cands)[i]
+    r = dict(cands).get(i, C.combine([]))
     why = "AF target" if i == target else ("most trustworthy subject (no AF point)" if af is None else "most trustworthy subject")
     desc = f"subject #{i}, {why}, cues " + ", ".join(f"{c[0]}={c[1]:.0f}" for c in r["used"])
     if f is not None:
@@ -197,7 +200,7 @@ def pick_target(path, img):
     else:
         centre = None
     seen = [{"face": s[1], "kp": bodies[s[3]][0] if s[3] is not None else None, "sc": bodies[s[3]][1] if s[3] is not None else None,
-             "face_info": s[2], "target": j == i} for j, s in enumerate(subjects)]
+             "face_info": s[2], "target": j == i, "cues": list(s[5])} for j, s in enumerate(subjects)]
     return {"face": f, "face_info": face_info, "kp": kp, "sc": sc, "S": r["S"], "conf": r["confidence"], "desc": desc, "centre": centre,
             "seen": seen}
 

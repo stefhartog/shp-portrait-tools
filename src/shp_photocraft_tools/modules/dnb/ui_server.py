@@ -18,13 +18,14 @@ import json
 import math
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageCms
-from shp_photocraft_tools.shared.ui import stylesheet
+from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 
@@ -33,6 +34,10 @@ from . import skin_mask as K
 from . import skin_mask_compare as M
 from . import photocraft_bridge as PCB
 from . import frequency_separation as FS
+from . import skintone as ST
+from . import combine_scale as C
+from . import estimate_body_scale as B
+from . import progress
 from .paths import DATA, MODELS
 
 ROOT = DATA
@@ -41,7 +46,7 @@ PRESETS = ROOT / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
 STATE = {"img": None, "path": None, "S": None, "centre": None, "imgs": {}, "version": 0, "region_key": None, "region": None,
-         "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True,
+         "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True, "skintone_error": None,
          "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None}
 DIRS = []
 
@@ -101,8 +106,13 @@ def list_images():
 
 def parse_params(p):
     mode = p.get("mode", "dnb")
-    if mode not in ("dnb", "mask", "frequency"):
-        raise ValueError("mode must be dnb, mask or frequency")
+    if mode not in ("dnb", "mask", "frequency", "skintone"):
+        raise ValueError("mode must be dnb, mask, frequency or skintone")
+    if mode == "skintone":
+        mode = "frequency"
+    layer_blur = float(p.get("layer_blur_at_s181", 0)) if mode == "dnb" else 0
+    if not math.isfinite(layer_blur) or not 0 <= layer_blur <= 20:
+        raise ValueError("Layer blur at S181 must be 0-20 pixels")
     bands = [(float(b[0]), float(b[1]), float(b[2]), max(float(b[3]), 1e-3)) for b in p.get("bands", []) if float(b[1]) > float(b[0])]
     if not bands and mode == "dnb":
         raise ValueError("no valid band (HI must be larger than LO)")
@@ -132,7 +142,8 @@ def parse_params(p):
                     "saturation_range": min(1.0, max(0.01, color_saturation_range)),
                     "blur_mm": color_blur_mm, "smooth_mm": color_smooth_mm, "strength": color_strength}
     return dict(
-        mode=mode, frequency=FS.settings(p) if mode == "frequency" else None,
+        mode=mode, layer_blur_at_s181=layer_blur, frequency=FS.settings(p) if mode == "frequency" else None,
+        skintone=ST.settings(p) if mode == "frequency" else None,
         protect=min(1.0, max(0.0, float(st.get("protect", 0.0)))), protect_mm=max(0.5, float(st.get("mm", 4.0))),
         protect_thr=max(0.005, float(st.get("thr", 0.1))),
         tone_strength=min(1.0, max(0.0, float(tone.get("strength", 1.0)))), color_filter=color_filter, analysis=p.get("analysis", {}),
@@ -212,49 +223,233 @@ def get_region(view, S):
 
 
 def api_load(req):
+    started = time.perf_counter()
+    path, img, source_img, raw8, mode, icc_out, source_icc, opaque, skintone_error, colour_note = \
+        progress.call("Loading image / preparing profile", prepare_loaded_image, req)
+    h, w = img.shape[:2]
+    return finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
+                               opaque, skintone_error, colour_note, h, w, started)
+
+
+def prepare_loaded_image(req):
     path = Path(req["path"]).expanduser()
     if path.suffix.lower() not in IMG_EXT or not path.is_file():
         raise ValueError(f"not an image file: {path}")
-    raw = cv2.imread(str(path), cv2.IMREAD_COLOR_BGR | cv2.IMREAD_ANYDEPTH)
+    raw = cv2.imread(str(path), cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
     if raw is None:
         raise ValueError(f"cannot read {path}")
-    img = raw.astype(np.float32) / (65535.0 if raw.dtype == np.uint16 else 255.0)
+    if raw.ndim == 2:
+        raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+    if raw.dtype in (np.uint8, np.uint16):
+        img = raw.astype(np.float32)
+        img /= np.iinfo(raw.dtype).max
+    elif np.issubdtype(raw.dtype, np.floating):
+        img = raw.astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"unsupported image sample type: {raw.dtype}")
+    if not np.isfinite(img).all():
+        raise ValueError("image contains non-finite RGB samples")
     source_img = img
+    skintone_error = ST.source_error(source_img)
     with Image.open(path) as source:
         source_icc = source.info.get("icc_profile")
     original = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    alpha_max = np.iinfo(original.dtype).max if np.issubdtype(original.dtype, np.integer) else 1.0
     opaque = not (original.ndim == 3 and original.shape[2] == 4 and
-                  np.any(original[..., 3] != np.iinfo(original.dtype).max))
+                  np.any(original[..., 3] != alpha_max))
+    del original
     h, w = img.shape[:2]
-    raw8 = raw if raw.dtype == np.uint8 else (raw / 257.0).astype(np.uint8)
+    raw8 = (raw if raw.dtype == np.uint8 else
+            (raw / 257.0).astype(np.uint8) if raw.dtype == np.uint16 else u8(img))
+    del raw
     mode, icc_out, converted, colour_note = colour_plan(path, raw8)
     if converted is not None:
         raw8, img = converted, converted.astype(np.float32) / 255.0
     D.set_colour_mode(mode)
-    t0 = time.time()
-    t = M.pick_target(path, raw8)
+    return path, img, source_img, raw8, mode, icc_out, source_icc, opaque, skintone_error, colour_note
+
+
+def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
+                        opaque, skintone_error, colour_note, h, w, started):
+    prepared = time.perf_counter()
+    t = progress.call("Analyzing image / estimating S", M.pick_target, path, raw8, include_unscaled=True)
+    analyzed = time.perf_counter()
+    mask_started = None
     S = centre = masks = seen = pbox = None
     conf, desc, mask_pct = "none", "no usable scale cue", None
     skin_colour = None
-    if t is not None:
+    if t is not None and t["S"] is not None:
         S, conf, desc, centre = t["S"], t["conf"], t["desc"], t["centre"]
-        res = K.skin_mask(raw8, t["face_info"], M.person_box(t, raw8.shape), S)
+        mask_started = time.perf_counter()
+        res = progress.call("Generating shared skin mask", K.skin_mask,
+                            raw8, t["face_info"], M.person_box(t, raw8.shape), S)
         masks = {"A": res["A"], "features": res["features"], "colour": res["colour"]}
         seen, pbox = t["seen"], M.person_box(t, raw8.shape)
         mask_pct = round(100 * float((res["skin"] > 0.5).mean()), 1)
         sel = res["skin"] > 0.5
         if sel.any():
-            bgr = img[sel].mean(axis=0)
-            hsv = cv2.cvtColor(np.asarray([[bgr]], dtype=np.float32), cv2.COLOR_BGR2HSV)[0, 0]
-            skin_light = float(D.to_srgb(float(D.luminance_linear(img[sel]).mean())))
-            skin_colour = {"hue": float(hsv[0]), "saturation": float(hsv[1]), "light": skin_light,
-                           "rgb": np.round(np.clip(bgr[::-1], 0, 1) * 255).astype(int).tolist()}
+            skin_colour = progress.call("Measuring masked skin color", initial_skin_colour, img, sel)
+    mask_finished = time.perf_counter()
+    if t is not None:
+        seen = t["seen"]
+    if masks is None:
+        progress.call("Mask not generated: no usable detected scale", lambda: None)
     STATE.update(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
                  seen=seen, pbox=pbox, last=None, struct=None, avers=0,
-                 source_img=source_img, source_icc=source_icc, source_opaque=opaque)
+                 source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
+                 landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={})
     BRIDGE["doc"] = None
     return {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
-            "seconds": round(time.time() - t0, 1), "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour}
+            "seconds": time.perf_counter() - started,
+            "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
+                        "mask": mask_finished - mask_started if mask_started is not None else None},
+            "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour,
+            "skintone_error": skintone_error, "generation": STATE["landmark_generation"]}
+
+
+def initial_skin_colour(img, sel):
+    bgr = img[sel].mean(axis=0)
+    hsv = cv2.cvtColor(np.asarray([[bgr]], dtype=np.float32), cv2.COLOR_BGR2HSV)[0, 0]
+    skin_light = float(D.to_srgb(float(D.luminance_linear(img[sel]).mean())))
+    return {"hue": float(hsv[0]), "saturation": float(hsv[1]), "light": skin_light,
+            "rgb": np.round(np.clip(bgr[::-1], 0, 1) * 255).astype(int).tolist()}
+
+
+def api_hue_center(req):
+    generation = req.get("generation")
+    if STATE["img"] is None or generation != STATE.get("landmark_generation"):
+        raise ValueError("the loaded image changed; Hue Center estimate discarded")
+    note = None
+    if STATE["masks"] is None:
+        note = "no detected skin mask"
+    elif STATE["S"] is None:
+        note = "no automatic scale for the Color split"
+    elif STATE.get("skintone_error"):
+        note = STATE["skintone_error"]
+    elif not STATE["source_opaque"]:
+        note = "the merged source is not opaque"
+    if note:
+        return {"generation": generation, "center": None,
+                "note": f"Hue Center not estimated: {note}; previous Center retained. Set Center manually."}
+    p = parse_params({**req, "mode": "frequency", "S": STATE["S"]})
+    native, analysis = STATE["source_img"], STATE["img"]
+    h, w = native.shape[:2]
+    scale = min(1.0, 1400 / max(h, w))
+
+    def reduced(a):
+        return cv2.resize(a, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else a
+
+    # Native values remain untouched; validated SDR area averages can overshoot by ULPs.
+    color_source = np.clip(reduced(native), 0, 1)
+    components = {key: reduced(a) for key, a in STATE["masks"].items()}
+    _, mask, _ = tool_mask(reduced(analysis), components, p, p["S"] * scale)
+    if mask is None:
+        mask = np.ones(color_source.shape[:2], np.float32)
+    color = FS.split(color_source, p["frequency"]["method"], p["frequency"]["radius"] * scale)["color"]
+    result = ST.estimate_center(color, mask)
+    if generation != STATE.get("landmark_generation"):
+        raise ValueError("the loaded image changed; Hue Center estimate discarded")
+    return {"generation": generation, **result}
+
+
+LANDMARK_NAMES = B.KP[1:3] + B.KP[5:17]
+
+
+def landmark_subjects():
+    return STATE["seen"] or [{"face": None, "face_info": None, "kp": None, "sc": None, "cues": [], "target": True}]
+
+
+def landmark_points(subject):
+    points = {}
+    kp, sc = subject["kp"], subject["sc"]
+    if kp is not None:
+        for name in LANDMARK_NAMES:
+            i = B.I[name]
+            if sc[i] >= B.MIN_SCORE:
+                points[name] = {"x": float(kp[i][0]), "y": float(kp[i][1]), "visible": True, "source": "detected"}
+    fi = subject["face_info"]
+    if fi is not None and fi[2] >= 0.5:
+        for name, i in (("l_eye", 468), ("r_eye", 473)):
+            points[name] = {"x": float(fi[0][i][0]), "y": float(fi[0][i][1]), "visible": True, "source": "detected"}
+    return points
+
+
+def api_landmarks(req):
+    if STATE["img"] is None:
+        raise ValueError("load an image first")
+    subjects = landmark_subjects()
+    h, w = STATE["img"].shape[:2]
+    return {"generation": STATE["landmark_generation"], "width": w, "height": h,
+            "subjects": [{"label": f"Subject #{i + 1}" + (" (analysis target)" if s["target"] else ""),
+                          "points": landmark_points(s), "overrides": STATE["landmark_overrides"].get(i)}
+                         for i, s in enumerate(subjects)]}
+
+
+def api_landmark_estimate(req):
+    if STATE["img"] is None or req.get("generation") != STATE.get("landmark_generation"):
+        raise ValueError("image changed; reopen scale landmarks")
+    index = req.get("subject")
+    subjects = landmark_subjects()
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(subjects):
+        raise ValueError("select a valid subject")
+    overrides = req.get("points", {})
+    excluded = req.get("excluded", [])
+    if not isinstance(overrides, dict) or not isinstance(excluded, list) or any(n not in LANDMARK_NAMES for n in overrides):
+        raise ValueError("invalid landmarks")
+    if any(n not in [s[0] for s in B.SEGMENTS] for n in excluded):
+        raise ValueError("invalid excluded segment")
+    h, w = STATE["img"].shape[:2]
+    for p in overrides.values():
+        if not isinstance(p, dict) or not isinstance(p.get("visible"), bool):
+            raise ValueError("invalid landmark visibility")
+        if p["visible"]:
+            x, y = p.get("x"), p.get("y")
+            if (not isinstance(x, (int, float)) or not isinstance(y, (int, float))
+                    or not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= w or not 0 <= y <= h):
+                raise ValueError("landmark outside image")
+    sub = subjects[index]
+    points = landmark_points(sub)
+    points.update({n: dict(p, source="manual") for n, p in overrides.items()})
+    kp = np.zeros((17, 2), dtype=float)
+    sc = np.zeros(17, dtype=float)
+    for name, p in points.items():
+        if p["visible"]:
+            kp[B.I[name]] = (p["x"], p["y"])
+            sc[B.I[name]] = 1
+    body = B.estimate(kp, sc, excluded)
+    unavailable = []
+    for name, a, b, _ in B.SEGMENTS:
+        if name in excluded:
+            continue
+        pa, _ = B.point(kp, sc, a)
+        pb, _ = B.point(kp, sc, b)
+        if pa is None or pb is None or np.linalg.norm(pa - pb) <= 1e-6:
+            unavailable.append(name)
+    cues = [tuple(c) for c in sub.get("cues", []) if c[0] != "body"]
+    eyes_changed = any(n in overrides for n in ("l_eye", "r_eye"))
+    if eyes_changed:
+        cues = [c for c in cues if c[0] not in ("face_ipd", "yunet_ipd", "eye_corners")]
+        a, b = points.get("l_eye"), points.get("r_eye")
+        if a and b and a["visible"] and b["visible"]:
+            d = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+            if d > 1e-6:
+                cues.append(("manual_eye_centres_2d", d, 0.20))
+    if body:
+        cues.append(("body", body["S"], 0.20))
+    result = C.combine(cues)
+    if overrides or excluded:
+        if result["confidence"] == "high":
+            result["confidence"] = "medium"
+        if result["sigma"] is not None:
+            result["sigma"] = max(result["sigma"], 0.15)
+    if req.get("apply"):
+        if result["S"] is None:
+            raise ValueError("no usable scale cue")
+        STATE["landmark_overrides"][index] = {"points": overrides, "excluded": excluded}
+    return {"S": result["S"], "confidence": result["confidence"], "sigma": result["sigma"],
+            "used": result["used"], "dropped": result["dropped"],
+            "segments": body["rows"] if body else [], "excluded": excluded, "unavailable": unavailable,
+            "body_spread": body["spread"] if body and math.isfinite(body["spread"]) else None}
 
 
 COCO_BONES = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
@@ -367,6 +562,8 @@ def api_run(req):
     if STATE["img"] is None:
         raise ValueError("load an image first")
     p = parse_params(req)
+    if p["mode"] == "frequency":
+        validate_skintone_source()
     view = req.get("view", "crop")
     reg, k, mreg = get_region(view, p["S"])
     if p["mode"] != "dnb":
@@ -378,6 +575,7 @@ def api_run(req):
     cs, after, change, diag, total = D.process(reg, p["S"] * k, p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
                                                p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
                                                protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
+    cs, after = D.blur_softlight_layer(reg, cs, after, total, p["layer_blur_at_s181"] * p["S"] * k / 181)
     d = (after - reg).mean(axis=2)
     stats = {"p95": float(np.percentile(np.abs(d), 95) * 255), "max": float(np.abs(d).max() * 255),
              "levels": [[round(c, 2), round(e, 4), round(g, 2)] for c, e, g in diag["levels"]],
@@ -406,10 +604,19 @@ def api_run(req):
     return {"version": STATE["version"], "avers": STATE["avers"], "stats": stats}
 
 
-def source_region(shape):
+def source_region(shape, normalized=False):
+    if normalized:
+        validate_skintone_source()
     x, y, w, h = STATE["region_box"]
     src = STATE["source_img"][y:y + h, x:x + w]
-    return cv2.resize(src, (shape[1], shape[0]), interpolation=cv2.INTER_AREA) if src.shape != shape else src
+    if src.shape == shape:
+        return src
+    resized = cv2.resize(src, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
+    if normalized:
+        # Area averages of validated SDR samples cannot exceed 0-1 mathematically.
+        # OpenCV float32 accumulation can overshoot white by one or more ULPs.
+        np.clip(resized, 0, 1, out=resized)
+    return resized
 
 
 def frequency_layers(img, mask, p, scale=1):
@@ -417,6 +624,20 @@ def frequency_layers(img, mask, p, scale=1):
         raise ValueError("frequency separation currently needs an opaque merged image; flatten transparency before Get")
     f = p["frequency"]
     return FS.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale)
+
+
+def validate_skintone_source():
+    if STATE.get("skintone_error"):
+        raise ValueError(STATE["skintone_error"])
+    if not STATE["source_opaque"]:
+        raise ValueError("Skintone currently needs an opaque merged image; flatten transparency before Get")
+
+
+def skintone_layers(img, mask, p, scale=1, *, native=False):
+    validate_skintone_source()
+    f = p["frequency"]
+    return ST.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale,
+                       native=native)
 
 
 def run_skin_preview(p, reg, k, mreg):
@@ -427,26 +648,25 @@ def run_skin_preview(p, reg, k, mreg):
                      "off": STATE["region_off"], "mm": p["protect_mm"], "thr": p["protect_thr"]}
     STATE["struct"] = ((p["S"] * k, p["protect_mm"], p["protect_thr"]), structure) if structure is not None else None
     imgs = {"orig": encode(u8(reg), ".jpg", 92, STATE["icc"]), "mask": encode(u8(show), ".png")}
+    distribution = None
     if p["mode"] == "mask":
         imgs["result"] = encode(u8(show), ".jpg", 92)
     else:
-        src = source_region(reg.shape)
-        layers = frequency_layers(src, show, p, k)
-        icc = STATE["source_icc"]
-        imgs["orig"] = encode(u8(src), ".jpg", 92, icc)
-        imgs.update({key: encode(u8(a), ".png", icc=icc) for key, a in layers.items()})
-        quantized = {key: FS.rgb16(a).astype(np.float32) / 65535 for key, a in layers.items()}
-        opacity = u8(show).astype(np.float32) / 255
-        masked_blur = quantized["color"] + (quantized["blur"] - quantized["color"]) * opacity[..., None]
-        imgs["blur"] = encode(u8(masked_blur), ".png", icc=icc)
-        result = FS.composite(quantized, opacity)
-        imgs["result"] = encode(u8(result), ".jpg", 92, icc)
+        src = source_region(reg.shape, normalized=True)
+        layers = skintone_layers(src, show, p, k)
+        corrected, result = ST.composite(layers, show, p["skintone"])
+        imgs["orig"] = encode(u8(src), ".jpg", 92, STATE["source_icc"])
+        imgs["result"] = encode(u8(result), ".png", icc=STATE["source_icc"])
+        imgs.update({key: encode(u8(a), ".png", icc=STATE["source_icc"]) for key, a in layers.items()})
+        imgs["blur"] = encode(u8(ST.base(layers, show)), ".png", icc=STATE["source_icc"])
+        distribution = ST.distribution(layers["color"], corrected, show, p["skintone"])
     STATE["imgs"] = imgs
     STATE["version"] += 1
     render_analysis(p["analysis"])
     return {"version": STATE["version"], "avers": STATE["avers"], "stats": {
         "preview_px": [reg.shape[1], reg.shape[0]], "seconds": round(time.time() - t, 2),
-        "mask_used": total is not None, "mask_pct": round(100 * float((show > 0.5).mean()), 1)}}
+        "mask_used": total is not None, "mask_pct": round(100 * float((show > 0.5).mean()), 1),
+        "skintone": distribution}}
 
 
 def api_save(req):
@@ -467,6 +687,7 @@ def api_save(req):
     cs, after, change, diag, total = D.process(img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
                                                p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
                                                protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
+    cs, after = D.blur_softlight_layer(img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
     stem = Path(STATE["path"]).stem
     out = ROOT / "results" / f"{stem}_{datetime.datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
@@ -490,10 +711,16 @@ def api_save(req):
 
 
 def save_skin(req, p):
+    if p["mode"] == "frequency":
+        validate_skintone_source()
     t = time.time()
     _, total, _ = tool_mask(STATE["img"], STATE["masks"], p, p["S"])
     mask = np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
-    layers = frequency_layers(STATE["source_img"], mask, p) if p["mode"] == "frequency" else {}
+    layers = {}
+    result = None
+    if p["mode"] == "frequency":
+        layers = skintone_layers(STATE["source_img"], mask, p)
+        _, result = ST.composite(layers, mask, p["skintone"])
     stem = Path(STATE["path"]).stem
     out = ROOT / "results" / f"{stem}_{p['mode']}_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
     out.mkdir(parents=True, exist_ok=True)
@@ -501,12 +728,22 @@ def save_skin(req, p):
         raise ValueError("could not write skin mask")
     for key, pixels in layers.items():
         (out / f"{key}.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(pixels), STATE["source_icc"] or SRGB_ICC))
+    if result is not None:
+        (out / "result.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(result), STATE["source_icc"] or SRGB_ICC))
+        for name, table in zip(("Hue",), ST.tables(p["skintone"])):
+            (out / f"{name}.cube").write_text(ST.cube_text(table, name))
     (out / "settings.json").write_text(json.dumps({**req, "image": STATE["path"],
-        "layer_recipe": ("Detail: Linear Light, unmasked; Blur: Normal with skinmask.png; Color: Normal, unmasked. "
-                         "Group: Normal, unmasked. Top-down: Detail / Blur / Color."
-                         if layers else "skinmask.png: reusable grayscale layer in Normal mode."),
-        "pixels": "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
-                  "Median uses equal votes among positive-mask samples. RGB16, source numeric space."}, indent=2))
+        "layer_recipe": ("SHP FS + Skintone: Normal unmasked outer group. Top-down: Detail (Linear Light, unmasked), "
+                         "Hue (with skinmask.png; Hue.cube, native Color Lookup, Normal, "
+                         "trilinear, dither off), Blur (Normal with skinmask.png), Color (Normal, unmasked)."
+                         if result is not None else "skinmask.png: reusable grayscale layer in Normal mode."),
+        "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "
+                   "No saturation correction. Neutrals protected. Gaussian/median Color/Detail separation and "
+                   "skin-aware Gaussian Blur use full-image radii. RGB16, source numeric space. Hue LUT is "
+                   "always embedded by Send; edit ranges in Tools and resend."
+                   if result is not None else
+                   "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
+                   "Median uses equal votes among positive-mask samples. RGB16, source numeric space.")}, indent=2))
     return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
 
 
@@ -528,8 +765,12 @@ def api_pc_status(req):
 
 
 def api_pc_fetch(req):
-    path, doc = bridge().fetch(ROOT / "inbox")
+    started = time.perf_counter()
+    path, doc = progress.call("Getting merged image from PhotoCraft", bridge().fetch, ROOT / "inbox")
+    fetched = time.perf_counter()
     res = api_load({"path": str(path)})
+    res["timings"]["loaded"] += fetched - started
+    res["seconds"] = time.perf_counter() - started
     BRIDGE["doc"] = doc
     res["pc_doc"] = doc
     return res
@@ -541,25 +782,41 @@ def api_pc_send(req):
     p = parse_params(req)
     img = STATE["img"]
     if p["mode"] != "dnb":
-        _, total, _ = tool_mask(img, STATE["masks"], p, p["S"])
+        skin, total, structure = progress.call("Preparing shared mask", tool_mask, img, STATE["masks"], p, p["S"])
+        del skin, structure
         mask = np.ones(img.shape[:2], np.float32) if total is None else total
+        del total
         if p["mode"] == "mask":
-            r = bridge().send_mask(u8(mask), BRIDGE["doc"])
+            mask8 = u8(mask)
+            del mask
+            r = bridge().send_mask(mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
         else:
-            layers = frequency_layers(STATE["source_img"], mask, p)
-            r = bridge().send_frequency({key: FS.rgb16(a) for key, a in layers.items()}, u8(mask),
-                                        BRIDGE["doc"], STATE["source_icc"])
+            validate_skintone_source()
+            layers = skintone_layers(STATE["source_img"], mask, p, native=True)
+            mask8 = u8(mask)
+            del mask
+            r = bridge().send_skintone(layers,
+                                      p["skintone"], mask8, BRIDGE["doc"], STATE["source_icc"])
         return {"sent": True, **r}
     flags = p["mask_flags"]
-    full_mask = combine_mask(STATE["masks"], flags, p["S"] / D.IPD_MM) if STATE["masks"] else None
+    full_mask = progress.call("Preparing D&B skin mask", combine_mask, STATE["masks"], flags,
+                              p["S"] / D.IPD_MM) if STATE["masks"] else None
     mask = full_mask if flags["on"] else None
-    mask = add_color_range(img, mask, p["color_filter"], p["S"] / D.IPD_MM)
-    cs, after, change, diag, total = D.process(img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
+    mask = progress.call("Preparing D&B color range", add_color_range, img, mask, p["color_filter"], p["S"] / D.IPD_MM)
+    cs, after, change, diag, total = progress.call("Calculating D&B layer and final mask", D.process, img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
                                                p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
                                                protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
+    cs, after = progress.call("Blurring D&B layer" if p["layer_blur_at_s181"] else "Keeping D&B layer unblurred",
+                              D.blur_softlight_layer, img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
+    del after, change, diag, full_mask, mask
     mask_out = total if total is not None else np.ones(img.shape[:2], np.float32)
     g16 = np.round(cs * 65535).astype(np.uint16)
-    r = bridge().send(np.dstack([g16, g16, g16]), u8(mask_out), BRIDGE["doc"])
+    del cs
+    layer16 = np.repeat(g16[..., None], 3, axis=2)
+    del g16
+    mask8 = u8(mask_out)
+    del mask_out, total
+    r = bridge().send(layer16, mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
     return {"sent": True, **r}
 
 
@@ -635,6 +892,10 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/progress":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            result = progress.snapshot(query.get("token", [""])[0], query.get("consume") == ["1"])
+            return self.send(200, json.dumps(result).encode(), "application/json")
         if path == "/api/health":
             return self.send(200, json.dumps({**identity("dnb", ROOT, MODELS),
                 "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
@@ -642,34 +903,53 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, script(), "text/javascript; charset=utf-8")
         if path == "/static/shp-ui.css":
             return self.send(200, stylesheet(), "text/css; charset=utf-8")
+        if path == "/static/theme.js":
+            return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path in ("/", "/index.html"):
             return self.send(200, HTML.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/presets":
             return self.send(200, json.dumps(read_presets()).encode(), "application/json")
         if path == "/api/images":
             return self.send(200, json.dumps(list_images()).encode(), "application/json")
+        if path == "/img/landmarks":
+            if STATE["img"] is None:
+                return self.send(404, b"no image yet", "text/plain")
+            img = STATE["img"]
+            h, w = img.shape[:2]
+            k = min(1.0, 1400 / max(h, w))
+            preview = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA) if k < 1 else img
+            return self.send(200, encode(u8(preview), ".jpg", 92, STATE["icc"]), "image/jpeg")
         if path.startswith("/img/"):
             kind = path[5:]
             data = STATE["imgs"].get(kind)
             if data is None:
                 return self.send(404, b"no image yet", "text/plain")
-            return self.send(200, data, "image/jpeg" if kind in ("orig", "result", "analysis") else "image/png")
+            return self.send(200, data, "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg")
         self.send(404, b"not found", "text/plain")
 
     def do_api_POST(self):
+        token = None
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            fn = {"/api/load": api_load, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
+            fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
+                  "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/launch": api_pc_launch,
                   "/api/presets/save": api_preset_save, "/api/presets/default": api_preset_default, "/api/presets/delete": api_preset_delete}.get(self.path)
             if fn is None:
                 return self.send(404, b"not found", "text/plain")
-            with LOCK:
-                res = fn(req)
+            token = req.pop("_progress", None)
+            with progress.operation(token):
+                with LOCK:
+                    res = fn(req)
+            if token is not None:
+                res["_progress"] = progress.snapshot(token, consume=True)
             self.send(200, json.dumps(res).encode(), "application/json")
         except Exception as e:  # report to the page instead of crashing the server
-            self.send(400, json.dumps({"error": f"{type(e).__name__}: {e}"}).encode(), "application/json")
+            result = {"error": f"{type(e).__name__}: {e}"}
+            if isinstance(token, str):
+                result["_progress"] = progress.snapshot(token, consume=True)
+            self.send(400, json.dumps(result).encode(), "application/json")
 
 
 def main():

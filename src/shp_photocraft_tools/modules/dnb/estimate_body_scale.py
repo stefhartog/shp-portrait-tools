@@ -129,14 +129,18 @@ def extra_cues(kp, sc, use_hand=False):
     return cues
 
 
-def estimate(kp, sc):
+def estimate(kp, sc, excluded=()):
     rows = []
     for name, a, b, frac in SEGMENTS:
+        if name in excluded:
+            continue
         pa, _ = point(kp, sc, a)
         pb, _ = point(kp, sc, b)
         if pa is None or pb is None:
             continue
         length = float(np.linalg.norm(pa - pb))
+        if not np.isfinite(length) or length <= 1e-6:
+            continue
         rows.append((name, length, length / frac))
     if not rows:
         return None

@@ -18,6 +18,28 @@ copied the separate Crop/D&B projects without changing them; those old local che
 since been removed. They are not install prerequisites. PhotoCraft/OpenFill shortcuts were
 retained. The distinct Tools launcher uses alternate ports.
 
+### Colour themes
+
+The **Theme** selector to the right of the shell's module tabs switches between
+**Current** (the original palette) and **PhotoCraft** (the default when no explicit
+choice is saved), an approximate
+screenshot-inspired neutral grey palette with a darker image workspace and muted
+blue selection/focus. It applies to the shell, Crop and all skin tools, including
+reloaded embedded frames. Standalone tools show the same selector in their top bar,
+immediately before presets. The preference is stored in this browser/profile per
+origin (standalone ports have separate preferences); same-origin windows stay in
+sync. Theme changes affect UI colours only, not chart data colours, mask overlays,
+image pixels, processing settings or presets. There is no image/CSS filter.
+Explicitly saved Current choices are retained. Selected tabs connect to their
+background with a matching bottom border, not a blue selection line; keyboard focus
+keeps its separate blue outline.
+Enabled Get/Send actions and standalone skin-tools Load/Save use the same primary
+accent styling as Generate/Apply. Disabled buttons and preset controls keep their
+existing appearance; utility controls are not promoted.
+Module tab titles darken subtly while busy/starting/stopping, with no status icons
+or changes to backgrounds or label width. Tooltips and accessible labels retain the full state and error
+details. Top-bar completion checkmarks remain muted blue in both themes.
+
 ## Setup
 
 ### 1. Baseline environment (all modes)
@@ -331,39 +353,191 @@ double-click reset, Shift-click crop changes and Ctrl-click tab cycling remain.
 
 **Send Result** copies a normal 16-bit RGB Soft Light layer and mask into the fetched document
 in one layer-copy operation; it never resizes the canvas. Send tags its scratch RGB layer
-with the destination's actual ICC profile (read from a temporary merged duplicate), without
+with the exact ICC profile captured by **Get**, without
 converting the correction samples. This prevents cross-document colour conversion from moving
 neutral gray or changing correction strength in wide-gamut/linear documents. The mask remains
 separate and untagged; the destination's profile is never changed. Send fails visibly if the
-profile cannot be obtained. Manual load/apply/save endpoints
+profile cannot be obtained. **Get again after changing, replacing or converting the
+destination document.** Send checks available document name/size information but assumes
+the profile is unchanged; PhotoCraft's current metadata cannot verify exact ICC identity.
+This avoids another full merged duplicate/export merely to read ICC on normal Send.
+Calls without a captured ICC retain the existing destination-export fallback for D&B and
+Skin Mask; FS + Skintone requires a captured profile rather than inventing one.
+Manual load/apply/save endpoints
 remain available. Saved output includes the full-resolution JPEG, combined mask PNG,
 unmasked 16-bit RGB layer PNG and settings JSON. Calculation, preview and manual-save colour
 handling are unchanged.
 
+The collapsible **Log** subsection inside Image analysis on Skin Mask shows current
+Load/Get/Send progress, timings and diagnostics. There is no save/download button.
+The log is in-memory only, cleared on page reload; older entries are bounded. Successful
+processing finishes with **Finished processing in X seconds.** in the top bar;
+errors remain explicit. This measures elapsed wall-clock time, not summed stages:
+Load/Get through initial preview image loading, recalculation through preview image
+loading, and Send through scratch cleanup. It does not measure screen paint.
+**Image analysis** is visible only on **Skin Mask** and summarizes the known file,
+dimensions/colour handling, detection confidence, mask availability, S, Hue midpoint,
+and light/color midpoints. It updates from shared state when settings change, without
+triggering analysis or resetting settings on tab switches.
+
+Load/Get's temporary log records:
+**Image loaded** includes decoding/profile preparation and, for Get, PhotoCraft's
+merged export/transfer; **Image analyzed** measures detection/S estimation;
+**Mask generated** measures shared mask generation plus initial skin-colour statistics.
+Without a usable detection/scale it explicitly reports that no mask was generated.
+Hue Center initialization and initial preview computation are timed separately
+(request round trips); **Preview images loaded** waits for both visible pane image
+load events. **Ready** is elapsed browser time from Load/Get through those events,
+not a claim that the screen has been painted. The summary survives automatic/manual
+Apply until the next Load/Get. During Load/Get, lightweight polling shows the actual
+active stage and each completed stage's measured duration. Send likewise reports mask
+preparation, Color/Detail separation, Blur, encoding/import, native Hue/mask assembly,
+final insertion and scratch cleanup (or D&B calculation/layer blur where applicable).
+No percentage is estimated. Steps shorter than the polling interval may appear already
+completed. Durations measure backend work/command completion, not PhotoCraft repaint.
+Send's timing summary remains visible after completion or failure.
+
 ### Skin tools inside D&B
 
 The **Skin tool** selector switches between **D&B layers** (the existing default),
-**Skin mask**, and **Frequency separation**, without fetching the picture again.
+**Skin mask**, and **FS + Skintone**, without fetching the picture again.
 All three use the same combined skin × picked color × light range × structure-protection
 mask. D&B strength, edge, tau and detail bands are correction controls only: they do not
 change the standalone mask or frequency split. Mask controls and the subject scale remain
 shared; edit Skin mask/feather, Structure protection, Light range and Color range in
-**Skin Mask mode**. Those sections are hidden in D&B and Frequency Separation to reduce
-clutter, but their values and on/off switches still apply in both. Switching modes does
+**Skin Mask mode**. Those sections are hidden in the other skin tools to reduce
+clutter, but their values and on/off switches still apply in all three. Switching modes does
 not reset the mask; presets still save the entire tool bundle. Image analysis/S and mask
-preview tabs remain available across modes. Frequency settings are separate preset fields.
-Old presets still select D&B.
+preview tabs remain available across modes. The combined tool keeps `frequency` settings
+for separation/Blur and `skintone` settings for hue in the shared preset bundle.
+Old `frequency` and `skintone` modes both open **FS + Skintone**; presets without a mode
+still select D&B. Legacy saturation values remain stored but are ignored, including on
+explicit preset Save; loading never rewrites preset files.
+
+**Adjust scale landmarks** in Image analysis offers a manual fallback for uncertain S.
+Select a subject, place or adjust eye centres/body joints on Original, and exclude
+occluded or foreshortened segments. Review the proposed scale and uncertainty, then Apply;
+Cancel leaves S unchanged. Edits belong to the loaded image, not presets, and clear on
+the next Get/load. This adjusts scale only: it does not rebuild segmentation or retarget
+the skin mask/crop. If automatic analysis produced no mask, manual landmarks do not
+create one. See [landmark controls](docs/source/dnb-readme.md#adjusting-scale-landmarks).
 
 The preset star indicates edits to shared settings, including settings hidden in the current
 mode. Switching skin tabs or recalculating pixel radii from S does not mark a preset unsaved;
-Save clears the star across all three tabs. Presets still store and restore the chosen mode.
+Save clears the star across all three skin tabs. Presets still store and restore the chosen mode.
 Option tooltips appear only over their first-column labels, not sliders or value readouts.
+
+**D&B → Layer blur** smooths the generated gray Soft Light layer before Result, Layer,
+Layer+mask, Save and Send. It leaves the separate combined mask unchanged.
+The independent slider is **0–20 px at S181**, step0.1, default0 (off):
+full-image Gaussian sigma is `Layer blur × S / 181`, without rounding the fractional S
+or sigma. Preview sigma scales with its reduced resolution; Save/Send use full resolution.
+The label tooltip shows current pixels. It does not use or change FS Radius/Blur.
+Legacy presets default to0 without rewriting files; zero preserves the existing D&B
+output exactly. Slider edits dirty the preset, while S-derived pixel changes do not.
 
 **Skin mask → Send Mask** adds a reusable grayscale RGB layer, not a mask on the selected
 PhotoCraft layer. Its numeric gray values match the displayed combined mask.
 With every mask component disabled the output is white (the whole image).
 
-**Frequency separation** has Gaussian or Median separation, controlled by
+**FS + Skintone** combines frequency separation, skin-aware Blur and soft hue limiting
+in one tab. It separates the unmasked image into **Color** and **Detail**, adds skin-masked
+Blur over Color, applies skin-masked Hue correction to that low-frequency base, then restores
+unmasked Detail with Linear Light. The Hue LUT comes from your range settings, not learned
+from the image. **There is no saturation correction control, graph or Saturation LUT.**
+Hue changes can change perceived saturation/brightness, but the analytic hue transform
+preserves HSV saturation/value; interpolation and final detail clipping can deviate slightly.
+**Hue Center** slides from **10–50°**, with30° at its midpoint,
+and **Range ±** slides from **1–8°**, defining a circular allowed hue arc.
+Each successful **Load/Get** initializes Center once from uncorrected low-frequency Color
+under the current combined skin mask: a mask-weighted circular hue mean, excluding gray/
+black samples. It uses the new image's estimated S and current separation method/Radius,
+on a whole-image preview capped at1400px. Red wrap is handled circularly; estimates outside
+10–50° keep their actual readout/value, with the thumb at an endpoint, not silently clamped.
+Manual Center edits, Apply, mask edits and tab switches do not re-estimate. Loading a preset
+intentionally restores its saved Center; the next image Load/Get estimates anew without
+changing saved files or Hue Range/Softness/Amount. Missing mask/scale, no coloured masked
+samples or ambiguous circular hues leave the prior Center intact with an explicit note
+to set it manually. HDR/transparent sources retain their normal combined-mode error.
+If the page reports that `/api/hue-center` returned HTTP404, it has newer UI code than
+the running backend: restart Tools/D&B when ready and Get again; page refresh alone
+cannot activate a new Python endpoint.
+Legacy/API zero Hue Range targets Center (Amount, neutral protection and LUT approximation still apply).
+The hue chart uses an **absolute10–50° vertical axis**; brightness
+still runs horizontally from dark to light. Triangles mark off-window measured percentiles,
+without clamping the distribution data or changing the correction.
+Legacy/default values outside these narrower slider windows retain their actual readout
+and processing value until edited, with the thumb at the nearest endpoint. Presets and API
+keep their wider compatible numeric domain; files are not rewritten until explicit Save.
+Defaults remain hue30° ±30°, **Softness**5° and **Amount**100% for preset compatibility.
+These are allowed limits, not a tint: skin already inside the inner core may look unchanged
+at defaults. The status/analysis text reports visible correction (over one8-bit RGB level)
+among sampled masked preview pixels, or explains zero Amount/empty mask/no visible change.
+Narrowing the limits requests stronger hue correction. **Hue Amount0 leaves Blur active**;
+zero Blur radius plus neutral Hue settings (or an empty combined mask) reconstructs the
+original within raster rounding, never an intentionally empty Result pane. Image delivery uses the encoded
+PNG/JPEG's actual MIME type, and browser image-load failures appear as explicit errors.
+Softness controls exponential shoulders *inside* the boundaries: colours in the inner core
+stay unchanged, while boundary/outlier colours compress toward the bounds. Zero softness
+gives hard analytic limits; partial Amount intentionally permits weaker correction.
+Neutral/near-neutral RGB is protected, including LUT cells touching the gray diagonal,
+so shadows and low-chroma pixels are not forced into orange. HSV value is retained by the
+analytic transforms; finite RGB LUT interpolation can introduce small deviations.
+Hue is a circular quantity: extreme hues opposite Center sit at its wrap seam, not on a
+linear spectrum. This is not an automatic skin-colour target or a perceptual colour model.
+
+The hue chart shows **uncorrected Color versus Color + masked Blur + masked Hue**, not
+the original detailed image or final recomposite: shared-mask-weighted 10/50/90th percentiles
+across 16 original-Color brightness bins, with median colour strips from dark to light. Hue is shown as
+absolute hue angle. Brightness means **HSV value of native
+document RGB**, not physical luminance, and differs across ICC profiles. The chart describes
+the current reduced preview/view, samples at most approximately 100,000 pixels, omits neutral
+samples, and explicitly reports when none remain. Median colour strips use measured
+HSV statistics, not an automatically calculated saturation target.
+The chart does not rerun detection or use
+different correction rules for shadows/midtones/highlights. Shared masking still uses
+the existing analysis colour space. Adjust that mask in **Skin Mask**.
+
+**Send Layers** always creates one unmasked **Normal SHP FS + Skintone** folder, top to bottom:
+**Detail** (Linear Light, unmasked), **Hue** (Normal native adjustment, combined skin mask),
+**Blur** (Normal, combined skin mask), **Color** (Normal, unmasked).
+Hue is **one editable native Color Lookup adjustment**, with its mask attached directly
+and no intermediate subgroup, even at
+zero Hue Amount: Normal, trilinear interpolation, dither off. It is not a
+raster layer or PhotoCraft Hue/Saturation sector slider. Edit the exact
+range controls in SHP Tools and resend; PhotoCraft retains the embedded Hue LUT as an editable
+adjustment (including replacement, visibility and opacity), even after saving/reopening
+`.pcraft`, with no external LUT file dependency. Hue affects Color + masked Blur
+inside the outer Normal folder, before Detail.
+Blur's mask feathers Blur once; the Hue adjustment's own mask feathers Hue once.
+Send transfers one mask file/source document and reuses it for both mask attachments;
+PhotoCraft stores a separate editable mask on each layer.
+The folder, Detail and Color are never masked. Send stages the group off-document and copies it in one
+target undo step; stale size, missing captured ICC or unsupported native adjustments fail explicitly.
+
+Both preview and Send sample the same **33³ RGB Hue LUT** (six-decimal samples, sized to fit
+PhotoCraft's 1 MiB control request). This approximates the continuous limiter, **not an
+exact guarantee that every output hue is inside its bounds**, especially at
+wraps, narrow ranges, near-neutral protection, partial Amount or feathered mask boundaries.
+Color/Blur/Detail use the same tagged RGB16 samples in preview and Send. Empty-mask
+output reconstructs the original within raster rounding; genuine correction leaves
+high-frequency Detail unchanged, although the final composite can clip at black/white.
+Preview uses a reduced view and proportionally scaled Radius, so fine-detail filtering
+can differ from full-resolution Send. Eight-profile × 8/16/32-bit native comparisons
+cover the nested stack, partial masks and numeric-space ICC handling; 8-bit layer
+quantization can differ from the RGB16 preview by about three8-bit levels.
+FS + Skintone requires an opaque, normalized source. Manual **Save** writes
+`Hue.cube`, tagged RGB16 Color/Blur/Detail/result, `skinmask.png` and settings with the layer recipe.
+Older presets receive Skintone defaults in memory without rewriting files until Save.
+The loader checks the original numeric range: 8/16-bit integers normalize by their own
+maximum; floating-point samples are already numeric RGB and are not divided by255.
+Genuine extended-range sources receive a Skintone-specific explanation at load/entry and
+cannot be processed, saved or sent by Skintone; other modes remain available. No automatic
+HDR clipping or tone mapping is applied to source pixels. On validated SDR sources only,
+the reduced Skintone preview repairs float32 area-resize endpoint roundoff (for example
+white becoming1.0000001); this is not interpreted as HDR and leaves original samples intact.
+
+The **Frequency separation** section has Gaussian or Median separation, controlled by
 **Radius** (a calibration in px at S = 181 px / 63 mm, default **6**). There are no direct pixel sliders.
 On each new image/Get, or an edit to S or calibration, the radius becomes
 `calibration × S / 181`, rounded to whole pixels and limited to 1–100 px (current values are shown in
@@ -386,37 +560,49 @@ Color uses ordinary full-image Gaussian or Median filtering, completely independ
 the skin mask. Median can be slower on large pictures/radii and OpenCV internally quantizes
 floating-point median values; Detail is derived from the actual resulting Color.
 
-**Send Layers** adds one **SHP Frequency Separation** folder in a single undo step:
-**Detail** (Linear Light) on top, **Blur** (Normal, combined skin layer mask) in the middle,
-and **Color** (Normal) at the bottom. **The folder, Detail and Color have no mask.**
 Color + Detail alone reconstructs the full fetched original within RGB16 rounding tolerance.
-Only Blur uses the skin mask: its extra Gaussian filter divides skin-weighted Color by
+Blur's extra Gaussian filter divides skin-weighted Color by
 the blurred mask, excluding non-skin samples before filtering without introducing black
 edges. Outside support it keeps Color unchanged. The same combined mask then feathers
 Blur as its actual layer mask, applying opacity once, not baking it into the pixels.
 This cannot undo color mixing already present in the ordinary full-image Color split.
 Blur is active immediately, smoothing skin tones under the unmasked Detail.
-Color and Detail tabs show unmasked layer data; **Blur** shows its feathered skin mask
-applied over Color, without Detail. **Result** shows the actual sent stack,
-including the active skin-masked Blur. There is no initial black paint-in mask.
+The right pane offers **Color / Detail** in FS + Skintone, **Layer / Layer + mask**
+in D&B, and **Mask / Analysis** in Skin Mask. Hidden or obsolete remembered choices
+fall back to the first available preview. This is a UI change only: existing backend
+preview generation/encoding remains unchanged, so it does not speed up processing.
+Masks, separation and Blur still contribute to Result and full-resolution output.
+Skin Mask's left pane offers **Original** only; its mask remains on the right.
+**Result** shows the actual sent stack,
+including masked Blur, masked Hue and restored Detail. There is no initial black paint-in mask.
 
 Separation stays in the fetched image's native numeric color space, even when analysis
-uses an sRGB conversion. All RGB16 scratch layers carry the actual destination ICC,
+uses an sRGB conversion. All RGB16 scratch layers carry Get's exact captured destination ICC,
 without conversion of their values. A changed destination size/profile requires another
-Get. Frequency separation currently requires an **opaque** merged source; transparent
+Get. The combined workflow requires an **opaque** merged source; transparent
 images fail explicitly rather than silently losing transparency. No new models or
 dependencies are required. Manual Save writes `skinmask.png` and settings, plus RGB16
-`color.png`, `detail.png`, `blur.png` for frequency mode; settings include the layer recipe.
+`color.png`, `detail.png`, `blur.png`, `result.png` and `Hue.cube`; settings include the layer recipe.
+
+Skin-tools Send releases temporary Blur, mask and Detail source documents as soon as
+their data is copied into the assembly. FS + Skintone keeps at most the assembly plus
+one temporary source open, then inserts the completed folder once. Native RGB16 layers
+are prepared directly, without retaining three additional float RGB export copies;
+PNG tagging also avoids redundant full-buffer copies. Precision, RGB channels, masks,
+blend modes and the final one-step target insertion are unchanged. Full-resolution
+processing, PNG encoding/import and the Color/Blur/Detail assembly itself still cost memory;
+Get still exports the merged image needed for analysis. No reduced-precision path is used.
 Get/analysis still has the same model/GPU requirements as D&B.
 
 Both modules use the same **grey-off / blue-on horizontal switches**, dark dropdowns,
 compact preset controls and **Get Image** action. D&B's Send label follows its selected
 skin-tool mode. Native checkbox state,
 keyboard focus, labels, disabled behavior and settings handlers remain. The Tools top tabs
-are **Crop · Skin Mask · Frequency Separation · D&B**. All three skin tabs reuse one
+are **Skin Mask · FS + Skintone · D&B · Crop** (Crop remains the initial workflow).
+All three skin tabs reuse one
 D&B iframe/backend and the same fetched image, mask, settings and PhotoCraft identity.
 No view is reloaded when switching; presets synchronize the selected skin tab.
-Left/right arrow keys cycle all four tabs. The internal Skin tool selector is hidden only
+Left/right arrow keys cycle all four tabs in that order. The internal Skin tool selector is hidden only
 after a Tools handshake; standalone D&B keeps its selector and needs no shell.
 The two backend iframes stay mounted at the same size, preserving image/zoom/prompt state.
 Refreshing resets browser-only views; stopping a backend discards its in-memory work.

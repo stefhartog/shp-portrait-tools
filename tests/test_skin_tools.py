@@ -11,10 +11,19 @@ from PIL import Image
 
 import test_dnb as T
 from test_dnb import PARAMS, synthetic_image
-from shp_photocraft_tools.modules.dnb import dodge_burn as D, frequency_separation as F, ui_server as S
+from shp_photocraft_tools.modules.dnb import dodge_burn as D, frequency_separation as F, ui_server as S, skintone as ST
 
 
 class FilterTests(unittest.TestCase):
+    def test_bounded_rgb16_conversion_is_exact_for_all_rows_and_sample_types(self):
+        rng = np.random.default_rng(59)
+        for dtype in (np.float32, np.float64):
+            image = rng.uniform(-.05, 1.05, (147, 91, 3)).astype(dtype)
+            image[0, :3] = np.array([0, .5, 1])[:, None]
+            image = image[:, ::-1]
+            np.testing.assert_array_equal(F.rgb16(image),
+                                          np.round(np.clip(image, 0, 1) * 65535).astype(np.uint16))
+
     def test_ratio_uses_rounded_clamped_actual_radius_and_legacy_requests_stay_explicit(self):
         for S, radius in ((181, 6), (362, 12), (90.5, 3), (196.08333334, 7), (10000, 100)):
             for percent in (100, 200, 500):
@@ -120,6 +129,36 @@ class SkinApiTests(unittest.TestCase):
     get = T.DnbTests.get
     post = T.DnbTests.post
 
+    def test_all_send_modes_receive_exact_icc_captured_by_get(self):
+        icc = T.ImageCms.ImageCmsProfile(T.ImageCms.createProfile("sRGB")).tobytes()
+        with Image.open(self.image) as image:
+            image.load()
+            image.save(self.image, icc_profile=icc)
+        received = []
+
+        class FakeBridge:
+            def fetch(inner, dest):
+                return self.image, {"index": 1, "name": self.image.name}
+
+            def send(inner, layer, mask, doc, *, source_icc=None):
+                received.append(("dnb", source_icc))
+                return {"layer": 1}
+
+            def send_mask(inner, mask, doc, *, source_icc=None):
+                received.append(("mask", source_icc))
+                return {"layer": 2}
+
+            def send_skintone(inner, layers, settings, mask, doc, source_icc):
+                received.append(("frequency", source_icc))
+                self.assertTrue(all(a.dtype == np.uint16 for a in layers.values()))
+                return {"layer": 3}
+
+        S.BRIDGE["b"] = FakeBridge()
+        self.post("/api/pc/fetch", {})
+        for mode in ("dnb", "mask", "frequency"):
+            self.post("/api/pc/send", dict(PARAMS, mode=mode))
+        self.assertEqual(received, [(mode, icc) for mode in ("dnb", "mask", "frequency")])
+
     def test_mode_previews_saves_and_send_shapes(self):
         sent = []
 
@@ -127,11 +166,11 @@ class SkinApiTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send_mask(inner, mask, doc):
+            def send_mask(inner, mask, doc, *, source_icc=None):
                 sent.append(("mask", mask.copy()))
                 return {"layer": 10, "document": doc["name"]}
 
-            def send_frequency(inner, layers, mask, doc, source_icc):
+            def send_skintone(inner, layers, settings, mask, doc, source_icc):
                 sent.append(("frequency", layers, mask.copy(), source_icc))
                 return {"layer": 11, "document": doc["name"]}
 
@@ -139,6 +178,7 @@ class SkinApiTests(unittest.TestCase):
         self.post("/api/pc/fetch", {})
         for mode in ("mask", "frequency"):
             p = dict(PARAMS, mode=mode, strength=0,
+                     skintone={"hue_amount":0},
                      frequency={"method": "median", "radius": 4, "blur_radius": 7})
             run = self.post("/api/run", p)
             self.assertEqual(run["stats"]["preview_px"], [128, 96])
@@ -149,7 +189,7 @@ class SkinApiTests(unittest.TestCase):
             self.assertTrue(self.post("/api/pc/send", p)["sent"])
             if mode == "frequency":
                 layers = {key: a.astype(np.float32) / 65535 for key, a in sent[-1][1].items()}
-                expected = S.encode(S.u8(F.composite(layers, sent[-1][2].astype(np.float32) / 255)), ".jpg", 92)
+                expected = S.encode(S.u8(F.composite(layers, sent[-1][2].astype(np.float32) / 255)), ".png")
                 self.assertEqual(self.get("/img/result")[0], expected)
                 opacity = sent[-1][2].astype(np.float32) / 255
                 masked_blur = layers["color"] + (layers["blur"] - layers["color"]) * opacity[..., None]
@@ -157,7 +197,7 @@ class SkinApiTests(unittest.TestCase):
             saved = self.post("/api/save", p)
             self.assertIn("skinmask.png", saved["files"])
             if mode == "frequency":
-                self.assertEqual(set(saved["files"]), {"skinmask.png", "color.png", "detail.png", "blur.png", "settings.json"})
+                self.assertEqual(set(saved["files"]), {"skinmask.png", "color.png", "detail.png", "blur.png", "result.png", "Hue.cube", "settings.json"})
         self.assertEqual(sent[0][1].shape, (96, 128))
         self.assertEqual(sent[0][1].dtype, np.uint8)
         self.assertEqual(set(sent[1][1]), {"color", "detail", "blur"})
@@ -182,7 +222,7 @@ class SkinApiTests(unittest.TestCase):
         mask[:, 96:] = 1
         originals = {key: a.copy() for key, a in layers.items()}
         with patch.object(S, "tool_mask", return_value=(mask, mask, None)), \
-                patch.object(S, "frequency_layers", return_value=layers):
+                patch.object(ST, "separate", return_value={key:F.rgb16(a).astype(np.float32)/65535 for key,a in layers.items()}):
             self.post("/api/run", dict(PARAMS, mode="frequency"))
         data, _ = self.get("/img/blur")
         actual = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)

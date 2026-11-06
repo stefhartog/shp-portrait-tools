@@ -138,6 +138,32 @@ class SupervisorTests(unittest.TestCase):
         self.assert_error(503, "/crop/")
         self.assertEqual(self.control("crop", "start")["phase"], "running")
 
+    def test_hue_center_real_proxy_and_direct_child_route(self):
+        loaded=self.request("/dnb/api/pc/fetch",{})
+        body={"generation":loaded["generation"],"S":loaded["S"],"mode":"frequency",
+              "tone":{"on":False},"color":{"on":False},"structure":{"protect":0}}
+        proxied=self.request("/dnb/api/hue-center",body)
+        self.assertIsInstance(proxied["center"],float)
+        connection=http.client.HTTPConnection("127.0.0.1",self.manager.config["ports"]["dnb"])
+        try:
+            connection.request("POST","/api/hue-center",json.dumps(body),{"Content-Type":"application/json"})
+            response=connection.getresponse()
+            self.assertEqual(response.status,200)
+            self.assertEqual(json.loads(response.read()),proxied)
+        finally:
+            connection.close()
+        self.request("/dnb/api/test/hue-route",{"available":False})
+        connection=http.client.HTTPConnection("127.0.0.1",self.server.server_port)
+        try:
+            connection.request("POST","/dnb/api/hue-center",json.dumps(body),
+                               {"Content-Type":"application/json","Origin":self.base})
+            response=connection.getresponse()
+            self.assertEqual(response.status,404)
+            self.assertEqual(response.getheader("Content-Type"),"text/plain")
+            self.assertEqual(response.read(),b"not found")
+        finally:
+            connection.close()
+
     def test_busy_api_and_background_job_cannot_be_forced(self):
         with ThreadPoolExecutor() as pool:
             work = pool.submit(self.request, "/dnb/api/test/work", {})

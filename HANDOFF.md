@@ -53,7 +53,90 @@ fetch/launch differed only by prefixes, config paths and labels, now subclass at
 Do not combine the incompatible result-application semantics. Original best-effort cleanup,
 reconnect/retry and undo behavior remain; this is not a transaction redesign.
 
+### Shared colour themes
+
+Shared themes: `shared/ui/common.css` retains the original Current palette and
+adds `:root[data-theme="photocraft"]` variables (neutral panels #515151, workspace
+#272727, recessed inputs #444444, blue #6a9fc5). Component CSS consumes these for
+workspaces/controls/chart backdrops without changing canvas data or image pixels.
+`shared/ui/theme.js` is packaged/served at `static/theme.js` by shell and both
+standalone servers. A blocking head script applies the saved palette before UI
+render (PhotoCraft if no valid saved choice; explicit Current is retained);
+DOMContentLoaded adds one selector at shell-header right or before standalone
+presets. Embedded tools have no duplicate selector; an origin/source-checked ready
+handshake reapplies the shell theme after frame creation/reload. localStorage key
+`shp-tools-theme` is per browser origin; storage events sync same-origin windows.
+Separate standalone ports retain independent preferences. Storage failures warn in
+console/selector tooltip. No processing/preset state changes. New static routes need
+a normal Tools/backend restart before refreshing UI; do not restart automatically.
+Selected shell/tool tabs use neutral borders with bottom borders matching their
+background, not blue selection borders. Pane headers own the single baseline; tab
+bottom borders overlap it (the same mechanism as shell tabs), and the pane below has
+no second top border. Bottom alignment keeps tab edges connected even beside taller
+header controls; wrapped controls sit above the tab row so tabs still touch the pane.
+No shadow seam patch. Keyboard focus remains a separate blue outline.
+Main workflow buttons (`xGet`, `xSend`, `pcGet`, `pcSend`, `loadBtn`, output `save`)
+use `workflow`: shared Generate/primary colours only when enabled. Existing primary
+Generate/Apply/Apply scale retain disabled styling; primary/workflow share enabled
+hover/active/focus states. Preset and other utility buttons are unchanged.
+Shared button/tool-tab and shell-tab hover selectors exclude `:disabled`, so
+unavailable controls keep the same background/text on mouseover in both themes.
+Shell tabs have no status badges/slots: busy/starting/stopping subtly darken only the
+title via aria-busy, without changing backgrounds, borders or dimensions. State/error text
+stays in tab title/aria-label. Lost supervisor polling marks status unavailable.
+Top-bar symbols are unchanged: --status-symbol-size 11px progress spinner and
+--status-accent #6a9fc5 completion checkmark, not success text/error colours.
+FS + Skintone has no help/summary paragraph below its hue graph. Empty-sample,
+unsupported-source and correction-effect diagnostics remain in Log; genuine errors
+still use existing top-bar handling. Graph drawing/controls/tooltips are unchanged.
+Right preview tabs: frequency Color/Detail, dnb Layer/Layer+mask, mask Mask/Analysis.
+`syncRightTabs` validates remembered/current choice on initial sync and every mode
+change, falling back to the first valid tab. Blur has no UI tab.
+Skin Mask hides the left Result/Skin mask tab and falls back to Original on initial
+sync/mode changes; other modes retain Original/Result. Right Mask/Analysis unchanged.
+Backend preview encoding/math remain unchanged (no claimed speedup). Shell DOM/keyboard order is
+mask/frequency/dnb/crop; initial selected Crop and canonical mode IDs are unchanged.
+
 ### D&B numeric Soft Light transfer
+
+Feedback layout: Image analysis (`g-file`, including S/landmark controls) is Skin Mask
+only. `renderAnalysisSummary` uses textContent and current shared state: image name/size,
+known colour handling, detected confidence/mask, S estimated vs overridden, Hue/light/
+color midpoints and source/center warnings. It runs on load, settings dirtiness and mode
+sync, never inference. Successful Apply/Send says "Finished processing in X seconds."
+(one decimal), using performance.now elapsed time. Initial Apply uses Load/Get's
+original start through preview image load events; later Apply uses its own start
+through those events. Send measures its request through cleanup completion, not a
+sum of backend stages. This does not measure paint. Correction/no-op/center details
+go to the bounded in-memory log, genuine Hue Center failures remain errors.
+`details#temporaryLog` is a collapsed Log subsection inside Image analysis, Skin Mask
+only. `renderTemporaryLog` displays current log state with textContent; no download
+button or Blob/file-opening code. Load/send live snapshots and archived notes
+(last100 lines) stay in JS memory; reload clears them, switches retain them.
+
+Load/Get stage timings use `perf_counter`: `timings.loaded` is decode/normalization,
+alpha/ICC preparation and colour conversion; Get adds its measured bridge fetch/export.
+`timings.analyzed` isolates `pick_target`; `timings.mask` isolates shared `skin_mask`
+and initial skin statistics, or null when no usable detected S. `seconds` is now the
+whole backend request work, not the former detection+mask-only partial timer.
+UI temporary log memory retains these and browser-measured Hue Center/preview round trips,
+visible-pane image load duration, and total elapsed Load/Get-to-ready. `showImages`
+resolves after both pane load events (or false on error/replacement); ready is never
+reported on failure or before those events. This does not measure final screen paint.
+Long request handlers remain synchronous but publish lightweight progress snapshots.
+`GET /api/progress?token=...` bypasses the image-processing LOCK on ThreadingHTTPServer,
+so polls can read actual current/completed stages during computation. Request-scoped
+ContextVar tokens isolate nested processing/bridge calls; no processing is repartitioned.
+UI polls serially every250ms only while its operation is outstanding and rejects stale
+token responses. Final snapshots travel in success/error responses; records are consumed
+then, with bounded16-record/10-minute completed-record expiry for disconnected callers.
+Load/Get distinguishes PhotoCraft fetch, decode/profile preparation, detection/S and mask.
+Send instruments actual FS split/Blur calls, D&B/mask preparation, raster encoding/import,
+Hue/mask attachments, assembly/final copy and cleanup. Command completion, not paint,
+is measured; fast stages may only appear as completed. Failed stages retain durations.
+No temporary GUI/native apps are needed for focused progress validation.
+Missing mask/center/S and failures are explicit; failed new Load/Get does not auto-Apply
+the previous image. Generation/settings guards remain. Summary survives later Apply.
 
 Isolated `photocraft-cli 0.18.0 (8a87a457a)` tests established that
 `layer.copyToDocument` colour-converts RGB layer samples between document profiles.
@@ -64,14 +147,42 @@ is numerical blend-data conversion, not the D&B calculation or the source file e
 This reproduces a Send-only darkening mechanism; the original problematic RAW/profile
 has not been examined, so it is not proof of that particular file's profile.
 
-Send now exports a temporary merged duplicate of the current destination to obtain its
-actual ICC bytes, then inserts only an `iCCP` chunk into the OpenCV RGBA16 scratch PNG.
+Normal Send reuses the actual ICC bytes already captured by Get, then inserts only an
+`iCCP` chunk into the OpenCV RGBA16 scratch PNG.
 This assigns the destination space without changing any correction samples; there is no
 guessed gamma, sRGB substitution or builtin-profile name mapping. PNG metadata insertion
 avoids Pillow's RGB16 writing limitation and the automation API's refusal of filesystem
 ICC paths in `edit.assignProfile`. The mask PNG stays separate and untagged. Failure to
 obtain an ICC profile refuses Send before copying a layer rather than falling back.
-The extra merged export adds temporary I/O; no user's document is converted or saved.
+For D&B/Skin Mask callers without a captured ICC only, the previous temporary merged
+destination export remains as a safe fallback; FS + Skintone fails explicitly without
+captured ICC. No user's document is converted or saved.
+
+User explicitly accepted assuming the destination profile stays unchanged between Get
+and Send. Name/size lookup remains; Get must be repeated after changing/replacing/
+converting the destination. Disposable probes of CLI0.18 and desktop0.20.2 found no
+stable document-incarnation ID or exact ICC bytes/hash in metadata: `edit.profileInfo`
+returns descriptive fields/byte count, not a fingerprint, and saved native layer IDs
+survive reopening. Undetectable profile/replacement changes are an accepted limitation,
+not an exact profile-safety guarantee. Old servers with Get-exported ICC use the same
+fast path; their version alone does not require the redundant profile export.
+
+Transfer memory: source documents are closed immediately after copying layers or
+attaching masks; only assembly plus one temporary source are retained. Sources always
+open above the assembly/target indices; `_release_source` closes the highest managed
+index and removes it from final cleanup, so lower indices cannot shift from these
+early closes. Cleanup still runs highest-first on failure; failed early close propagates
+and final cleanup retries. One final target copy/undo and layer topology are unchanged.
+`skintone.separate(native=True)` replaces float layers one at a time with the identical
+RGB16 arrays, avoiding the export float round-trip and simultaneous three-float/three-u16
+dictionaries. D&B releases unused composites/diagnostics and gray conversion buffers
+before import. Load releases decoded alpha-check data before analysis, normalizes into
+one float allocation, and releases raw data as soon as the analysis view is ready.
+RGB16 conversion bounds clip/scale/round temporaries to64 rows with identical arithmetic.
+RGBA PNG encoding allocates alpha in-place; iCCP assembly joins encoded views rather
+than copying entire PNG byte slices. RGB16 samples and output bytes are unchanged.
+Remaining costs: Get's merged analysis export, full-res algorithms/native source arrays,
+PNG files/import, the required assembly, and the final cross-document group copy.
 
 `tests/test_dnb_transfer.py` uses only a new stdio engine, with private temporary roots.
 It checks sRGB, untagged/default, Display P3, Adobe-RGB-compatible, ProPhoto-compatible,
@@ -351,7 +462,26 @@ or defaults changed.
 
 ## Skin tools in D&B
 
-Tools navigation: Crop / Skin Mask / Frequency Separation / D&B, but only two service
+Eyebrow exclusion/analysis polygons follow the lower mesh chain outer-to-inner, then the
+upper chain in reverse. Both `skin_mask` and the comparison/demo path use this perimeter;
+concatenating both chains in their original direction creates crossed closing diagonals.
+Eyes, lips, landmark inference and feature dilation/feathering are unchanged.
+
+Manual scale fallback: **Adjust scale landmarks** in Image analysis opens a full-image
+Original overlay with explicit subject selection. Detected points remain immutable;
+per-image/per-subject overrides support eye centres and body joints, missing points,
+excluded body segments, drag/nudge, undo/reset and Apply/Cancel. The proposal replaces
+edited eye cues, recomputes one body cue and retains unaffected automatic evidence.
+Manual proposals cap high confidence at medium and retain at least 15% assumed uncertainty;
+2D foreshortening and population-average anatomy remain limitations. Apply uses the normal
+S-change path, including derived FS radii. New Get/load clears overrides; presets exclude
+them, and stale image generations are rejected. This is scale-only: it does not regenerate
+segmentation, change the mask target or move the subject crop. When no automatic scale/mask
+was available, manual scale enables processing but does not create a missing skin mask.
+The numerical S override remains available. Python/API changes require a normal backend/
+Tools restart; a page reload alone is insufficient.
+
+Tools navigation: Crop / Skin Mask / FS + Skintone / D&B, but only two service
 keys (`crop`, `dnb`) and two mounted frames. Skin tabs route to the single D&B frame
 using same-origin, frame-source-checked postMessage handshake and known mode/request
 shapes. Commands queue until initial presets are ready; busy D&B defers to the latest
@@ -362,22 +492,35 @@ All D&B badges reflect the same service status. Standalone selector stays visibl
 the real parent handshake; unconnected embedding also retains it. Mode commands reuse
 the same switch/dirty/recompute path, retaining mask, fetched identity and zoom.
 
-Functionality-first mode selector: `dnb` (legacy/default), `mask`, `frequency`.
+Functionality-first mode selector: `dnb` (legacy/default), `mask`, `frequency` (FS + Skintone).
+Legacy `skintone` API/preset/parent-message modes normalize to `frequency` in memory;
+no separate visible tab or backend remains. Saturation correction fields are ignored by
+processing but retained verbatim by preset load/Save, without automatic file rewriting.
 UI/API/presets carry `mode` and `frequency` method, calibration, Blur percentage and derived
 pixel radii. Legacy presets select D&B; existing correction
 settings are not reinterpreted. Shared mask control sections (skin/feather, structure,
 light/tone, color) are visible only in Skin Mask mode; hiding never disables or resets
-their shared values/on-off flags, and D&B/FS continue to use them. Active color/tone picking
+their shared values/on-off flags, and D&B/FS/Skintone continue to use them. Active color/tone picking
 is canceled on leaving Skin Mask mode without changing the picked values. Common analysis/S,
 mask previews and whole-bundle presets remain available.
 The preset star compares all saved settings except `mode` (navigation) and the S-derived
-`frequency.radius`/`blur_radius`, so switching Skin Mask/FS/D&B or a new S does not mark a
+`frequency.radius`/`blur_radius`, so switching skin tools or a new S does not mark a
 preset unsaved, while any edit (including hidden shared mask settings) stars it in every mode.
 Presets still store and restore the mode. Option tooltips sit on first-column labels only.
-bands/strength/edge/tau are hidden outside D&B and do not affect mask/FS outputs.
+bands/strength/edge/tau are hidden outside D&B and do not affect mask/FS/Skintone outputs.
 `dodge_burn.combined_mask` is shared with the existing D&B pipeline without changing
 its calculations. Standalone Send adds an RGB grayscale layer; it never replaces
 the selected layer's mask. Local file loads clear the fetched-document identity.
+
+D&B-only `layer_blur_at_s181` defaults0; **Layer blur** slider0–20, step0.1,
+independent of FS. Full-image Gaussian sigma is value*S/181 without rounding/clamping
+the derived pixels; preview multiplies by region scale. `blur_softlight_layer` applies
+BORDER_REPLICATE Gaussian to unmasked cs, then Soft Light and the unchanged combined mask.
+Zero returns original cs/after untouched, preserving legacy output byte-for-byte; positive
+blur uses actual layer opacity rather than re-inverting a masked luminance change.
+Preview Layer/Layer+mask/Result, Save and ICC-safe Send share this postprocess. Presets
+store only calibration; missing legacy field defaults0 without writes, S changes update
+tooltip pixels but not preset star. Other modes never run the postprocess.
 
 FS calibration `frequency.radius_at_s181` defaults to 6, exposed as **Radius**
 (0.5–30, step 0.1). Direct radius/Blur pixel sliders are removed.
@@ -404,25 +547,186 @@ extra Blur Gaussian sigma derives from it (up to500 px). Preview scales radii; f
 Color is not opacity-premultiplied; Detail is `(source-Color)/2+0.5`, derived against the
 actual Color. Native PhotoCraft Linear Light reconstruction was checked, not assumed.
 
-Bridge assembles an unmasked Normal folder with top-down Detail (Linear Light, unmasked),
-Blur (Normal, combined skin mask), Color (Normal, unmasked). Blur is active, not black-masked;
-the former folder-mask / black paint-in design is superseded. The Result preview composites
-the same RGB16-quantized stack and 8-bit Blur mask; hiding Blur reconstructs the full source.
-The Blur preview pane displays Blur through its mask over Color (without Detail), not raw
+The combined bridge stack described below adds Hue above Blur and below Detail.
+Blur is active, not black-masked; the former folder-mask / black paint-in design is
+superseded. The Result preview composites the same RGB16-quantized stack with separate
+8-bit Blur/Hue masks; disabling both corrections reconstructs the full source.
+The Blur preview pane displays Blur through its mask over Color (without Hue or Detail), not raw
 unmasked Blur pixels. This display-only composition does not change Send/Save layer data.
 It copies that single group to the destination in one history step. All RGB16
 data gets the actual destination ICC without sample conversion, retaining the existing
 D&B neutral fix. FS retains the pre-analysis native source values/profile, rejects
-changed destination profile/size and non-opaque sources, and cleans temporary documents/
+changed destination size, missing captured ICC and non-opaque sources, and cleans temporary documents/
 files on failure. No PhotoCraft live-document edits or live service restarts are needed
 for tests. Reloading the HTML alone is insufficient for this feature: a normal backend/
 Tools restart is needed to load the new Python; do not restart with unsaved loaded work.
 
 Validation covers separation reconstruction and soft Blur masks in eight destination
 profiles × 8/16/32-bit × both filters, grayscale
-mask Send, one-step group insertion, stale-profile/size rejection and failed-copy cleanup.
+mask Send, one-step group insertion, missing-profile/size rejection and failed-copy cleanup.
 The three-test desktop suite also passed with actual WebKit mode/control/Send/preset flows
 and existing Crop Fill/incremental-result checks, using isolated synthetic fixtures only.
+
+### FS + Skintone: combined separation, Blur and one editable Hue adjustment
+
+User combined the two workflows and removed saturation correction. `frequency` is the
+canonical mode; `skintone` remains an input alias only. The existing `frequency` and
+`skintone` preset fields remain distinct. Hue settings default to center30°, half-width30°,
+softness5°, amount100%; UI windows remain Center10–50° and Range1–8°. Legacy hue values
+outside the UI windows keep their readout/value until edited. Backend accepts width0.
+Legacy `sat_*` values are preserved as inert preset data, never applied or rewritten
+on load; saving hue edits retains those fields. There is no saturation control/chart,
+Saturation LUT generation, application or export in the combined workflow.
+
+`frequency_separation.separate` retains full-image Gaussian/median Color, unmasked
+Detail and skin-aware normalized Gaussian Blur. Shared Radius/S and Blur% retain their
+existing scaling and legacy pixel semantics. `skintone.separate` quantizes these to the
+actual tagged RGB16 raster layers. Preview computes Color + quantized-mask Normal Blur,
+samples the Hue LUT on that base, feathers Hue with the same mask once, then restores
+unmasked Linear Light Detail. Blur and Hue each have their own mask; neither is applied
+twice. Hue does not act on original or Detail. Outside the mask the original reconstructs
+within rounding. Hue Amount0 leaves Blur active; only neutral Hue plus Blur radius0
+(or an empty mask) is a complete no-op. Final detail recomposition can clip endpoints.
+Reduced-view radii scale with resolution; full-resolution Send/Save uses native source.
+
+Bridge assembles an unmasked Normal `SHP FS + Skintone` folder, top-down:
+Detail (Linear Light, unmasked) / Hue (Normal native adjustment, combined skin mask) /
+Blur (Normal, combined skin mask) / Color (Normal, unmasked). Hue is directly masked,
+with no correction subgroup: one native Normal `colorLookup`, trilinear, dither off,
+even at zero Amount. One mask file/document supplies both selection attachments;
+the native Hue and Blur layers each own an editable mask. Empty masks use
+native `layer.layerMask.hideAll`; `revealSelection` rejects empty selections.
+Direct-vs-former-subgroup RGB16 comparisons cover empty, soft and full masks:
+results can differ by up to two16-bit code values because
+the native subgroup's intermediate rounding is removed. Preview math is unchanged;
+native profile/depth comparisons remain within the existing tolerances.
+Captured-ICC presence/size guards and scratch cleanup remain; one final group copy creates
+one target undo step. `.pcraft` persists the native LUT and raster/mask hierarchy.
+`layer.setAdjustment` uses flattened parameters (`data`, `fileName`, etc.).
+
+Hue uses a circular identity core with C1 exponential shoulders. Neutrals/near-gray cube
+cells are protected. The analytic hue transform preserves HSV S/value; subjective
+saturation/brightness changes are not a promise of numeric S/value correction.
+Cached33³/six-decimal LUTs fit the1MiB request limit and are sent inline because ambient
+file-backed LUT automation is sandbox-disabled. Trilinear sampling, partial Amount,
+mask feathering and near-neutral protection mean output hue is not strictly bounded.
+LUTs come from settings, not learned pixels. Native RGB/ICC space is preserved numerically.
+
+The single hue chart compares uncorrected Color with Color + masked Blur + masked Hue,
+not the detailed original or recomposite. Shared-mask-weighted10/50/90% statistics use
+16 original-Color HSV-value bins and up to~100k samples; hue axis10–50°, off-window
+triangles, measured median-colour strips. S is still measured for those strips but
+is neither a correction target nor a separate graph. Effect stats measure actual changed
+base samples, including Blur. Empty/neutral-only masks and Hue Amount0 are explicit.
+Color/Detail panes show unmasked data; Blur shows masked Blur over Color before Hue;
+Result restores Detail after both corrections.
+
+Manual Save writes `Hue.cube`, tagged RGB16 Color/Blur/Detail/result, skinmask and recipe.
+Opaque/SDR guards remain; genuine extended range blocks the combined mode while D&B and
+Skin Mask remain available. No clipping/tone mapping is introduced. Settings-revision
+queuing prevents stale slider previews. Shell/standalone selection and old presets share
+the same image/mask/preset state. Native matrix coverage includes eight profiles×8/16/32-bit,
+soft/empty/outside masks, Blur-only/hue-only/combined/neutral cases, distinct textured
+outliers, unmasked Detail, persistence/editing, one undo and failed final-copy cleanup.
+A normal Tools/D&B backend restart then Get is needed; HTML reload alone is insufficient.
+No live restart, user document mutation, commit or push is part of activation.
+
+Hue Center load fix: the old `skin_colour` estimate initialized only Color Range/tone
+controls, never Skintone Center; the FS merge did not remove prior Center initialization.
+Load/Get now calls `/api/hue-center` once after applying new image metadata and shared
+mask defaults. It computes a mask-weighted circular mean from native uncorrected Color,
+not the corrected image/LUT/previous frame; omit HSV saturation<.05 and V<=1/255, reject circular
+resultant<.1. Uses automatic S/current FS settings and a whole-image1400px working view.
+Missing masks/scale or unsupported/empty/ambiguous samples produce explicit retained-
+Center notes. No fallback whole-image hue without skin detection. New image generation
+and UI load epoch/settings revision reject stale estimates or manual/preset edits during
+initialization. Apply/mask/tab changes never auto-reset Center. Presets intentionally
+restore Center; the next Load/Get re-estimates only Center, with no preset file writes.
+Actual values outside10–50 remain visible, never silently clamped. Source/ICC untouched.
+Validation:113 isolated repository tests pass (one opt-in desktop skip), plus3 actual
+WebKit tests covering two different skin-colour Loads, Get re-estimation, manual/preset
+overrides, delayed/stale results and out-of-window/empty estimates. Circular-wrap,
+neutral/black exclusion, empty/ambiguous evidence and stale server generations are covered
+without real inference or user document changes.
+
+Hue Center runtime follow-up: confirmed an old running D&B process (started before the
+Python endpoint addition) serving new HTML from disk. Its missing `/api/hue-center`
+returns HTTP404 `text/plain` / `not found`; WebKit `Response.json()` reproduces the exact
+`SyntaxError: The string did not match the expected pattern.` This is not hue/mask math
+or a supervisor allowlist defect: the proxy forwards all non-private `/api/` paths.
+The browser API helper now reports HTTP status/content type for non-JSON responses and
+specifically explains that missing Hue Center endpoints require a Tools/D&B backend
+restart then Get, not just page refresh. It retains the prior Center, never invents one.
+Real proxy/direct-child route integration and WebKit old-response/current-route cases
+cover the failure and recovery; all3 desktop tests pass. No running user service was
+restarted or sent a processing request to diagnose this mismatch.
+
+Combined-workflow validation: isolated repository wrapper passed111 tests (one opt-in
+desktop skip), and the actual WebKit suite passed3 separately. Native matrix max RGB
+errors were0.00611526 /0.00002163 /0.00000757 for8/16/32-bit, within three export LSB.
+A new isolated actual PhotoCraft desktop passed RGB16 synthetic sRGB/Gaussian,
+Display P3/median, linear-sRGB/empty mask, sRGB/Blur-only and P3/neutral cases,
+max RGB error0.00002155. No user's desktop connection/documents were used.
+
+#### Earlier investigations (before combining the workflows/removing Saturation)
+
+Runtime range-check follow-up: reproduced ordinary SDR white at1.0000001 after OpenCV
+float32 `INTER_AREA` resizing (e.g.2102×1401 to1400×933, also6000×4000 to1400×933).
+The strict LUT guard incorrectly called this HDR. Validate/cache original source eligibility
+at load, reject genuine out-of-range samples before Skintone preview/Save/Send, and repair
+only the mathematically bounded SDR preview's area-average endpoints. Original/native
+pixels and ICC are untouched; full-resolution processing still has the strict guard.
+Skintone eligibility/error is returned with load metadata and shown in its chart/status UI.
+Errors follow the normal JSON400/UI catch path; switching to another mode remains usable.
+Also corrected float image decode (no erroneous `/255`) and preserved uint8/uint16
+normalization plus existing integer analysis quantization. `IMREAD_ANYCOLOR|ANYDEPTH` then
+explicit grayscale-to-BGR handles float gray TIFF without OpenCV's forced-three-channel
+TIFF decoder failure. Non-finite source pixels fail load explicitly. No source HDR clipping
+or inferred tone mapping is added. Regressions use real8/16-bit white PNG downscales and
+float TIFF SDR/HDR sources, unchanged-source assertions, Send refusal and mask-mode recovery.
+All38 focused processing/API/native-transfer tests pass; the real WebKit desktop suite
+passes3 separately, including handled Skintone errors and other-mode recovery. A normal
+Tools/backend restart then Get is needed; no live restart or document mutation performed.
+
+Blank-Result/no-effect follow-up: read-only cached live `/img/result` was nonblank PNG
+(1400×933, samples0–253), but incorrectly labelled `image/jpeg`; cached mask was all255.
+The handler now derives PNG/JPEG MIME from the encoded bytes rather than the pane key.
+This is a confirmed delivery defect, but permissive browsers previously decoded it, so it
+does not prove the sole cause of the user's blank pane. Added browser image error status/
+placeholder plus retry recovery; do not silently leave a black image area after decode
+failure. Added sampled visible-effect feedback (any channel change>1/255), with explicit
+empty-mask/zero-amount/in-range-or-neutral explanations. Defaults are allowed bounds and
+can be identity on ordinary skin; no-op must show the original, not an empty pane.
+
+Nonidentity native corrections also tested on the actual installed desktop0.20.2 in a NEW
+disposable `--new-instance --safe-gpu` process, isolated token/config/read-write roots and
+synthetic document only. Strong H50±4/S5–20 changed BGR[.25,.4,.7] to[.56,.667,.70],
+matching sampled preview within2.25e-5. Native group, mask, LUT order/domain and inline
+loader work on that version, not only CLI0.18.0. No user desktop/doc was contacted for
+mutation. This does not diagnose an existing desktop's GPU display/cache or unknown
+current control values; requested a screenshot of that view via the coordinator rather
+than assuming both symptoms share one cause. No speculative algorithm redesign.
+
+Added explicit native hue-only/saturation-only changed-colour assertions and default-core/
+zero-amount no-op assertions. Real WebKit now waits for a decoded, visible Result image,
+reads its rendered pixels, checks significant colour change for narrow limits, verifies
+zero Amount displays the original, checks MIME and exercises image-failure recovery.
+All24 focused Skintone/skin/native tests and all3 desktop tests pass. Activation still
+requires normal Tools/backend restart then Get; no restart/commit/push performed.
+
+Historical range adjustment (saturation was subsequently removed by the combined workflow):
+Hue Center10–50° (linear midpoint30°), half-width
+1–8° (subsequent user revision from0–15°), saturation min/max both25–75%. UI sliders may meet (lower<=upper); crossing moves
+the counterpart to the same value. Backend now accepts hue_width0 and equal saturation:
+the existing hard-limit path targets one hue/saturation without division by zero, retaining
+neutral protection, Amount, masking and finite-LUT caveats. Wider API/legacy presets remain
+supported; finite old/default values outside the UI window retain actual state/readouts
+and endpoint thumbs until edited. No automatic rewriting/reinitializing or new factory
+colour target was requested. Graphs now use absolute hue10–50° and saturation25–75%
+vertically, original HSV-value brightness horizontally; edge triangles mark off-window
+percentiles. Distribution remains unmodified weighted10/50/90% statistics, not a global
+masked mean or an auto-derived saturation target. Focused tests cover exact zero/equal
+limits, legacy readouts, graph windows and measurements outside the display range.
 
 ## Incremental Crop batch previews
 

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>SHP PhotoCraft D&amp;B</title>
 <link rel="stylesheet" href="static/shp-ui.css">
+<script src="static/theme.js"></script>
 <script src="static/lifecycle.js" defer></script>
 <style>
   #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); height:100vh; }
@@ -14,12 +15,16 @@
   input[type=number] { width:68px; -moz-appearance:textfield; appearance:textfield; }
   input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
   button.primary.dirty { box-shadow:0 0 0 2px var(--warn); }
+  #landmarkOpen.dirty { box-shadow:0 0 0 2px var(--warn); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 10px 8px; margin:8px 0; }
   .card .head { display:flex; justify-content:space-between; align-items:center; font-weight:600; }
   .card .head button { padding:0 8px; }
   #info { color:var(--dim); font-size:12px; margin:4px 0; min-height:2.6em; }
   #info b { color:var(--text); }
-  #profile { width:100%; height:120px; background:#12141a; border:1px solid var(--line); border-radius:4px; display:block; }
+  #info { white-space:pre-line; }
+  #temporaryLog { margin-top:8px; }
+  #temporaryLogText { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; color:var(--dim); font-size:12px; }
+  #profile { width:100%; height:120px; background:var(--input); border:1px solid var(--line); border-radius:4px; display:block; }
   main { display:grid; grid-template-rows: 1fr; min-width:0; min-height:0; }
   #bar b { color:var(--text); }
   #presetBar { margin-left:auto; display:flex; gap:6px; align-items:center; }
@@ -29,7 +34,7 @@
   .opts { display:flex; align-items:center; flex-wrap:wrap; }
   .opts[hidden] { display:none; }
   .pwrap { display:flex; flex-direction:column; min-width:0; min-height:0; }
-  .pan { position:relative; flex:1; overflow:hidden; background:#0c0d10; border:1px solid var(--line); cursor:grab; min-height:0; touch-action:none; }
+  .pan { position:relative; flex:1; overflow:hidden; background:var(--workspace); border:1px solid var(--line); border-top:0; cursor:grab; min-height:0; touch-action:none; }
   .pan.drag { cursor:grabbing; }
   .pan img { position:absolute; left:0; top:0; transform-origin:0 0; user-select:none; -webkit-user-drag:none; image-rendering:auto; }
   .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
@@ -59,14 +64,20 @@
     .pan { height: 70vh; flex:none; }
   }
   .pan.zin { cursor:zoom-in; } .pan.zout { cursor:zoom-out; }
+  #landmarkOverlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; }
+  .landmark-editor .pan { cursor:crosshair; }
+  #landmarkSegments { max-height:105px; overflow:auto; font-size:11px; }
+  #landmarkSegments label { display:inline-block; margin-right:8px; }
+  #landmarkSummary { font-size:11px; color:var(--dim); margin:6px 0; white-space:pre-line; }
+  .distribution { display:block; width:100%; height:100px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
 </style>
 </head>
 <body>
 <div id="app">
-<div id="bar"><button id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<div id="bar"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
   <div class="row" id="toolModeRow"><label for="toolMode">Skin tool</label><select id="toolMode" style="flex:1">
-    <option value="dnb">D&amp;B layers</option><option value="mask">Skin mask</option><option value="frequency">Frequency separation</option>
+    <option value="dnb">D&amp;B layers</option><option value="mask">Skin mask</option><option value="frequency">FS + Skintone</option>
   </select></div>
   <details class="grp" id="g-frequency" open hidden>
     <summary>Frequency separation</summary>
@@ -75,12 +86,20 @@
       <div id="frequencySliders"></div>
     </div>
   </details>
+  <details class="grp" id="g-skintone" open hidden>
+    <summary>Skintone</summary>
+    <div class="gbody">
+      <p class="hint">Hue correction acts on Color plus skin-masked Blur, before restoring unmasked Detail. One editable Hue LUT is always sent.</p>
+      <div class="sub">Hue</div><div id="skintoneHue"></div>
+      <canvas class="distribution" id="hueDistribution" width="680" height="180" aria-label="Skin hue distribution before and after correction by brightness"></canvas>
+    </div>
+  </details>
   <details class="grp" id="g-bands" open>
     <summary>Detail level</summary>
     <div class="gbody">
     <div id="bands"></div>
     <div id="globals"></div>
-    <canvas id="profile" title="Total gain by feature size (mm) for the detail level settings." width="680" height="120" style="width:100%;height:60px;background:#12141a;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+    <canvas id="profile" title="Total gain by feature size (mm) for the detail level settings." width="680" height="120" style="width:100%;height:60px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
     </div>
   </details>
   <details class="grp mask-group" id="g-mask" open>
@@ -99,7 +118,7 @@
     <summary><span class="sub-title">Light range<button type="button" class="color-swatch" id="toneSwatch" aria-label="Pick light range" title="Click, then click a point in the Original preview to center the light range on its brightness"></button></span><label><input type="checkbox" id="toneOn" aria-label="Enable light range" title="Only correct midtones: the light range below is multiplied into the mask." checked></label></summary>
     <div class="gbody">
       <div id="tone"></div>
-      <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="120" style="width:100%;height:60px;background:#12141a;border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+      <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="120" style="width:100%;height:60px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
     </div>
   </details>
   <details class="grp mask-group" id="g-color" open>
@@ -113,13 +132,27 @@
     <div class="gbody">
       <div id="info">No photo loaded.</div>
       <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
+      <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
+      <div id="landmarkEditor" hidden>
+        <div class="row"><label for="landmarkSubject">Subject</label><select id="landmarkSubject"></select></div>
+        <div class="row"><label for="landmarkName">Point</label><select id="landmarkName"></select></div>
+        <div class="hint">Click to place; drag a point or use arrow keys to nudge it. Alt-drag pans; wheel zooms. Eye centres are the centres of the visible pupils.</div>
+        <div class="row"><button id="landmarkMissing">Mark missing</button><button id="landmarkUndo">Undo</button><button id="landmarkReset">Reset</button></div>
+        <div class="sub">Exclude unreliable / foreshortened segments</div><div id="landmarkSegments"></div>
+        <div id="landmarkSummary"></div>
+        <div class="row"><button id="landmarkApply" class="primary" disabled>Apply scale</button><button id="landmarkCancel">Cancel</button></div>
+      </div>
+      <details id="temporaryLog">
+        <summary>Log</summary>
+        <pre id="temporaryLogText">No activity yet.</pre>
+      </details>
     </div>
   </details>
   <div id="manual" hidden>
     <select id="view"><option value="detail">Face crop</option><option value="crop" selected>Portrait crop</option><option value="whole">Whole image</option></select>
-    <div class="row"><select id="imgSel" style="flex:1"></select><button id="loadBtn">Load</button></div>
+    <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
     <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
-    <div class="row"><button class="primary" id="apply" disabled>Apply</button><button id="save" disabled>Save</button></div>
+    <div class="row"><button class="primary" id="apply" disabled>Apply</button><button class="workflow" id="save" disabled>Save</button></div>
   </div>
 
 
@@ -133,15 +166,14 @@
     <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsA">
       <button class="tab" data-k="orig" title="The picture as loaded.">Original</button>
       <button class="tab on" data-k="result" title="The picture with the soft light layer applied through the mask.">Result</button></div></div>
-      <div class="pan" id="p0"><div class="empty">no result yet</div></div></div>
+      <div class="pan" id="p0" tabindex="0"><div class="empty">no result yet</div></div></div>
     <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsB">
-      <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
       <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
+      <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
       <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Layer</button>
       <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button>
       <button class="tab" data-k="color" hidden title="Full-image low frequencies, no skin mask.">Color</button>
-      <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button>
-      <button class="tab" data-k="blur" hidden title="Blur through its feathered skin mask over Color, without Detail.">Blur</button></div>
+      <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button></div>
       <span class="opts" id="optsAn" hidden>
       <label title="Detected faces (box, eyes/nose/mouth points, face mesh features) and bodies (skeleton). Yellow = AF/target subject, gray = others, orange box = region used for the skin mask."><input type="checkbox" id="anDetect" checked>faces &amp; bodies</label>
       <label title="Skin mask in green; magenta = eyes, brows, lips, nostrils left out; orange = off-colour skin (e.g. tattoos) left out."><input type="checkbox" id="anSkin" checked>skin</label>
@@ -155,24 +187,81 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+const SKINTONE_DEFAULTS = {hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
 const state = {
   mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200}, pcFetched: false,
+  skintone: {...SKINTONE_DEFAULTS},
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
-  strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0,
+  strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0, layerBlur: 0,
   tone: {mid:0.52, range:0.87, taper:0.16, strength:1}, maskFeather: 1.0, structure: {protect:0, mm:4, thr:0.1},
   color: {hue:null, saturation:null, rgb:null, hueRange:30, saturationRange:0.25, blurMm:1, smoothMm:0.8, strength:1},
   loaded: false, busy: false, dirty: true, version: 0, avers: 0,
 };
+let landmarkEdit = null;
+let settingsRevision = 0;
 
 /* ---------- small helpers ---------- */
 async function api(path, body) {
   const r = await fetch(path.replace(/^\//, ''), body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const j = await r.json();
-  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  const text = await r.text();
+  let j;
+  try { j = JSON.parse(text); }
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    const restart = path === '/api/hue-center' && r.status === 404
+      ? ' The running D&B backend does not have the Hue Center endpoint. Restart Tools/D&B when ready, then Get Image again; refreshing the page is not enough.'
+      : '';
+    throw new Error(`${path}: HTTP ${r.status}; expected JSON but received ${r.headers.get('Content-Type') || 'an unknown content type'}.${restart}`);
+  }
+  if (!r.ok || j.error) {
+    const error = new Error(j.error || r.statusText); error.progress = j._progress; throw error;
+  }
   return j;
 }
 let statusOk = false;
-function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; statusOk = ok && !err; s.className = err ? 'err' : state.busy ? 'busy' : ok ? 'ok' : ''; }
+const temporaryLog = {notes:[], lastMessage:null, load:'', send:''};
+function logNote(message) {
+  const log = temporaryLog;
+  if (!message || log.lastMessage === message) return;
+  log.lastMessage = message;
+  log.notes = [...log.notes, ...message.split('\n')].slice(-100);
+  renderTemporaryLog();
+}
+function temporaryLogText() {
+  return ['SHP PhotoCraft Tools temporary log', ...temporaryLog.notes,
+    temporaryLog.load, temporaryLog.send].filter(Boolean).join('\n')+'\n';
+}
+function renderTemporaryLog() {
+  $('temporaryLogText').textContent = temporaryLog.notes.length || temporaryLog.load || temporaryLog.send
+    ? temporaryLogText() : 'No activity yet.';
+}
+function setStatus(msg, err=false, ok=false) {
+  const s=$('status'); s.textContent = msg; statusOk = ok && !err;
+  s.className = err ? 'err' : state.busy ? 'busy' : ok ? 'ok' : '';
+  if (err) logNote(msg);
+}
+function finishProcessing(started) {
+  setStatus(`Finished processing in ${((performance.now()-started)/1000).toFixed(1)} seconds.`, false, true);
+}
+function renderAnalysisSummary() {
+  const image = state.imageInfo;
+  if (!image) { $('info').textContent = 'No photo loaded.'; return; }
+  const value = (v, suffix='') => Number.isFinite(v) ? v.toFixed(1)+suffix : 'unavailable';
+  const scale = Number($('S').value);
+  const scaleType = Number.isFinite(state.estS) && scale === state.estS ? 'estimated' : 'manual/landmark override';
+  $('info').textContent = [
+    `${image.name} — ${image.width} × ${image.height}`,
+    `Colour/profile: ${image.colour || 'unavailable'}`,
+    `S: ${scale > 0 ? value(scale)+' px / 63 mm ('+scaleType+')' : 'unavailable'}`,
+    `Detection confidence: ${image.confidence || 'unavailable'}; ${image.desc || 'no scale cue'}`,
+    `Detected mask: ${image.has_mask ? 'available' : 'unavailable'}${Number.isFinite(image.mask_pct) ? ' ('+image.mask_pct+'%)' : ''}`,
+    `Hue midpoint: ${value(state.skintone.hue_center,'°')}`,
+    `Light midpoint: ${value(state.tone.mid*100,'%')}${$('toneOn').checked ? '' : ' (disabled)'}`,
+    `Color midpoint: hue ${value(state.color.hue,'°')}, saturation ${value(Number.isFinite(state.color.saturation) ? state.color.saturation*100 : null,'%')}${$('colorOn').checked ? '' : ' (disabled)'}`,
+    state.hueCenterNote || '',
+    state.skintoneError || ''
+  ].filter(Boolean).join('\n');
+}
 function slider(parent, label, min, max, step, value, onInput, opts={}) {
   const row = document.createElement('div'); row.className = 'row';
   const lab = document.createElement('label'); lab.textContent = label;
@@ -185,7 +274,7 @@ function slider(parent, label, min, max, step, value, onInput, opts={}) {
   rng.min = log ? 0 : min; rng.max = log ? 1000 : max; rng.step = log ? 1 : step;
   const fmt = v => (log ? (v < 10 ? v.toFixed(2) : v < 100 ? v.toFixed(1) : v.toFixed(0)) : v);
   const set = (v, fire) => {
-    if (opts.preserveValue && !fire && Number.isFinite(+v) && +v > 0) {
+    if (opts.preserveValue && !fire && Number.isFinite(+v) && +v >= 0) {
       rng.value = toT(Math.min(max, Math.max(min, +v))); num.value = fmt(+v);
       return;
     }
@@ -197,6 +286,8 @@ function slider(parent, label, min, max, step, value, onInput, opts={}) {
   return { set, row, rng, num, lab };
 }
 function markDirty() {
+  renderAnalysisSummary();
+  settingsRevision++;
   if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
   state.dirty = true; $('apply').classList.add('dirty');
   drawProfile();
@@ -213,11 +304,73 @@ sliders.blurPercent = slider($('frequencySliders'), 'Blur', 100, 500, 1, state.f
   state.frequency.blur_percent = v; scaleFrequencyRadius(); markDirty();
 }, {tip:FREQUENCY_BLUR_TIP});
 $('frequencyMethod').onchange = () => { state.frequency.method = $('frequencyMethod').value; markDirty(); };
+const skintoneSliders = {};
+[
+  ['hue_center','Center',10,50,'Centre of the allowed hue arc in degrees, 10–50° with 30° at the midpoint. HSV is measured in native document RGB. Legacy values outside the slider window remain in the readout until edited.'],
+  ['hue_width','Range ±',1,8,'Allowed hue half-width, 1–8° around Center. Amount, neutral protection and LUT approximation still apply. Legacy values outside this slider window remain until edited.'],
+  ['hue_softness','Softness',0,30,'Shoulder width in hue degrees. The core stays unchanged; near-boundary colours also compress. Zero gives hard limits. Capped internally at the half-width.'],
+  ['hue_amount','Amount',0,100,'Hue correction strength in percent. Zero leaves hue unchanged; lower amounts may leave colours outside the allowed arc.'],
+].forEach(([key,label,min,max,tip]) => {
+  skintoneSliders[key] = slider($('skintoneHue'),
+    label, min, max, 1, state.skintone[key], value => {
+      if (key === 'hue_center') state.hueCenterNote = 'Hue Center adjusted manually; next Load/Get will estimate it again.';
+      state.skintone[key] = value; skintoneSliders[key].set(value, false); markDirty();
+    }, {tip, preserveValue:true});
+  skintoneSliders[key].rng.id = 'skintone-'+key;
+  skintoneSliders[key].lab.htmlFor = 'skintone-'+key;
+  skintoneSliders[key].rng.setAttribute('aria-label', 'Skintone '+key.replaceAll('_',' '));
+});
+function drawSkintone(data) {
+  const rows = data?.bins || [], populated = rows.some(Boolean);
+  if (state.skintoneError) logNote(state.skintoneError);
+  if (data && !populated) logNote('No non-neutral skin samples in this view. Check the shared Skin Mask or choose Whole image.');
+  if (data?.effect) logNote(data.effect.note);
+  [['hueDistribution','hue',10,50]].forEach(([id,key,lo,hi]) => {
+    const c = $(id), ctx = c.getContext('2d'), w = c.width, h = c.height;
+    c.dataset.axisMin=lo; c.dataset.axisMax=hi;
+    c.setAttribute('aria-label',`${key} ${lo}–${hi}${key==='hue'?' degrees':' percent'}, by original HSV brightness; triangles mark off-window samples`);
+    ctx.clearRect(0,0,w,h);
+    const left=45, top=16, bottom=h-38, right=w-8;
+    const x = i => left + (i+.5)/16*(right-left);
+    const y = v => bottom - (v-lo)/(hi-lo)*(bottom-top);
+    ctx.save(); ctx.beginPath(); ctx.rect(left,top,right-left,bottom-top); ctx.clip();
+    ctx.fillStyle = '#294337';
+    const min = state.skintone.hue_center-state.skintone.hue_width;
+    const max = state.skintone.hue_center+state.skintone.hue_width;
+    ctx.fillRect(left,y(max),right-left,y(min)-y(max));
+    if (min===max) {ctx.fillStyle='#83e3a8';ctx.fillRect(left,y(min),right-left,1);}
+    for (const [label,stroke,fill] of [['before','#a9afb9','#a9afb92a'],['after','#83e3a8','#83e3a83a']]) {
+      rows.forEach((row,i) => {
+        if (!row) return;
+        const q = row[label][key].map(v=>key==='hue'?((v+data.hue_center)%360+360)%360:v);
+        ctx.fillStyle=fill; ctx.fillRect(x(i)-(right-left)/32,y(q[2]),(right-left)/16,Math.max(1,y(q[0])-y(q[2])));
+        ctx.strokeStyle=stroke; ctx.lineWidth=2; ctx.beginPath();
+        ctx.moveTo(x(i)-(right-left)/32,y(q[1])); ctx.lineTo(x(i)+(right-left)/32,y(q[1])); ctx.stroke();
+        for (const [outside,edge,direction] of [[Math.min(...q)<lo,bottom,-1],[Math.max(...q)>hi,top,1]]) {
+          if (!outside) continue;
+          ctx.fillStyle=stroke;ctx.beginPath();ctx.moveTo(x(i),edge);
+          ctx.lineTo(x(i)-5,edge+direction*8);ctx.lineTo(x(i)+5,edge+direction*8);ctx.closePath();ctx.fill();
+        }
+      });
+    }
+    ctx.restore(); ctx.font='18px system-ui'; ctx.fillStyle='#a9afb9';
+    [lo,(lo+hi)/2,hi].forEach(v => ctx.fillText(v+(key === 'hue' ? '°' : '%'),0,y(v)+6));
+    for (const [label,strip] of [['before',h-24],['after',h-12]]) rows.forEach((row,i) => {
+      if (!row) return;
+      const hue=((row[label].hue[1]+data.hue_center)%360+360)%360, sat=row[label].saturation[1]/100, value=row.brightness;
+      const f = n => {const k=(n+hue/60)%6; return 255*value*(1-sat*Math.max(0,Math.min(k,4-k,1)));};
+      ctx.fillStyle=`rgb(${f(5)},${f(3)},${f(1)})`;
+      ctx.fillRect(x(i)-(right-left)/32,strip,(right-left)/16+1,9);
+    });
+  });
+}
 let shellConnected = false, shellUiReady = false, pendingShellMode = null;
 function announceMode(request=null) {
   if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:state.mode, request}, location.origin);
 }
 function switchMode(mode, request=null) {
+  if (mode === 'skintone') mode = 'frequency';
+  if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
   if (state.mode !== mode) {
     state.mode = mode; syncMode(); state.version = 0; clearPanels(); markDirty();
@@ -234,13 +387,14 @@ window.addEventListener('message', event => {
   } else if (data.type === 'shp-tools-connect') {
     shellConnected = true; $('toolModeRow').hidden = true; announceMode();
   } else if (shellConnected && data.type === 'shp-tools-mode' &&
-             ['mask','frequency','dnb'].includes(data.mode) && Number.isSafeInteger(data.request)) {
+             ['mask','skintone','frequency','dnb'].includes(data.mode) && Number.isSafeInteger(data.request)) {
     if (state.busy) pendingShellMode = data;
     else switchMode(data.mode, data.request);
   }
 });
 function scaleFrequencyRadius() {
   const S = Number($('S').value);
+  if (sliders.layerBlur) updateLayerBlurTip();
   if (!Number.isFinite(S) || S <= 0) {
     sliders.frequencyCalibration.lab.title = FREQUENCY_RADIUS_TIP + ' No valid scale: enter S (px / 63 mm) to calculate it.';
     sliders.blurPercent.lab.title = FREQUENCY_BLUR_TIP;
@@ -271,6 +425,17 @@ function renderBands() {
 }
 /* ---------- global + tone sliders ---------- */
 sliders.strength = slider($('globals'), 'strength', 0, 4, 0.01, state.strength, v => { state.strength = v; markDirty(); }, {tip:'Multiplies the gain of the band.'});
+const LAYER_BLUR_TIP = 'Gaussian blur of the unmasked Soft Light layer, in px at S181. Full-image sigma = value × S / 181; preview scales with resolution. Mask is unchanged. 0 = no blur. Independent of FS Radius.';
+function updateLayerBlurTip() {
+  const S = Number($('S').value);
+  sliders.layerBlur.lab.title = LAYER_BLUR_TIP + (Number.isFinite(S) && S > 0
+    ? ` Current: ${state.layerBlur} × ${S} / 181 = ${(state.layerBlur*S/181).toFixed(2)} px.`
+    : ' No valid scale: enter S (px / 63 mm) to calculate it.');
+}
+sliders.layerBlur = slider($('globals'), 'Layer blur', 0, 20, 0.1, state.layerBlur, v => {
+  state.layerBlur = v; updateLayerBlurTip(); markDirty();
+}, {tip:LAYER_BLUR_TIP});
+updateLayerBlurTip();
 sliders.edge = slider($('globals'), 'edge', 0, 0.2, 0.005, state.edge, v => { state.edge = v; markDirty(); }, {tip:'Guided-filter edge smoothing threshold in log luminance. Lower preserves weaker boundaries; higher smooths across more boundaries. Separate from tau deviation suppression.'});
 sliders.tau = slider($('globals'), 'tau', 0.01, 0.4, 0.01, state.tau, v => { state.tau = v; markDirty(); }, {preserveValue:true, tip:'Deviation suppression scale in natural-log luminance units. Lower suppresses correction of large local brightness deviations more strongly; higher allows more correction. Unlike edge, this does not set the guided-filter smoothing threshold. Legacy preset values outside 0.01–0.4 remain in the readout until the slider is moved.'});
 sliders.toneStrength = slider($('tone'), 'strength', 0, 1, 0.01, state.tone.strength, v => { state.tone.strength = v; markDirty(); }, {tip:'How strongly the tone range limits the correction (1 = fully, 0 = not at all).'});
@@ -350,37 +515,160 @@ async function drawProfile() {
 function bandsPayload() { return state.bands.map(b => [b.lo, b.hi, b.gain, b.taper]); }
 
 /* ---------- loading and running ---------- */
+let loadProgress = null;
+let liveOperation = null;
+async function operationApi(path, body, sending=false) {
+  const operation = {token:crypto.randomUUID(), timer:null};
+  liveOperation = operation;
+  const progress = loadProgress;
+  const display = snapshot => {
+    if (liveOperation !== operation || snapshot.token !== operation.token || snapshot.pending) return;
+    const completed = {'Loading image / preparing profile':'Image loaded',
+      'Analyzing image / estimating S':'Image analyzed',
+      'Generating shared skin mask':'Mask generated',
+      'Getting merged image from PhotoCraft':'Image fetched from PhotoCraft'};
+    const lines = snapshot.steps.map(step =>
+      `${step.error ? step.label+' failed: '+step.error : completed[step.label] || step.label} in ${step.seconds.toFixed(2)}s`);
+    if (snapshot.active) lines.push(snapshot.active+'...');
+    if (snapshot.done) lines.push(`${sending ? 'Send' : 'Load/Get'} ${snapshot.error ? 'failed' : 'completed'} in ${snapshot.seconds.toFixed(2)}s`);
+    if (operation.pollError) lines.push('Live progress unavailable: '+operation.pollError);
+    if (sending) temporaryLog.send = lines.join('\n');
+    else if (progress === loadProgress) {
+      progress.steps = lines; progress.streamed = true; renderLoadTimings();
+    }
+    renderTemporaryLog();
+    if (snapshot.active) setStatus(snapshot.active+'...');
+  };
+  const poll = async () => {
+    try { display(await api('/api/progress?token='+operation.token)); }
+    catch(e) {
+      if (liveOperation === operation) {
+        operation.pollError = e.message;
+        if (sending) temporaryLog.send += '\nLive progress unavailable: '+e.message;
+        else recordLoadStage('Live progress unavailable: '+e.message);
+        renderTemporaryLog();
+      }
+      return;
+    }
+    if (liveOperation === operation) operation.timer = setTimeout(poll, 250);
+  };
+  operation.timer = setTimeout(poll, 100);
+  try {
+    const response = await api(path, {...body,_progress:operation.token});
+    if (!response._progress) throw new Error('Backend has no live progress support. Restart Tools/D&B when ready, then retry.');
+    display(response._progress);
+    return response;
+  } catch(e) {
+    if (e.progress) display(e.progress);
+    throw e;
+  } finally {
+    clearTimeout(operation.timer);
+    if (liveOperation === operation) liveOperation = null;
+  }
+}
+function renderLoadTimings() {
+  temporaryLog.load = loadProgress ? loadProgress.steps.join('\n') : '';
+  renderTemporaryLog();
+}
+function beginLoadTimings(message) {
+  if (temporaryLog.load) logNote(temporaryLog.load);
+  loadProgress = {started:performance.now(), steps:[message]};
+  renderLoadTimings();
+}
+function recordLoadStage(label, seconds) {
+  if (!loadProgress) return;
+  loadProgress.steps.push(seconds === undefined ? label : `${label} in ${seconds.toFixed(2)}s`);
+  renderLoadTimings();
+}
 async function loadList() {
   const list = await api('/api/images');
   const sel = $('imgSel'); sel.innerHTML = '';
   list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
 }
 function applyLoaded(r) {
-    state.loaded = true; state.pcFetched = false; syncCropButtons(); state.estS = r.S;
+    state.imageInfo = r;
+    closeLandmarks(false);
+    state.loadEpoch = (state.loadEpoch || 0) + 1;
+    state.imageGeneration = r.generation;
+    state.hueCenterNote = '';
+    state.hueCenterFailed = false;
+    state.loaded = true; state.pcFetched = false; state.version = 0; state.avers = 0; syncCropButtons(); state.estS = r.S;
+    state.skintoneError = r.skintone_error || null;
     state.color.hue = state.color.saturation = state.color.rgb = null;
     $('colorOn').checked = false; setColorSwatch(null); setPickingColor(false);
     if (r.skin_colour) { state.color.hue = r.skin_colour.hue; state.color.saturation = r.skin_colour.saturation; setColorSwatch(r.skin_colour.rgb); $('colorOn').checked = true; setToneMid(r.skin_colour.light); drawTone(); }
     syncColorControls();
     $('S').value = Number.isFinite(r.S) && r.S > 0 ? r.S : '';
+    $('landmarkOpen').disabled = false;
+    $('landmarkOpen').classList.toggle('dirty', !r.S || r.confidence !== 'high');
     scaleFrequencyRadius();
-    $('info').innerHTML = `<b>${r.name}</b> ${r.width}×${r.height}<br><span class="hint">colour: ${r.colour}</span><br>` + (r.S
-      ? `estimated S = <b>${Math.round(r.S)}</b> px (${r.confidence}); ${r.desc}`
-      : `<span style="color:var(--warn)">no scale estimate (${r.desc}); enter S by hand</span>`);
+    renderAnalysisSummary();
     ['maskOn'].forEach(id => { $(id).disabled = !r.has_mask; });
     if (!r.has_mask) { $('maskOn').checked = false; }
     else { $('maskOn').checked = true; }
-    setStatus(`Loaded in ${r.seconds}s. Press Apply.`, false, true);
+    if (loadProgress && r.timings && !loadProgress.streamed) {
+      loadProgress.steps = [
+        `Image loaded in ${r.timings.loaded.toFixed(2)}s`,
+        `Image analyzed in ${r.timings.analyzed.toFixed(2)}s${r.S ? '' : ' (no usable scale)'}`,
+        r.timings.mask === null ? 'Mask not generated: no usable detected scale.'
+          : `Mask generated in ${r.timings.mask.toFixed(2)}s (including skin statistics)`
+      ];
+      renderLoadTimings();
+    }
+    setStatus('Image loaded and analyzed. Preparing Hue Center...', false, true);
+    if (state.mode === 'frequency' && state.skintoneError) setStatus(state.skintoneError, true);
     clearPanels();
+    drawSkintone(null);
+}
+async function initializeHueCenter() {
+  const epoch = state.loadEpoch, revision = settingsRevision;
+  const started = performance.now(), progress = loadProgress;
+  setStatus('Estimating Hue Center...');
+  try {
+    const r = await api('/api/hue-center', {...params(), generation:state.imageGeneration});
+    if (epoch !== state.loadEpoch || r.generation !== state.imageGeneration) return;
+    state.hueCenterFailed = false;
+    const initialized = Number.isFinite(r.center) && revision === settingsRevision;
+    if (revision !== settingsRevision) {
+      state.hueCenterNote = 'Hue Center estimate not applied because settings were edited during load; current Center retained.';
+    } else {
+      state.hueCenterNote = r.note;
+      if (Number.isFinite(r.center)) {
+        state.skintone.hue_center = r.center;
+        skintoneSliders.hue_center.set(r.center, false);
+        markDirty();
+      }
+    }
+    if (progress === loadProgress) recordLoadStage(
+      initialized ? 'Hue Center initialized'
+        : 'Hue Center not initialized: '+state.hueCenterNote, (performance.now()-started)/1000);
+  } catch (e) {
+    if (epoch !== state.loadEpoch) return;
+    state.hueCenterNote = 'Hue Center estimation failed: '+e.message+' Previous Center retained; set Center manually.';
+    state.hueCenterFailed = true;
+    if (progress === loadProgress) recordLoadStage('Hue Center failed: '+e.message, (performance.now()-started)/1000);
+    setStatus(state.hueCenterNote, true);
+  }
+  renderAnalysisSummary();
+  logNote(state.hueCenterNote);
+  drawSkintone(null);
 }
 async function loadImage() {
   const path = $('imgPath').value.trim() || $('imgSel').value;
   if (!path) return;
-  setBusy(true); setStatus('Loading and estimating scale (a few seconds the first time)...');
+  beginLoadTimings('Loading image...');
+  setBusy(true); setStatus('Loading image...');
+  let loaded = false;
   try {
-    applyLoaded(await api('/api/load', {path}));
-  } catch (e) { setStatus(e.message, true); }
+    applyLoaded(await operationApi('/api/load', {path}));
+    loaded = true;
+    await initializeHueCenter();
+  } catch (e) {
+    recordLoadStage('Image load/analysis failed: '+e.message);
+    loadProgress.finished = true; setStatus(e.message, true);
+  }
   setBusy(false);
-  if (state.loaded) apply();
+  if (loaded) apply();
 }
 function setBusy(b) {
   state.busy = b;
@@ -388,6 +676,7 @@ function setBusy(b) {
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = b;
+  $('landmarkOpen').disabled = b || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.pcFetched;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = b || !state.loaded;
@@ -406,7 +695,7 @@ function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSki
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).checked = v === '1'; });
 function params() {
-  return { mode: state.mode, frequency: {...state.frequency}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: state.mode, layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -417,15 +706,48 @@ function params() {
 }
 async function apply() {
   if (state.busy || !state.loaded) return;
-  const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
+  const p = params(); if (!(p.S > 0)) {
+    if (loadProgress && !loadProgress.finished) {
+      recordLoadStage('Preview not generated: enter S first.'); loadProgress.finished = true;
+    }
+    setStatus('Enter S first.', true); return;
+  }
+  const revision = settingsRevision;
+  const epoch = state.loadEpoch, progress = loadProgress, started = performance.now();
+  const loadingPreview = progress && !progress.finished;
+  const processingStarted = loadingPreview ? progress.started : started;
   setBusy(true); setStatus('Computing...');
   try {
     const r = await api('/api/run', p);
-    state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
-    showImages();
-    setStatus('Done.', false, true);
-  } catch (e) { setStatus(e.message, true); }
+    if (revision === settingsRevision) {
+      state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
+      if (loadingPreview && progress === loadProgress) recordLoadStage('Preview computed', (performance.now()-started)/1000);
+      if (state.mode === 'frequency') drawSkintone(r.stats.skintone);
+      setStatus('Loading preview images...');
+      const displayStarted = performance.now();
+      const displayed = await showImages();
+      if (epoch === state.loadEpoch && revision === settingsRevision && displayed) {
+        if (loadingPreview && progress === loadProgress) {
+          recordLoadStage('Preview images loaded', (performance.now()-displayStarted)/1000);
+          recordLoadStage('Ready', (performance.now()-progress.started)/1000);
+          progress.finished = true;
+        }
+        if (state.mode === 'frequency') logNote(r.stats.skintone.effect.note);
+        logNote(state.hueCenterNote);
+        if (state.hueCenterFailed) setStatus(state.hueCenterNote, true);
+        else finishProcessing(processingStarted);
+      } else if (loadingPreview && progress === loadProgress && !displayed) {
+        recordLoadStage('Preview display failed or was replaced.'); progress.finished = true;
+      }
+    } else setStatus('Settings changed; updating preview...');
+  } catch (e) {
+    if (loadingPreview && progress === loadProgress) { recordLoadStage('Preview failed: '+e.message); progress.finished = true; }
+    setStatus(e.message, true);
+  }
   setBusy(false);
+  if (state.dirty && revision !== settingsRevision) {
+    clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350);
+  }
 }
 async function save() {
   if (state.busy || !state.loaded) return;
@@ -440,19 +762,34 @@ async function save() {
 
 async function pcGet() {
   if (state.busy) return;
-  setBusy(true); setStatus('Getting the picture from PhotoCraft...');
+  beginLoadTimings('Getting image from PhotoCraft...');
+  setBusy(true); setStatus('Getting image from PhotoCraft...');
+  let loaded = false;
   try {
-    const r = await api('/api/pc/fetch', {});
+    const r = await operationApi('/api/pc/fetch', {});
     applyLoaded(r); state.pcFetched = true;
-  } catch (e) { setStatus(e.message, true); }
+    loaded = true;
+    await initializeHueCenter();
+  } catch (e) {
+    recordLoadStage('Image Get/analysis failed: '+e.message);
+    loadProgress.finished = true; setStatus(e.message, true);
+  }
   setBusy(false);
-  if (state.loaded) apply();
+  if (loaded) apply();
 }
 async function pcSend() {
   if (state.busy || !state.loaded) return;
+  const started = performance.now();
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
-  setBusy(true); setStatus('Sending ' + (state.mode === 'frequency' ? 'frequency-separation folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
-  try { const r = await api('/api/pc/send', p); setStatus(`Sent to ${r.document}.`, false, true); }
+  setBusy(true); setStatus('Sending ' + (state.mode === 'frequency' ? 'FS + Skintone folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
+  if (temporaryLog.send) logNote(temporaryLog.send);
+  temporaryLog.send = 'Preparing Send...';
+  renderTemporaryLog();
+  try {
+    const r = await operationApi('/api/pc/send', p, true);
+    logNote(`Sent to ${r.document}.`);
+    finishProcessing(started);
+  }
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
 }
@@ -461,13 +798,27 @@ $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick 
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
 if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
-if (!['analysis', 'mask', 'layer', 'layerm'].includes(tabSel.B)) tabSel.B = 'mask';
+function rightPreviewKinds(mode) {
+  return mode === 'frequency' ? ['color', 'detail'] : mode === 'dnb' ? ['layer', 'layerm'] : ['mask', 'analysis'];
+}
+function syncRightTabs() {
+  const allowed = rightPreviewKinds(state.mode);
+  if (!allowed.includes(tabSel.B)) tabSel.B = allowed[0];
+  $('tabsB').querySelectorAll('.tab').forEach(t => { t.hidden = !allowed.includes(t.dataset.k); });
+}
+function syncLeftTabs() {
+  const mask = state.mode === 'mask';
+  $('tabsA').querySelectorAll('.tab').forEach(t => { t.hidden = mask && t.dataset.k === 'result'; });
+  if (mask && tabSel.A === 'result') tabSel.A = 'orig';
+}
 function paneKinds() {
   const x = $('layerX').checked;
   const b = tabSel.B === 'layer' ? (x ? 'layerx' : 'layer') : tabSel.B === 'layerm' ? (x ? 'layermx' : 'layerm') : tabSel.B;
   return [tabSel.A, b];
 }
 function syncTabs() {
+  syncLeftTabs();
+  syncRightTabs();
   [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === tabSel[k])));
   $('optsAn').hidden = tabSel.B !== 'analysis';
   $('optsLayer').hidden = tabSel.B !== 'layer' && tabSel.B !== 'layerm';
@@ -476,16 +827,16 @@ function syncMode() {
   const dnb = state.mode === 'dnb', frequency = state.mode === 'frequency';
   $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
   $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
+  $('g-skintone').hidden = !frequency;
+  $('g-file').hidden = state.mode !== 'mask';
+  renderAnalysisSummary();
+  if (frequency) drawSkintone(null);
   ['g-mask', 'g-structure', 'g-range', 'g-color'].forEach(id => { $(id).hidden = state.mode !== 'mask'; });
-  $('tabsB').querySelectorAll('.tab').forEach(t => {
-    t.hidden = ['layer', 'layerm'].includes(t.dataset.k) ? !dnb : ['color', 'detail', 'blur'].includes(t.dataset.k) ? !frequency : false;
-  });
-  if ([...$('tabsB').querySelectorAll('.tab')].some(t => t.dataset.k === tabSel.B && t.hidden)) tabSel.B = 'mask';
   const result = $('tabsA').querySelector('[data-k="result"]');
-  result.textContent = dnb ? 'Result' : frequency ? 'Result' : 'Skin mask';
-  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Sent stack: unmasked Color and Detail, plus active skin-masked Blur. Inspect individual layers on the right.' : 'The reusable combined grayscale skin mask.';
-  $('pcSend').textContent = dnb ? 'Send Result' : frequency ? 'Send Layers' : 'Send Mask';
-  $('pcSend').title = dnb ? 'Add Soft Light with its mask.' : frequency ? 'Add an unmasked Normal folder: Detail (Linear Light, unmasked), Blur (skin mask), Color (unmasked).' : 'Add a grayscale layer; do not change any existing layer mask.';
+  result.textContent = state.mode === 'mask' ? 'Skin mask' : 'Result';
+  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skin-masked Blur over Color, then skin-masked Hue correction, then unmasked Linear Light Detail.' : 'The reusable combined grayscale skin mask.';
+  $('pcSend').textContent = dnb ? 'Send Result' : state.mode === 'mask' ? 'Send Mask' : 'Send Layers';
+  $('pcSend').title = dnb ? 'Add Soft Light with its mask.' : frequency ? 'Add an unmasked Normal folder: Detail / directly masked Hue adjustment / masked Blur / Color. Hue LUT is included even at zero Amount.' : 'Add a grayscale layer; do not change any existing layer mask.';
   syncTabs();
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
@@ -538,10 +889,145 @@ function imagePoint(p, e) {
   if (!img || !img.naturalWidth) return null;
   const r = p.getBoundingClientRect(), pw = p.clientWidth, ph = p.clientHeight, nw = img.naturalWidth, nh = img.naturalHeight;
   const sc = Math.min(pw / nw, ph / nh) * view.z;
-  const u = ((e.clientX - r.left - pw / 2 - view.tx) / sc + nw / 2) / nw;
-  const v = ((e.clientY - r.top - ph / 2 - view.ty) / sc + nh / 2) / nh;
+  const u = ((e.clientX - r.left - p.clientLeft - pw / 2 - view.tx) / sc + nw / 2) / nw;
+  const v = ((e.clientY - r.top - p.clientTop - ph / 2 - view.ty) / sc + nh / 2) / nh;
   return u < 0 || u > 1 || v < 0 || v > 1 ? null : {u, v};
 }
+const landmarkLabels = {
+  l_eye:'Left eye centre', r_eye:'Right eye centre', l_sho:'Left shoulder', r_sho:'Right shoulder',
+  l_elb:'Left elbow', r_elb:'Right elbow', l_wri:'Left wrist', r_wri:'Right wrist',
+  l_hip:'Left hip', r_hip:'Right hip', l_kne:'Left knee', r_kne:'Right knee', l_ank:'Left ankle', r_ank:'Right ankle'
+};
+const landmarkSegments = {
+  upper_arm_l:['l_sho','l_elb'], upper_arm_r:['r_sho','r_elb'], forearm_l:['l_elb','l_wri'], forearm_r:['r_elb','r_wri'],
+  thigh_l:['l_hip','l_kne'], thigh_r:['r_hip','r_kne'], shank_l:['l_kne','l_ank'], shank_r:['r_kne','r_ank'],
+  shoulders:['l_sho','r_sho'], torso:['mid_sho','mid_hip']
+};
+const copyLandmarks = value => JSON.parse(JSON.stringify(value));
+function landmarkDraft() { return landmarkEdit?.drafts[landmarkEdit.subject]; }
+function landmarkCurrentPoints() {
+  const d = landmarkDraft();
+  return d ? {...landmarkEdit.subjects[landmarkEdit.subject].points, ...d.points} : {};
+}
+function landmarkSnapshot() {
+  const d = landmarkDraft();
+  d.undo.push(copyLandmarks({points:d.points, excluded:d.excluded}));
+}
+function drawLandmarks() {
+  const svg = $('landmarkOverlay'), img = $('p0').querySelector('img');
+  if (!svg || !landmarkEdit || !img?.naturalWidth) return;
+  const p = $('p0'), pw = p.clientWidth, ph = p.clientHeight;
+  const scale = Math.min(pw / img.naturalWidth, ph / img.naturalHeight) * view.z;
+  const xy = point => [pw/2 + view.tx + (point.x / landmarkEdit.width - 0.5) * img.naturalWidth * scale,
+                       ph/2 + view.ty + (point.y / landmarkEdit.height - 0.5) * img.naturalHeight * scale];
+  const points = landmarkCurrentPoints(), d = landmarkDraft();
+  svg.replaceChildren();
+  const add = (tag, attrs) => {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v)); svg.append(el);
+  };
+  for (const [name, [a,b]] of Object.entries(landmarkSegments)) {
+    if (!points[a]?.visible || !points[b]?.visible) continue;
+    const [x1,y1] = xy(points[a]), [x2,y2] = xy(points[b]);
+    add('line', {x1,y1,x2,y2,stroke:d.excluded.includes(name) ? '#f88' : '#81e4b7', 'stroke-width':2});
+  }
+  for (const [name, point] of Object.entries(points)) {
+    if (!point.visible) continue;
+    const [cx,cy] = xy(point);
+    add('circle', {cx,cy,r:name === $('landmarkName').value ? 7 : 5, fill:point.source === 'manual' || name in d.points ? '#ffb64d' : '#81e4b7', stroke:'#111', 'stroke-width':2});
+  }
+}
+function landmarkChanged() {
+  drawLandmarks();
+  const d = landmarkDraft();
+  if (!d) return;
+  const edit = landmarkEdit;
+  edit.proposal = null;
+  const request = ++edit.request;
+  $('landmarkApply').disabled = true;
+  $('landmarkSummary').textContent = 'Calculating proposal...';
+  api('/api/landmarks/estimate', {generation:edit.generation, subject:edit.subject, points:d.points, excluded:d.excluded})
+    .then(r => {
+      if (landmarkEdit !== edit || request !== edit.request) return;
+      edit.proposal = r;
+      $('landmarkApply').disabled = !(r.S > 0);
+      const cues = r.used.map(c => `${c[0]} ${c[1].toFixed(1)} px`).join(', ') || 'none';
+      const dropped = r.dropped.map(c => c[0]).concat(r.excluded).join(', ') || 'none';
+      $('landmarkSummary').textContent = (r.S ? `Proposed S ${r.S.toFixed(1)} px, ${r.confidence}, uncertainty at least ±${Math.round(r.sigma*100)}%.\n` : 'No usable scale cue.\n') +
+        `Contributing: ${cues}\nExcluded / disagreeing: ${dropped}\nBody segments used: ${r.segments.map(s => s[0]).join(', ') || 'none'}\n` +
+        `Unavailable / degenerate: ${r.unavailable.join(', ') || 'none'}${r.body_spread === null ? '' : `\nBody segment disagreement: ${Math.round(r.body_spread * 100)}% of estimated height`}\n` +
+        'Population averages: 63 mm eye distance, 1680 mm body height. 2D lengths may be foreshortened; placement does not establish depth.';
+    }).catch(e => { if (landmarkEdit === edit && request === edit.request) $('landmarkSummary').textContent = e.message; });
+}
+function landmarkSelectSubject() {
+  landmarkEdit.request++;
+  landmarkEdit.subject = $('landmarkSubject').value === '' ? null : Number($('landmarkSubject').value);
+  $('landmarkSegments').replaceChildren();
+  const d = landmarkDraft();
+  $('landmarkApply').disabled = true;
+  if (!d) { $('landmarkSummary').textContent = 'Select the subject to adjust.'; drawLandmarks(); return; }
+  for (const name of Object.keys(landmarkSegments)) {
+    const label = document.createElement('label'), box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = d.excluded.includes(name);
+    box.onchange = () => { landmarkSnapshot(); d.excluded = box.checked ? [...d.excluded, name] : d.excluded.filter(n => n !== name); landmarkChanged(); };
+    label.append(box, document.createTextNode(name.replaceAll('_', ' '))); $('landmarkSegments').append(label);
+  }
+  landmarkChanged();
+}
+function closeLandmarks(refresh=true) {
+  if (!landmarkEdit) return;
+  const old = landmarkEdit;
+  landmarkEdit = null;
+  $('landmarkEditor').hidden = true; $('app').classList.remove('landmark-editor');
+  $('landmarkOverlay')?.remove();
+  Object.assign(view, old.view);
+  tabSel.A = old.tab; syncTabs();
+  if (refresh) { if (state.version) showImages(); else clearPanels(); layout(); }
+}
+$('landmarkOpen').onclick = async () => {
+  if (landmarkEdit || state.busy) return;
+  try {
+    const data = await api('/api/landmarks', {});
+    clearTimeout(markDirty.t); setPickingColor(false);
+    landmarkEdit = {...data, subject:null, request:0, view:{...view}, tab:tabSel.A,
+      drafts:data.subjects.map(s => ({points:copyLandmarks(s.overrides?.points || {}), excluded:[...(s.overrides?.excluded || [])], undo:[]}))};
+    $('landmarkEditor').hidden = false; $('app').classList.add('landmark-editor');
+    $('landmarkSubject').replaceChildren(new Option('Select subject', ''));
+    data.subjects.forEach((s,i) => $('landmarkSubject').add(new Option(s.label, i)));
+    $('landmarkName').replaceChildren();
+    Object.entries(landmarkLabels).forEach(([n,label]) => $('landmarkName').add(new Option(label, n)));
+    landmarkSelectSubject();
+    tabSel.A = 'orig'; syncTabs(); Object.assign(view, {z:1,tx:0,ty:0});
+    const p = $('p0'); p.replaceChildren();
+    const img = document.createElement('img'); img.draggable = false; img.onload = layout; img.src = `img/landmarks?v=${data.generation}`; p.append(img);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.id = 'landmarkOverlay'; p.append(svg);
+  } catch (e) { setStatus(e.message, true); }
+};
+$('landmarkSubject').onchange = landmarkSelectSubject;
+$('landmarkName').onchange = drawLandmarks;
+$('landmarkMissing').onclick = () => {
+  const d = landmarkDraft(); if (!d) return;
+  landmarkSnapshot(); d.points[$('landmarkName').value] = {visible:false, source:'manual'}; landmarkChanged();
+};
+$('landmarkUndo').onclick = () => {
+  const d = landmarkDraft(); if (!d?.undo.length) return;
+  Object.assign(d, d.undo.pop()); landmarkSelectSubject();
+};
+$('landmarkReset').onclick = () => {
+  const d = landmarkDraft(); if (!d) return;
+  landmarkSnapshot(); d.points = {}; d.excluded = []; landmarkSelectSubject();
+};
+$('landmarkCancel').onclick = () => closeLandmarks();
+$('landmarkApply').onclick = async () => {
+  const edit = landmarkEdit, d = landmarkDraft(); if (!d || !edit.proposal?.S) return;
+  $('landmarkApply').disabled = true;
+  try {
+    const r = await api('/api/landmarks/estimate', {generation:edit.generation, subject:edit.subject, points:d.points, excluded:d.excluded, apply:true});
+    if (landmarkEdit !== edit) return;
+    closeLandmarks(); $('S').value = r.S; $('S').onchange();
+    setStatus(`Scale applied: ${r.S.toFixed(1)} px (${r.confidence}).`, false, true);
+  } catch (e) { setStatus(e.message, true); if (landmarkEdit === edit) $('landmarkApply').disabled = false; }
+};
 function cyclePaneTab(index) {
   const key = index === 0 ? 'A' : 'B', tabs = [...$(`tabs${key}`).querySelectorAll('.tab')].filter(t => !t.hidden);
   const current = tabs.findIndex(t => t.dataset.k === tabSel[key]);
@@ -551,14 +1037,35 @@ function cyclePaneTab(index) {
   syncTabs();
   if (state.version) showImages();
 }
-function clearPanels() { pans.forEach(p => p.innerHTML = '<div class="empty">no result yet</div>'); }
+function clearPanels() {
+  pans.forEach(p => {
+    p.querySelector('img')?.finishDisplay?.(false);
+    p.innerHTML = '<div class="empty">no result yet</div>';
+  });
+}
 function showImages() {
   const kinds = paneKinds();
-  pans.forEach((p, i) => {
+  return Promise.all(pans.map((p, i) => new Promise(resolve => {
     let img = p.querySelector('img');
-    if (!img) { p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img); img.onload = layout; }
-    img.src = `img/${kinds[i]}?v=${state.version}-${state.avers}`;
-  });
+    if (!img) {
+      p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img);
+    }
+    if (img.finishDisplay) img.finishDisplay(false);
+    img.finishDisplay = resolve;
+    img.onload = () => {
+      p.querySelector('.empty')?.remove(); img.hidden = false; layout(); resolve(true);
+    };
+    img.onerror = () => {
+        img.hidden = true;
+        if (!p.querySelector('.empty')) {
+          const note = document.createElement('div'); note.className = 'empty';
+          note.textContent = 'Preview could not be displayed. Press Apply to retry.'; p.append(note);
+        }
+        setStatus('Could not display the '+(i === 0 ? 'Original/Result' : 'analysis/mask')+' preview image. Press Apply to retry.', true);
+        resolve(false);
+      };
+    img.src = landmarkEdit && i === 0 ? `img/landmarks?v=${landmarkEdit.generation}` : `img/${kinds[i]}?v=${state.version}-${state.avers}`;
+  }))).then(results => results.every(Boolean));
 }
 function layout() {
   pans.forEach(p => {
@@ -568,6 +1075,7 @@ function layout() {
     img.style.transform = `translate(${pw/2 + view.tx}px, ${ph/2 + view.ty}px) scale(${s}) translate(${-nw/2}px, ${-nh/2}px)`;
     img.style.imageRendering = s > 2 ? 'pixelated' : 'auto';
   });
+  drawLandmarks();
 }
  const startPick = (target, msg) => {
   if (pickingColor === target) { setPickingColor(false); setStatus('Pick cancelled.'); return; }
@@ -603,13 +1111,41 @@ pans.forEach(p => {
     view.tx = mx - (mx - view.tx) * k; view.ty = my - (my - view.ty) * k; view.z = z; layout();
   }, {passive:false});
   let drag = null;
+  let landmarkDrag = null;
   p.addEventListener('pointerdown', e => {
+    if (landmarkEdit && p === pans[0] && e.button === 0 && !e.altKey) {
+      const d = landmarkDraft(), pos = imagePoint(p, e);
+      if (!d || !pos) return;
+      landmarkEdit.request++; landmarkEdit.proposal = null; $('landmarkApply').disabled = true;
+      const points = landmarkCurrentPoints(), img = p.querySelector('img');
+      const scale = Math.min(p.clientWidth / img.naturalWidth, p.clientHeight / img.naturalHeight) * view.z;
+      let nearest = null, distance = 12;
+      for (const [name, point] of Object.entries(points)) {
+        if (!point.visible) continue;
+        const dx = (point.x / landmarkEdit.width - pos.u) * img.naturalWidth * scale;
+        const dy = (point.y / landmarkEdit.height - pos.v) * img.naturalHeight * scale;
+        if (Math.hypot(dx,dy) < distance) { distance = Math.hypot(dx,dy); nearest = name; }
+      }
+      const name = nearest || $('landmarkName').value;
+      $('landmarkName').value = name; landmarkSnapshot();
+      landmarkDrag = name;
+      d.points[name] = {x:pos.u * landmarkEdit.width, y:pos.v * landmarkEdit.height, visible:true, source:'manual'};
+      p.focus(); p.setPointerCapture(e.pointerId); drawLandmarks(); e.preventDefault(); return;
+    }
     drag = {x:e.clientX, y:e.clientY, tx:view.tx, ty:view.ty, shift:e.shiftKey, ctrl:e.ctrlKey, button:e.button};
     if (e.button === 0 && e.ctrlKey) e.preventDefault();
     p.setPointerCapture(e.pointerId); p.classList.add('drag');
   });
-  p.addEventListener('pointermove', e => { if (drag && !drag.ctrl) { view.tx = drag.tx + e.clientX - drag.x; view.ty = drag.ty + e.clientY - drag.y; layout(); } });
+  p.addEventListener('pointermove', e => {
+    if (landmarkDrag && landmarkEdit) {
+      const pos = imagePoint(p, e);
+      if (pos) { landmarkDraft().points[landmarkDrag] = {x:pos.u * landmarkEdit.width, y:pos.v * landmarkEdit.height, visible:true, source:'manual'}; drawLandmarks(); }
+      return;
+    }
+    if (drag && !drag.ctrl) { view.tx = drag.tx + e.clientX - drag.x; view.ty = drag.ty + e.clientY - drag.y; layout(); }
+  });
   p.addEventListener('pointerup', e => {
+    if (landmarkDrag) { landmarkDrag = null; landmarkChanged(); return; }
     const d = drag; drag = null; p.classList.remove('drag');
     if (!d || d.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
     if (pickingColor) {
@@ -630,10 +1166,22 @@ pans.forEach(p => {
     moveCrop({u, v});
   });
   p.addEventListener('pointercancel', () => {
+    if (landmarkDrag) { landmarkDrag = null; if (landmarkEdit) landmarkChanged(); }
     drag = null; p.classList.remove('drag');
   });
   p.addEventListener('contextmenu', e => { if (e.ctrlKey) e.preventDefault(); });
   p.addEventListener('dblclick', () => { view.z = 1; view.tx = 0; view.ty = 0; layout(); });
+});
+$('p0').addEventListener('keydown', e => {
+  const delta = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]}[e.key];
+  if (!landmarkEdit || !delta || !landmarkDraft()) return;
+  const name = $('landmarkName').value, point = landmarkCurrentPoints()[name];
+  if (!point?.visible) return;
+  landmarkSnapshot();
+  const step = e.shiftKey ? 10 : 1;
+  landmarkDraft().points[name] = {x:Math.min(landmarkEdit.width, Math.max(0, point.x + delta[0]*step)),
+    y:Math.min(landmarkEdit.height, Math.max(0, point.y + delta[1]*step)), visible:true, source:'manual'};
+  landmarkChanged(); e.preventDefault();
 });
 window.addEventListener('resize', layout);
 
@@ -650,8 +1198,9 @@ document.querySelectorAll('details.grp').forEach(d => {
 /* ---------- presets ---------- */
 const FACTORY = {
   mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200},
+  skintone: {...SKINTONE_DEFAULTS},
   bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
-  strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12,
+  strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12, layer_blur_at_s181: 0,
   tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
   mask: {on:true, features:true, colour:true, feather:1.0, inward:true},
   structure: {on:false, protect:0, mm:4, thr:0.1},
@@ -660,9 +1209,9 @@ const FACTORY = {
 };
 function getSettings() {
   return {
-    mode: state.mode, frequency: {...state.frequency},
+    mode: state.mode, frequency: {...state.frequency}, skintone: {...state.skintone},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
-    strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge,
+    strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge, layer_blur_at_s181:state.layerBlur,
     tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
     mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
     structure: {on: $('structureOn').checked, protect: state.structure.protect, mm: state.structure.mm, thr: state.structure.thr},
@@ -674,7 +1223,15 @@ function getSettings() {
 function applySettings(o) {
   const f = JSON.parse(JSON.stringify(FACTORY));
   const v = Object.assign({}, f, o || {}, {frequency: Object.assign({}, f.frequency, (o || {}).frequency), tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
-  state.mode = ['dnb', 'mask', 'frequency'].includes(v.mode) ? v.mode : 'dnb';
+  state.mode = v.mode === 'skintone' ? 'frequency' : ['dnb', 'mask', 'frequency'].includes(v.mode) ? v.mode : 'dnb';
+  state.skintone = {...SKINTONE_DEFAULTS, ...(o?.skintone || {})};
+  if (state.loaded) state.hueCenterNote = 'Hue Center restored from settings; next Load/Get will estimate it again.';
+  Object.entries(skintoneSliders).forEach(([key,s]) => {
+    const n=+state.skintone[key];
+    const bounds = {hue_center:[0,360],hue_width:[0,180]}[key] || [+s.rng.min,+s.rng.max];
+    state.skintone[key] = Math.min(bounds[1],Math.max(bounds[0],Number.isFinite(n)?n:SKINTONE_DEFAULTS[key]));
+    s.set(state.skintone[key], false);
+  });
   const legacyRatio = 100 * +v.frequency.blur_radius / +v.frequency.radius;
   const percent = o?.frequency?.blur_percent ?? (o?.frequency ? legacyRatio : 200);
   state.frequency = {method:v.frequency.method === 'median' ? 'median' : 'gaussian', radius:+v.frequency.radius, blur_radius:+v.frequency.blur_radius, radius_at_s181:+v.frequency.radius_at_s181, blur_percent:Math.min(500,Math.max(100,Number.isFinite(+percent)?+percent:200))};
@@ -684,6 +1241,8 @@ function applySettings(o) {
   syncMode();
   state.bands = [(v.bands && v.bands.length ? v.bands : f.bands)[0]].map(b => ({lo:+b.lo, hi:+b.hi, gain:1, taper:+b.taper, linked:!!b.linked}));
   state.strength = v.strength; sliders.strength.set(v.strength, false);
+  state.layerBlur = Math.min(20, Math.max(0, +v.layer_blur_at_s181));
+  sliders.layerBlur.set(state.layerBlur, false); updateLayerBlurTip();
   state.maxEv = v.max_ev;
   state.tau = v.tau;
   sliders.tau.set(v.tau, false);

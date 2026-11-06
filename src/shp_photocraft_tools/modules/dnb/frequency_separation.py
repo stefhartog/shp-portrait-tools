@@ -4,6 +4,7 @@ import math
 
 import cv2
 import numpy as np
+from . import progress
 
 
 def settings(req):
@@ -69,10 +70,16 @@ def skin_filter(img, mask, radius, method="gaussian"):
     return np.where((m > 0)[..., None], filtered, img).astype(np.float32)
 
 
-def separate(img, mask, method="gaussian", radius=8, blur_radius=12):
+def split(img, method="gaussian", radius=8):
     color = skin_filter(img, np.ones(img.shape[:2], np.float32), radius, method)
-    blur = skin_filter(color, mask, blur_radius, "gaussian")
     detail = np.clip(0.5 + (img - color) * 0.5, 0, 1).astype(np.float32)
+    return {"color": color, "detail": detail}
+
+
+def separate(img, mask, method="gaussian", radius=8, blur_radius=12):
+    layers = progress.call("Separating Color and Detail", split, img, method, radius)
+    color, detail = layers["color"], layers["detail"]
+    blur = progress.call("Computing skin-aware Blur", skin_filter, color, mask, blur_radius, "gaussian")
     return {"color": color, "blur": blur, "detail": detail}
 
 
@@ -83,4 +90,7 @@ def composite(layers, mask):
 
 
 def rgb16(img):
-    return np.round(np.clip(img, 0, 1) * 65535).astype(np.uint16)
+    out = np.empty(img.shape, np.uint16)
+    for y in range(0, img.shape[0], 64):
+        out[y:y + 64] = np.round(np.clip(img[y:y + 64], 0, 1) * 65535).astype(np.uint16)
+    return out

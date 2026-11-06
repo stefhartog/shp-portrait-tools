@@ -27,10 +27,10 @@ def main():
         def send_expand(self, layer, document, margins):
             return {"layer": 9, "document": document["name"], "width": layer.shape[1], "height": layer.shape[0]}
 
-        def send(self, layer, mask, document):
+        def send(self, layer, mask, document, *, source_icc=None):
             return {"layer": 9, "document": document["name"]}
 
-        def send_mask(self, mask, document):
+        def send_mask(self, mask, document, *, source_icc=None):
             assert mask.shape == (600, 800) and mask.dtype == np.uint8
             return {"layer": 10, "document": document["name"]}
 
@@ -38,6 +38,13 @@ def main():
             assert set(layers) == {"color", "blur", "detail"}
             assert all(a.shape == (600, 800, 3) and a.dtype == np.uint16 for a in layers.values())
             return {"layer": 11, "document": document["name"]}
+
+        def send_skintone(self, layers, settings, mask, document, source_icc):
+            assert mask.shape == (600, 800) and mask.dtype == np.uint8
+            assert set(layers) == {"color", "blur", "detail"}
+            assert all(a.shape == (600,800,3) and a.dtype == np.uint16 for a in layers.values())
+            assert set(settings) == {"hue_center","hue_width","hue_softness","hue_amount"}
+            return {"layer": 12, "document": document["name"]}
 
     if name == "crop":
         from shp_photocraft_tools.modules.crop import server as module
@@ -62,8 +69,13 @@ def main():
         module.ROUTES["/api/test/variation-delay"] = variation_delay
     else:
         from shp_photocraft_tools.modules.dnb import ui_server as module
+        import cv2
 
-        module.M.pick_target = lambda *a: {"S": 180, "conf": "fixture", "desc": "Synthetic test image",
+        for hue in (18,43):
+            pixels=cv2.cvtColor(np.full((600,800,3),[hue,.6,.8],np.float32),cv2.COLOR_HSV2BGR)
+            cv2.imwrite(str(root/f"hue-{hue}.png"),module.FS.rgb16(pixels))
+
+        module.M.pick_target = lambda *a, **kw: {"S": 180, "conf": "fixture", "desc": "Synthetic test image",
                                           "centre": (400, 300), "face_info": None, "seen": None}
         module.M.person_box = lambda *a: (0, 0, 800, 600)
 
@@ -77,8 +89,17 @@ def main():
     original = module.Handler
 
     class FixtureHandler(original):
+        hue_route_available = True
+
         def do_api_POST(self):
-            if self.path == "/api/test/work":
+            if self.path == "/api/test/hue-route":
+                request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                FixtureHandler.hue_route_available = request["available"]
+                self.send(200, b"{}", "application/json")
+            elif self.path == "/api/hue-center" and not FixtureHandler.hue_route_available:
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                self.send(404, b"not found", "text/plain")
+            elif self.path == "/api/test/work":
                 time.sleep(1)
                 self.send(200, json.dumps({"done": True}).encode(), "application/json")
             else:

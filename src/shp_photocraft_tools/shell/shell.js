@@ -1,7 +1,22 @@
 (() => {
+  function moduleStatus(state) {
+    const phase = state.phase || 'unknown';
+    const busy = ['starting', 'stopping'].includes(phase) || (phase === 'running' && !!state.busy);
+    const status = busy ? phase === 'running' ? 'busy' : phase
+      : ['running', 'error', 'unavailable', 'stopped'].includes(phase) ? phase : 'unknown';
+    const label = {running:'Running — ready', busy:'Running — busy', starting:'Starting',
+      stopping:'Stopping', error:'Error', unavailable:'Unavailable', stopped:'Stopped', unknown:'Unknown status'}[status];
+    return {status, busy, label:label+(state.error ? ': '+state.error : '')};
+  }
+  function renderTabStatus(tab, state) {
+    const {busy, label} = moduleStatus(state);
+    tab.title = label;
+    tab.setAttribute('aria-label', tab.textContent.trim()+': '+label);
+    tab.setAttribute('aria-busy', String(busy));
+  }
   const names = {crop: 'Crop', dnb: 'D&B'};
-  const views = ['crop', 'mask', 'frequency', 'dnb'];
-  const modes = views.slice(1);
+  const views = ['mask', 'frequency', 'dnb', 'crop'];
+  const modes = views.filter(view => view !== 'crop');
   const $ = id => document.getElementById(id);
   const frames = new Map();
   let modules = {};
@@ -22,6 +37,7 @@
     $('status').classList.toggle('err', error);
   }
   function select(name, notify = true) {
+    if (name === 'skintone') name = 'frequency';
     if (!views.includes(name)) return;
     active = name;
     for (const key of views) {
@@ -47,11 +63,11 @@
       ready.add(frame);
       frame.contentWindow.postMessage({type:'shp-tools-connect'}, location.origin);
       if (active !== 'crop') requestMode();
-    } else if (data.type === 'shp-skin-mode' && modes.includes(data.mode) &&
+    } else if (data.type === 'shp-skin-mode' && (modes.includes(data.mode) || data.mode === 'skintone') &&
                (data.request === null || Number.isSafeInteger(data.request))) {
       if (pending !== null && data.request !== pending) return;
       pending = null;
-      skinMode = data.mode;
+      skinMode = data.mode === 'skintone' ? 'frequency' : data.mode;
       if (active !== 'crop') select(skinMode, false);
     }
   });
@@ -68,9 +84,8 @@
   });
   function render() {
     for (const [name, state] of Object.entries(modules)) {
-      document.querySelectorAll(`.badge[data-service="${name}"]`).forEach(badge => {
-        badge.textContent = state.busy && state.phase === 'running' ? 'busy' : state.phase;
-        badge.dataset.phase = state.phase;
+      document.querySelectorAll(`[role="tab"][data-service="${name}"]`).forEach(tab => {
+        renderTabStatus(tab, state);
       });
       const placeholder = $(`panel-${name}`).querySelector('.placeholder');
       placeholder.hidden = state.phase === 'running';
@@ -104,6 +119,8 @@
       render();
       report('');
     } catch (error) {
+      document.querySelectorAll('[role="tab"][data-service]').forEach(tab =>
+        renderTabStatus(tab, {phase:'unavailable', error:'Supervisor connection lost: '+error.message}));
       report(`Supervisor connection lost: ${error.message}. Reopen SHP PhotoCraft Tools if it does not reconnect.`, true);
     }
     setTimeout(poll, 2000);

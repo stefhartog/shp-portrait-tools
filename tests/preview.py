@@ -49,7 +49,7 @@ def main():
             def send_expand(self, layer, document, margins):
                 return {"layer": 9, "document": document["name"], "width": layer.shape[1], "height": layer.shape[0]}
 
-            def send(self, layer, mask, document):
+            def send(self, layer, mask, document, *, source_icc=None):
                 return {"layer": 9, "document": document["name"]}
 
             def status(self):

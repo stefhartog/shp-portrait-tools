@@ -15,6 +15,7 @@ from PIL import Image, ImageCms
 
 from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
 from shp_photocraft_tools.modules.dnb import frequency_separation as F
+from shp_photocraft_tools.modules.dnb import skintone as ST
 from shp_photocraft_tools.shared.photocraft import ControlError
 
 
@@ -46,6 +47,7 @@ class TransferTests(unittest.TestCase):
         self.bridge = Bridge(port=1, token_file=self.root / "unused",
                              exchange=self.root / "exchange", read_root=self.root)
         env = {k: v for k, v in os.environ.items() if not k.startswith("PHOTOCRAFT_")}
+        env["PHOTOCRAFT_CONFIG_DIR"] = str(self.root / "config")
         self.process = subprocess.Popen(
             ["photocraft-cli", "serve", "--automation-read-root", str(self.root),
              "--automation-write-root", str(self.bridge.exchange)],
@@ -89,9 +91,14 @@ class TransferTests(unittest.TestCase):
             for depth in (8, 16, 32):
                 with self.subTest(profile=profile, depth=depth):
                     target = self.new_target(profile, depth)
+                    exported, _ = self.bridge.fetch(self.root / "input")
+                    with Image.open(exported) as image:
+                        captured = image.info["icc_profile"]
                     before = self.save_pixels("before.png")
                     history = self.client.run("document.inspect")["history"]
-                    result = self.bridge.send(layer, mask, target)
+                    with patch.object(self.bridge, "_target_profile",
+                                      side_effect=AssertionError("redundant profile export")):
+                        result = self.bridge.send(layer, mask, target, source_icc=captured)
                     inspection = self.client.run("document.inspect")
                     self.assertEqual(len(inspection["history"]), len(history) + 1)
                     self.assertEqual((inspection["width"], inspection["height"]), (8, 8))
@@ -122,6 +129,133 @@ class TransferTests(unittest.TestCase):
                     np.testing.assert_array_equal(copied[..., :3][visible], expected_samples[visible])
                     self.assertEqual(list(self.bridge.exchange.iterdir()), [])
                     self.client.run("file.close", document=target["index"])
+
+    def test_early_source_close_preserves_exact_pixels_profiles_and_target_indices(self):
+        innocent = self.new_target("linear-srgb")
+        innocent_before = self.client.run("document.inspect")
+        rng = np.random.default_rng(173)
+        source = rng.uniform(.15, .85, (8, 8, 3)).astype(np.float32)
+        mask = np.tile(np.array([0, 32, 64, 128, 192, 255, 0, 255], np.uint8), (8, 1))
+        layers = ST.separate(source, mask / 255, "gaussian", 2, 3, native=True)
+        for mode in ("dnb", "frequency", "skintone", "mask"):
+            outputs = []
+            peaks = []
+            for early in (False, True):
+                with self.subTest(mode=mode, early=early):
+                    target = self.new_target("prophoto-compat")
+                    history = len(self.client.run("document.inspect")["history"])
+                    opened, inserted = [], []
+                    open_doc, run = self.bridge._open, self.client.run
+
+                    def observe_open(rel):
+                        index = open_doc(rel)
+                        opened.append(len(self.bridge.session()["documents"]))
+                        return index
+
+                    def observe_run(command, **params):
+                        if command == "layer.copyToDocument" and params["document"] == target["index"]:
+                            inserted.append(len(self.bridge.session()["documents"]))
+                        return run(command, **params)
+
+                    # Suppressing just the early release reproduces the previous
+                    # lifetime: every source survives until final descending cleanup.
+                    with patch.object(self.bridge, "_open", side_effect=observe_open), \
+                            patch.object(self.client, "run", side_effect=observe_run), \
+                            patch.object(self.bridge, "_release_source",
+                                         wraps=self.bridge._release_source if early else None):
+                        if mode == "dnb":
+                            self.bridge.send(layers["detail"], mask, target)
+                        elif mode == "mask":
+                            self.bridge.send_mask(mask, target)
+                        else:
+                            icc = self.bridge._target_profile(target)
+                            if mode == "frequency":
+                                self.bridge.send_frequency(layers, mask, target, icc)
+                            else:
+                                self.bridge.send_skintone(layers, ST.settings(
+                                    {"skintone": {"hue_center": 50, "hue_width": 2}}), mask, target, icc)
+                    self.assertEqual(len(self.client.run("document.inspect")["history"]), history + 1)
+                    self.client.call("doc.save", path="result.png")
+                    path = self.bridge.exchange / "result.png"
+                    with Image.open(path) as image:
+                        icc = image.info["icc_profile"]
+                    outputs.append((cv2.imread(str(path), -1), icc))
+                    path.unlink()
+                    peaks.append(max(opened))
+                    self.assertEqual(inserted, [3 if early or mode == "mask" else
+                                                4 if mode == "dnb" else 6])
+                    self.assertEqual(len(self.bridge.session()["documents"]), 2)
+                    self.assertEqual(self.bridge.active_doc()["index"], target["index"])
+                    self.assertEqual(self.client.run("document.inspect", document=innocent["index"]),
+                                     innocent_before)
+                    self.assertEqual(list(self.bridge.exchange.iterdir()), [])
+                    self.client.run("file.close", document=target["index"])
+            np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
+            self.assertEqual(outputs[0][1], outputs[1][1])
+            if mode in ("frequency", "skintone"):
+                self.assertEqual(peaks, [6, 4], "Keep only assembly plus one temporary source")
+
+    def test_source_close_failure_is_reported_and_final_cleanup_keeps_user_documents(self):
+        self.new_target("linear-srgb")
+        target = self.new_target("srgb")
+        before = self.client.run("document.inspect")
+        layers = {key: np.full((8, 8, 3), 32768, np.uint16) for key in ("color", "blur", "detail")}
+        icc = self.bridge._target_profile(target)
+        run = self.client.run
+        failed = []
+
+        def fail_close(command, **params):
+            if command == "file.close" and params["document"] > target["index"] + 1 and not failed:
+                failed.append(params["document"])
+                raise ControlError("fixture source close failed")
+            return run(command, **params)
+
+        with patch.object(self.client, "run", side_effect=fail_close):
+            with self.assertRaisesRegex(ControlError, "source close failed"):
+                self.bridge.send_skintone(layers, ST.settings({}), np.full((8, 8), 128, np.uint8),
+                                          target, icc)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(self.client.run("document.inspect"), before)
+        self.assertEqual(len(self.bridge.session()["documents"]), 2)
+        self.assertEqual(self.bridge.active_doc()["index"], target["index"])
+        self.assertEqual(list(self.bridge.exchange.iterdir()), [])
+
+    def test_get_icc_reuse_avoids_send_export_with_exact_native_pixels_and_profile(self):
+        source = np.full((8, 8, 3), [.25, .4, .7], np.float32)
+        mask = np.tile(np.array([0, 32, 64, 128, 192, 255, 0, 255], np.uint8), (8, 1))
+        layers = ST.separate(source, mask / 255, "gaussian", 2, 3, native=True)
+        for mode in ("dnb", "mask", "frequency", "skintone"):
+            outputs = []
+            for cached in (False, True):
+                with self.subTest(mode=mode, cached=cached):
+                    target = self.new_target("prophoto-compat")
+                    exported, _ = self.bridge.fetch(self.root / "input")
+                    with Image.open(exported) as image:
+                        captured = image.info["icc_profile"]
+                    get_profile = self.bridge._target_profile
+                    profile = captured if cached else get_profile(target)
+                    with patch.object(self.bridge, "_target_profile", side_effect=AssertionError(
+                            "Send must not export Get's destination again")), \
+                            patch.object(self.bridge, "fetch", side_effect=AssertionError("redundant Get")):
+                        if mode == "dnb":
+                            self.bridge.send(layers["detail"], mask, target, source_icc=profile)
+                        elif mode == "mask":
+                            self.bridge.send_mask(mask, target, source_icc=profile)
+                        elif mode == "frequency":
+                            self.bridge.send_frequency(layers, mask, target, profile)
+                        else:
+                            self.bridge.send_skintone(layers, ST.settings(
+                                {"skintone": {"hue_center": 50, "hue_width": 2}}), mask, target, profile)
+                    self.client.call("doc.save", path="result.png")
+                    path = self.bridge.exchange / "result.png"
+                    with Image.open(path) as image:
+                        self.assertEqual(image.info["icc_profile"], captured)
+                    outputs.append(cv2.imread(str(path), -1))
+                    path.unlink()
+                    self.assertEqual(len(self.bridge.session()["documents"]), 1)
+                    self.assertEqual(list(self.bridge.exchange.iterdir()), [])
+                    self.client.run("file.close", document=target["index"])
+            np.testing.assert_array_equal(outputs[0], outputs[1])
 
     def test_old_untagged_copy_moves_neutral_in_wide_gamut(self):
         for profile, expected in (("srgb", 0.5), ("adobe-rgb-compat", 0.49612),
@@ -238,14 +372,13 @@ class TransferTests(unittest.TestCase):
             np.testing.assert_allclose(self.client.run("document.sampleColor", x=x, y=2)[:3],
                                        mask[2, x] / 255, atol=1e-7)
 
-    def test_frequency_refuses_stale_size_profile_and_cleans_scratch(self):
+    def test_frequency_refuses_stale_size_missing_profile_and_cleans_scratch(self):
         doc = self.new_target("srgb")
         layers = {key: np.full((8, 8, 3), 32768, np.uint16) for key in ("color", "blur", "detail")}
         mask = np.full((8, 8), 255, np.uint8)
         icc = self.bridge._target_profile(doc)
-        self.client.run("edit.assignProfile", profile="linear-srgb")
-        with self.assertRaisesRegex(ControlError, "profile changed"):
-            self.bridge.send_frequency(layers, mask, doc, icc)
+        with self.assertRaisesRegex(ControlError, "no ICC profile captured"):
+            self.bridge.send_frequency(layers, mask, doc, None)
         self.assertEqual(len(self.client.run("document.inspect")["layers"]), 1)
         self.assertEqual(len(self.bridge.session()["documents"]), 1)
         self.assertEqual(list(self.bridge.exchange.iterdir()), [])

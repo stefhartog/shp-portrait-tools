@@ -74,6 +74,16 @@ def softlight(cb, cs):
     return np.where(cs <= 0.5, cb - (1 - 2 * cs) * cb * (1 - cb), cb + (2 * cs - 1) * (d - cb))
 
 
+def blur_softlight_layer(img, cs, after, mask, sigma):
+    """Keep the legacy composite exactly when disabled; otherwise mask after blending."""
+    if sigma == 0:
+        return cs, after
+    cs = cv2.GaussianBlur(cs, (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
+    blended = np.clip(softlight(img, cs[..., None]), 0, 1)
+    after = blended if mask is None else img + (blended - img) * mask[..., None]
+    return cs, after.astype(np.float32)
+
+
 def invert_softlight(cb, target):
     """Gray value cs in [0,1] so that softlight(cb, cs) == target (as close as the blend allows)."""
     eps = 1e-6

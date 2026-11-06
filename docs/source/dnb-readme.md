@@ -27,6 +27,20 @@ Status: Python prototype. Estimates are rough and unvalidated (see Limits).
 - Describes the scale at the subject's depth. In wide shots a near limb looks larger than the face, so one S per
   person is an approximation. A subject and their mirror reflection get different S values (different distances).
 
+### Adjusting scale landmarks
+
+Use **Adjust scale landmarks** in Image analysis, select the subject, and place or drag the visible eye centres and
+body joints on the full-image Original preview. Eye centres mean pupil centres, not outer eye corners. Select a
+point and use the arrow keys to nudge it (Shift moves 10 image pixels); Alt-drag pans and the wheel zooms.
+Mark occluded points missing and exclude unreliable or foreshortened body segments. Undo and Reset affect the
+draft; Cancel leaves S unchanged. Apply scale confirms the proposal and updates the normal S-dependent controls.
+The numerical S override remains available.
+
+The proposal replaces edited eye cues and recomputes body segments as a single body cue, retaining unaffected
+automatic evidence. It reports contributing and excluded cues and conservative uncertainty; a manually placed
+point does not establish depth or guarantee high confidence. Ratios still assume population-average adult anatomy.
+Edits are specific to the loaded image and subject, are not saved in presets, and are cleared on the next Get or load.
+
 ### How S will be used
 
 Express sizes as fractions of S, e.g. "fine pass at 0.05 x S, volume shaping at 0.5 x S", so the same setting scales

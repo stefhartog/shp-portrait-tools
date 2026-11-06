@@ -23,7 +23,7 @@ from .shared.health import identity
 from .shared.lifecycle import BrowserHandler, BrowserServer, script
 from .shared.photocraft.bridge import detect_config
 from .shared.supervision import ControlError
-from .shared.ui import stylesheet
+from .shared.ui import stylesheet, theme_script
 from .comfy import ManagedComfy
 
 SHELL_PROTOCOL = 1
@@ -332,6 +332,8 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, files("shp_photocraft_tools.shell").joinpath(name).read_bytes(), mime)
         if path == "/static/shp-ui.css":
             return self.send(200, stylesheet(), "text/css; charset=utf-8")
+        if path == "/static/theme.js":
+            return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path == "/static/lifecycle.js":
             return self.send(200, script(), "text/javascript; charset=utf-8")
         if path in ("/crop", "/dnb"):
