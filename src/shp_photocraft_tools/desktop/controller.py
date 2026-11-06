@@ -8,6 +8,9 @@ import signal
 import sys
 import threading
 import uuid
+import subprocess
+import select
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.error import HTTPError
@@ -43,9 +46,17 @@ class Connection:
 
     def request(self, path, body=None, timeout=5):
         headers = {"Origin": self.base, "Content-Type": "application/json"}
+        if path == "/api/ui/native-quit":
+            headers["X-SHP-Control"] = "1"
         request = Request(self.base + path, json.dumps(body).encode() if body is not None else None, headers)
-        with self.opener.open(request, timeout=timeout) as response:
-            return json.load(response)
+        try:
+            with self.opener.open(request, timeout=timeout) as response:
+                return json.load(response)
+        except HTTPError as error:
+            if path != "/api/ui/native-quit":
+                raise
+            with error:
+                raise ValueError(json.load(error).get("error", str(error))) from error
 
     def heartbeat(self):
         while not self.stopped.is_set():
@@ -119,7 +130,7 @@ def external_lines(external):
 
 
 class Desktop(Gtk.Application):
-    def __init__(self, url, data, icon=None, tray_icon=None):
+    def __init__(self, url, data, icon=None, tray_icon=None, launcher_python=None, launcher_config=None):
         self.base = validate_url(url)
         # GTK3's Wayland app_id follows the program class, not the D-Bus application ID.
         GLib.set_prgname("shp-photocraft-tools")
@@ -131,15 +142,21 @@ class Desktop(Gtk.Application):
         self.data, self.icon = data, icon
         self.tray_icon = tray_icon
         self.connection = Connection(self.base)
+        self.restart_command = ([launcher_python, "-m", "shp_photocraft_tools.launcher",
+                                 "--config", str(launcher_config)] if launcher_python and launcher_config else None)
         self.window = self.view = self.indicator = None
         self.quitting = self.dialog_open = False
         self.pending_action = "quit"
         self.reload_available = False
         self.status_text = "Connecting to Tools..."
         self.message_bar = None
+        self.notice_timer = None
+        self.notice_generation = 0
+        self.notice_key = None
         self.external_items = []
         self.module_items = {}
         self.module_actions = {}
+        self.syncing_startup = False
         self.modules = {}
         self.control_pending = False
         self.pending_module = None
@@ -172,6 +189,10 @@ class Desktop(Gtk.Application):
         self.view.get_user_content_manager().add_script(WebKit2.UserScript.new(
             "window.__shpOwnedDesktop = true;", WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.START, None, None))
+        self.view.get_user_content_manager().add_script(WebKit2.UserScript.new(
+            f"if (location.origin === {json.dumps(self.base)}) window.__shpNativeFileDialog = true;",
+            WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit2.UserScriptInjectionTime.START, None, None))
         self.view.get_settings().set_enable_html5_local_storage(True)
         self.view.connect("decide-policy", self.policy)
         self.view.connect("create", self.popup)
@@ -201,7 +222,7 @@ class Desktop(Gtk.Application):
         if self.icon and self.icon.is_file():
             self.window.set_icon_from_file(str(self.icon))
         self.window.connect("delete-event", self.window_close)
-        overlay = Gtk.Overlay()
+        layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.message_bar = Gtk.Label(xalign=0)
         self.message_bar.set_line_wrap(True)
         self.message_bar.set_margin_start(10)
@@ -213,13 +234,12 @@ class Desktop(Gtk.Application):
         notices.pack_start(self.reload_button, False, False, 4)
         self.notice_frame = Gtk.Frame()
         self.notice_frame.get_style_context().add_class("background")
-        self.notice_frame.set_valign(Gtk.Align.START)
         self.notice_frame.set_no_show_all(True)
         self.notice_frame.add(notices)
         notices.show_all()
-        overlay.add(self.view)
-        overlay.add_overlay(self.notice_frame)
-        self.window.add(overlay)
+        layout.pack_start(self.notice_frame, False, False, 0)
+        layout.pack_start(self.view, True, True, 0)
+        self.window.add(layout)
         self.view.load_uri(self.base + "/")
 
     def position_supported(self):
@@ -278,6 +298,13 @@ class Desktop(Gtk.Application):
             submenu = Gtk.Menu()
             self.module_items[name] = item
             self.module_actions[name] = {}
+            startup = Gtk.CheckMenuItem(label="Load on startup")
+            startup.set_tooltip_text("Applies next launch; does not stop current work." +
+                                    (" Skin Mask, FS + Skintone and D&B share this service." if name == "dnb" else ""))
+            startup.connect("toggled", lambda button, n=name:
+                            self.request_module(n, "startup") if not self.syncing_startup else None)
+            submenu.append(startup)
+            self.module_actions[name]["startup"] = startup
             for action in ("start", "stop", "restart"):
                 button = Gtk.MenuItem(label=action.capitalize())
                 button.set_sensitive(False)
@@ -288,6 +315,8 @@ class Desktop(Gtk.Application):
             menu.append(item)
         for label, callback in (("Show Tools", lambda *_: self.show()),
                                 ("Hide Tools", lambda *_: self.hide()),
+                                ("Restart Tools...", lambda *_: self.request_quit("restart")),
+                                ("Force Restart Tools...", lambda *_: self.request_quit("force-restart")),
                                 ("Quit Tools...", lambda *_: self.request_quit())):
             item = Gtk.MenuItem(label=label)
             item.connect("activate", callback)
@@ -326,14 +355,34 @@ class Desktop(Gtk.Application):
             self.request_quit()
         return True
 
-    def message(self, text):
-        if self.message_bar.get_text() == text:
+    def cancel_notice_timer(self):
+        self.notice_generation += 1
+        if self.notice_timer is not None:
+            GLib.source_remove(self.notice_timer)
+            self.notice_timer = None
+
+    def expire_notice(self, generation):
+        if self.quitting or generation != self.notice_generation:
             return GLib.SOURCE_REMOVE
+        self.notice_timer = None
+        self.message_bar.set_text("")
+        self.message_bar.hide()
+        self.notice_frame.set_visible(self.reload_available)
+        return GLib.SOURCE_REMOVE
+
+    def message(self, text, persistent=False):
+        key = (text, persistent or self.reload_available)
+        if self.quitting or self.notice_key == key:
+            return GLib.SOURCE_REMOVE
+        self.cancel_notice_timer()
+        self.notice_key = key
         self.message_bar.set_text(text)
         self.message_bar.set_visible(bool(text))
         self.notice_frame.set_visible(bool(text) or self.reload_available)
         if text:
-            print(text, file=sys.stderr, flush=True)
+            print(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {text}", file=sys.stderr, flush=True)
+            if not key[1]:
+                self.notice_timer = GLib.timeout_add(1000, self.expire_notice, self.notice_generation)
         return GLib.SOURCE_REMOVE
 
     def monitor(self):
@@ -360,7 +409,7 @@ class Desktop(Gtk.Application):
             item.set_label(text)
         self.render_modules()
         if "connection" in summary.lower():
-            self.message(summary)
+            self.message(summary, persistent=True)
         elif self.message_bar and self.message_bar.get_text().startswith("Tools connection lost:"):
             self.message("")
         return GLib.SOURCE_REMOVE
@@ -371,11 +420,20 @@ class Desktop(Gtk.Application):
             phase = state.get("phase", "disconnected")
             label = "Crop" if name == "crop" else "D&B"
             status = "busy" if phase == "running" and state.get("busy") else phase
-            if self.control_pending and self.pending_module and self.pending_module[0] == name:
+            if (self.control_pending and self.pending_module and self.pending_module[0] == name
+                    and self.pending_module[1] != "startup"):
                 status = {"start": "starting", "stop": "stopping", "restart": "restarting"}[self.pending_module[1]]
             item.set_label(f"{label} - {status.capitalize()}")
             item.set_tooltip_text(state.get("error") or ("Image loaded / previews in memory" if state.get("loaded") else ""))
             for action, button in self.module_actions[name].items():
+                if action == "startup":
+                    self.syncing_startup = True
+                    try:
+                        button.set_active(state.get("startup_enabled", True))
+                    finally:
+                        self.syncing_startup = False
+                    button.set_sensitive(bool(state) and not (self.control_pending or self.dialog_open))
+                    continue
                 enabled = bool(state) and not (self.control_pending or self.dialog_open
                                                or phase in ("starting", "stopping", "disconnected"))
                 if action == "start":
@@ -389,11 +447,14 @@ class Desktop(Gtk.Application):
             return
         if name not in self.module_actions or action not in self.module_actions[name]:
             raise ValueError("Unknown tray module action")
+        enabled = not self.modules.get(name, {}).get("startup_enabled", True)
         self.control_pending = True
         self.pending_module = (name, action)
         self.status_epoch += 1
         self.render_modules()
         body = {"instance": self.modules.get(name, {}).get("instance"), "confirm": False, "revision": None}
+        if action == "startup":
+            body["enabled"] = enabled
         threading.Thread(target=self.module_worker, args=(name, action, body), daemon=True).start()
 
     def module_worker(self, name, action, body):
@@ -442,7 +503,8 @@ class Desktop(Gtk.Application):
             self.dialog_open = False
         else:
             self.modules[name] = result
-            self.message(f"{label} {'stopped' if action == 'stop' else 'ready'}.")
+            self.message(f"{label} load on startup {'enabled' if result['startup_enabled'] else 'disabled'}; current work unchanged."
+                         if action == "startup" else f"{label} {'stopped' if action == 'stop' else 'ready'}.")
         self.control_pending = False
         self.pending_module = None
         self.status_epoch += 1
@@ -451,6 +513,10 @@ class Desktop(Gtk.Application):
 
     def request_quit(self, action="quit"):
         if self.quitting or self.dialog_open or self.control_pending:
+            self.message("A Tools action is already pending. Please wait or finish the open dialog.")
+            return
+        if action in ("restart", "force-restart") and not self.restart_command:
+            self.message("Restart is unavailable in this older controller. Relaunch Tools once to activate it.")
             return
         self.show()
         self.dialog_open = True
@@ -465,23 +531,32 @@ class Desktop(Gtk.Application):
             GLib.idle_add(self.quit_unavailable, str(error))
 
     def confirm_quit(self, status):
+        self.quit_signature = work_signature(status)
         busy = busy_modules(status)
-        if busy:
+        force = self.pending_action == "force-restart"
+        restart = self.pending_action in ("restart", "force-restart")
+        if busy and not force:
             self.dialog_open = False
             self.message(f"Cannot {self.pending_action} while {', '.join(busy)} is busy or unavailable. Finish/cancel work first.")
             return GLib.SOURCE_REMOVE
         dialog = Gtk.MessageDialog(transient_for=self.window, modal=True,
                                    message_type=Gtk.MessageType.WARNING,
-                                   text="Reload Tools UI?" if self.pending_action == "reload" else "Quit SHP PhotoCraft Tools?")
+                                   text="Force restart Tools?" if force else "Restart Tools?" if restart else "Reload Tools UI?" if self.pending_action == "reload" else "Quit SHP PhotoCraft Tools?")
         dialog.format_secondary_text(
-            ("Reloading resets this window's previews and view state without restarting servers. "
+            ("Force Restart interrupts processing and discards unsaved previews/variations in ALL Tools windows. "
+             "Interrupted Send may leave scratch documents or exchange remnants. PhotoCraft is never terminated. "
+             f"Other active leases: {max(0, status.get('lifecycle', {}).get('leases', 1)-1)}. "
+             "Only this supervisor's verified owned processes may be escalated. "
+             if force else "Restart discards this window's unsent previews and restarts owned Tools services. "
+             "Other connected windows must be closed first. "
+             if restart else "Reloading resets this window's previews and view state without restarting servers. "
              if self.pending_action == "reload" else "This closes this window and discards its unsent previews and view state. ")
             + "Saved settings/results stay intact. "
             + ("The controller keeps the servers running."
                if self.pending_action == "reload" else
-               "Other browser windows keep the servers alive; otherwise owned services stop after Quit and the grace period."))
+               "Other browser windows keep services alive on normal Quit; otherwise shutdown begins immediately."))
         dialog.add_button("Keep working", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Reload UI" if self.pending_action == "reload" else "Quit Tools", Gtk.ResponseType.ACCEPT)
+        dialog.add_button("Force Restart" if force else "Restart Tools" if restart else "Reload UI" if self.pending_action == "reload" else "Quit Tools", Gtk.ResponseType.ACCEPT)
         dialog.set_default_response(Gtk.ResponseType.CANCEL)
         response = dialog.run()
         dialog.destroy()
@@ -494,7 +569,7 @@ class Desktop(Gtk.Application):
     def finish_quit_check(self, before):
         try:
             after = self.connection.request("/api/status")
-            if busy_modules(after) or work_signature(before) != work_signature(after):
+            if self.pending_action != "force-restart" and (busy_modules(after) or work_signature(before) != work_signature(after)):
                 GLib.idle_add(self.quit_changed)
                 return
             GLib.idle_add(self.reload_view if self.pending_action == "reload" else self.finish_quit)
@@ -522,13 +597,76 @@ class Desktop(Gtk.Application):
         dialog.destroy()
         self.dialog_open = False
         if accepted:
-            self.finish_quit()
+            threading.Thread(target=self.connection.close, daemon=False).start()
+            self.destroy_after_quit()
         return GLib.SOURCE_REMOVE
 
     def finish_quit(self):
+        self.view.set_sensitive(False)
+        self.message("Requesting acknowledged Tools shutdown...", persistent=True)
+        threading.Thread(target=self.native_shutdown, daemon=True).start()
+        return GLib.SOURCE_REMOVE
+
+    def native_shutdown(self):
+        try:
+            restart = self.pending_action in ("restart", "force-restart")
+            with self.connection.lease_lock:
+                result = self.connection.request("/api/ui/native-quit", {
+                    "client": self.connection.client, "confirm": True, "restart": restart,
+                    "force": self.pending_action == "force-restart", "expected": self.quit_signature}, timeout=10)
+                self.connection.stopped.set()
+            if result.get("draining"):
+                GLib.idle_add(self.message, "Stopping owned Tools services..." +
+                              (" A fresh Tools window will open when shutdown completes." if restart else ""), True)
+                self.wait_for_shutdown(result)
+            if restart:
+                if not result.get("draining"):
+                    raise ValueError("Restart was not admitted; other windows retain the services")
+                fields = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+                command = [*self.restart_command, "--wait-for-exit", str(result["pid"]),
+                           str(result["process_identity"][1]), "--wait-for-exit", str(os.getpid()), fields[19]]
+                with (self.data / "restart.log").open("ab") as log:
+                    subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
+            GLib.idle_add(self.destroy_after_quit)
+        except (OSError, ValueError, KeyError) as error:
+            GLib.idle_add(self.shutdown_failed, str(error))
+
+    def wait_for_shutdown(self, result):
+        pid = result["pid"]
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        try:
+            try:
+                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            except FileNotFoundError:
+                return
+            if int(fields[19]) != result["process_identity"][1]:
+                return
+            deadline = time.monotonic() + 90
+            while not select.select([fd], [], [], 1)[0]:
+                try:
+                    health = self.connection.request("/api/health", timeout=2)
+                    if health.get("shutdown_error"):
+                        raise ValueError(health["shutdown_error"])
+                except OSError:
+                    pass  # The listening socket closes just before the supervisor exits.
+                if time.monotonic() >= deadline:
+                    raise ValueError("Services are still draining after 90 seconds; no duplicate restart was launched")
+        finally:
+            os.close(fd)
+
+    def shutdown_failed(self, error):
+        self.dialog_open = False
+        self.view.set_sensitive(True)
+        self.message("Tools shutdown/restart failed: " + error + ". No replacement instance was launched. Review the error before retrying.", persistent=True)
+        return GLib.SOURCE_REMOVE
+
+    def destroy_after_quit(self):
+        self.cancel_notice_timer()
         self.quitting = True
-        # The injected native marker disables only this webview's redundant JS shell lease.
-        threading.Thread(target=self.connection.close, daemon=False).start()
         if self.indicator:
             self.indicator.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
         self.window.destroy()
@@ -544,6 +682,7 @@ class Desktop(Gtk.Application):
         return GLib.SOURCE_REMOVE
 
     def do_shutdown(self):
+        self.cancel_notice_timer()
         if self.geometry_timer:
             GLib.source_remove(self.geometry_timer)
             self.save_geometry()
@@ -578,6 +717,25 @@ class Desktop(Gtk.Application):
 
     def script_dialog(self, view, script):
         kind = script.get_dialog_type()
+        if (kind == WebKit2.ScriptDialogType.PROMPT and script.get_message() == "SHP_OPEN_IMAGE_V1"
+                and view.get_uri() == self.base + "/"):
+            self.dialog_open = True
+            chooser = Gtk.FileChooserDialog(title="Open image", transient_for=self.window, modal=True,
+                                            action=Gtk.FileChooserAction.OPEN)
+            chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Open", Gtk.ResponseType.ACCEPT)
+            images = Gtk.FileFilter()
+            images.set_name("Images")
+            for extension in ("jpg", "jpeg", "png", "tif", "tiff", "webp"):
+                images.add_pattern(f"*.{extension}")
+                images.add_pattern(f"*.{extension.upper()}")
+            chooser.add_filter(images)
+            try:
+                if chooser.run() == Gtk.ResponseType.ACCEPT:
+                    script.prompt_set_text(chooser.get_filename())
+            finally:
+                chooser.destroy()
+                self.dialog_open = False
+            return True
         dialog = Gtk.MessageDialog(transient_for=self.window, modal=True,
                                    message_type=Gtk.MessageType.QUESTION, text=script.get_message())
         entry = None
@@ -640,6 +798,8 @@ def main():
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--icon", type=Path)
     parser.add_argument("--tray-icon", type=Path)
+    parser.add_argument("--launcher-python")
+    parser.add_argument("--launcher-config", type=Path)
     parser.add_argument("--check", action="store_true", help="check bindings/display only; no window or services")
     args = parser.parse_args()
     validate_url(args.url)
@@ -649,7 +809,7 @@ def main():
     if args.check:
         print("GTK3/WebKit2 4.1/AppIndicator3 and graphical display available")
         return
-    app = Desktop(args.url, args.data_dir, args.icon, args.tray_icon)
+    app = Desktop(args.url, args.data_dir, args.icon, args.tray_icon, args.launcher_python, args.launcher_config)
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, lambda: (app.request_quit(), True)[1])
     raise SystemExit(app.run([sys.argv[0]]))
 

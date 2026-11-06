@@ -22,12 +22,14 @@ input[type=checkbox]:disabled { opacity:.5; cursor:default; }
 @media (prefers-reduced-motion:reduce) { input[type=checkbox] { transition:none; } }
 button { background:var(--button); color:var(--text); border:1px solid var(--line); border-radius:5px; padding:6px 12px; font:inherit; cursor:pointer; }
 button:where(:not(:disabled)):hover { background:var(--button-hover); }
-button.primary, button.workflow:not(:disabled) { background:var(--acc); border-color:var(--acc); color:var(--primary-text); font-weight:600; }
+button.primary, button.workflow { font-weight:600; }
+button.primary:not(:disabled), button.workflow:not(:disabled) { background:var(--acc); border-color:var(--acc); color:var(--primary-text); }
 button.primary:not(:disabled):hover, button.workflow:not(:disabled):hover { background:color-mix(in srgb, var(--acc) 85%, white); border-color:color-mix(in srgb, var(--acc) 85%, white); }
 button.primary:not(:disabled):active, button.workflow:not(:disabled):active { background:color-mix(in srgb, var(--acc) 85%, black); border-color:color-mix(in srgb, var(--acc) 85%, black); }
 button.primary:focus-visible, button.workflow:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 button:disabled { opacity:.5; cursor:default; }
 #presetBar button { padding:3.5px 8px; }
+#pcGet, #pcSend, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }
 .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
 .row > label { width:74px; flex:none; }
 .row .val { width:42px; flex:none; }

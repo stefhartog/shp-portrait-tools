@@ -27,7 +27,7 @@ from PIL import Image, ImageCms, ImageOps
 COMFY_URL = os.environ.get("SHPC_COMFY", "http://127.0.0.1:8188")
 # Base ratios (long side : short side); the orientation flips them to portrait. 5:4 flipped is the 4:5 Instagram ratio.
 RATIOS = [(1, 1), (4, 3), (3, 2), (16, 9), (5, 4)]
-EXPAND_LIMIT = int(os.environ.get("SHPC_LIMIT", "1024"))  # px per side; the workflow is made for small expands
+EXPAND_LIMIT = min(999, int(os.environ.get("SHPC_LIMIT", "999")))  # source pixels per side
 MIN_SIDE = 64
 MAX_VARIATIONS = 4
 

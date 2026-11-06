@@ -10,11 +10,12 @@ import socket
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import uuid
 from importlib.resources import files
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from .shared.health import identity
@@ -38,6 +39,11 @@ def read_config(path):
         raise LaunchError(f"Cannot read launcher configuration {path}: {error}. Run scripts/install_desktop.py.") from error
     if not isinstance(config, dict):
         raise LaunchError(f"Launcher configuration must be a JSON object: {path}")
+    startup = config.get("startup", {})
+    if (not isinstance(startup, dict) or set(startup) - set(MODULES)
+            or any(type(value) is not bool for value in startup.values())):
+        raise LaunchError(f"'startup' must map module names to booleans in {path}")
+    config["startup"] = {name: startup.get(name, True) for name in MODULES}
     models = config.get("models")
     if not isinstance(models, str) or not Path(models).is_absolute():
         raise LaunchError(f"Set an absolute 'models' directory in {path}")
@@ -73,6 +79,28 @@ def read_config(path):
     if exiftool is not None and (not isinstance(exiftool, str) or not Path(exiftool).is_file()):
         raise LaunchError(f"Configured ExifTool does not exist: {exiftool}")
     return config
+
+
+def set_startup(path, name, enabled):
+    if name not in MODULES or type(enabled) is not bool:
+        raise LaunchError("Startup preference requires a known module and a boolean")
+    temporary = None
+    with path.with_suffix(path.suffix + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        config = read_config(path)
+        config["startup"][name] = enabled
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=path.name + ".", delete=False) as out:
+                temporary = Path(out.name)
+                json.dump(config, out, indent=2)
+                out.write("\n")
+                out.flush()
+                os.fsync(out.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    return config["startup"]
 
 
 def probe(port):
@@ -118,13 +146,29 @@ def ensure_shell(config_path, data, config, logs):
     found = probe(port)
     if found is not None:
         check(found)
-        with build_opener(ProxyHandler({})).open(
-                Request(f"http://127.0.0.1:{port}/api/ui/reserve", data=b"{}", method="POST",
-                        headers={"Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json"}),
-                timeout=3) as response:
-            if not json.load(response)["accepted"]:
-                raise LaunchError(f"Server on port {port} is stopping; reopen the launcher")
-        return found
+        accepted = False
+        if not found.get("draining"):
+            try:
+                with build_opener(ProxyHandler({})).open(
+                        Request(f"http://127.0.0.1:{port}/api/ui/reserve", data=b"{}", method="POST",
+                                headers={"Origin": f"http://127.0.0.1:{port}", "Content-Type": "application/json"}),
+                        timeout=3) as response:
+                    accepted = json.load(response)["accepted"]
+            except HTTPError as error:
+                if error.code != 409:
+                    raise
+        if accepted:
+            return found
+        from .shared.owned_process import process_identity
+        try:
+            old_identity = found.get("process_identity")
+            ticks = (old_identity if old_identity is not None else process_identity(found["pid"]))[1]
+            wait_for_exit(found["pid"], ticks)
+        except FileNotFoundError:
+            pass
+        # A draining supervisor must fully exit before any new listener is created.
+        if probe(port) is not None:
+            raise LaunchError("Another supervisor acquired the port during shutdown. Relaunch Tools.")
     env = dict(os.environ)
     env["SHP_SERVER_INSTANCE"] = uuid.uuid4().hex
     log_path = logs / "shell.log"
@@ -195,6 +239,21 @@ def desktop_command(url):
     return command
 
 
+def wait_for_exit(pid, start_ticks, timeout=90):
+    from .shared.owned_process import process_identity
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            current = process_identity(pid)
+        except (FileNotFoundError, ProcessLookupError):
+            return
+        if current[1] != start_ticks:
+            return
+        if time.monotonic() >= deadline:
+            raise LaunchError(f"Previous Tools process {pid} has not exited. Restart aborted; no duplicate started.")
+        time.sleep(.1)
+
+
 def launch(config_path, no_browser=False, browser=False):
     config = read_config(config_path)
     data = Path.home() / ".local" / "share" / "shp-photocraft-tools"
@@ -203,6 +262,8 @@ def launch(config_path, no_browser=False, browser=False):
     data.mkdir(parents=True, exist_ok=True)
     urls = [f"http://127.0.0.1:{config['shell_port']}/"]
     command = None if no_browser else (chromium_command(config, urls) if browser else desktop_command(urls[0]))
+    if command and not browser:
+        command.extend(["--launcher-python", sys.executable, "--launcher-config", str(config_path.resolve())])
     log_name = "chromium.log" if browser else "desktop.log"
     with (state / "launcher.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -225,11 +286,14 @@ def main():
     parser = argparse.ArgumentParser(description=f"Show the {APP} desktop window and tray controller")
     default_config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "launcher.json"
     parser.add_argument("--config", type=Path, default=default_config)
+    parser.add_argument("--wait-for-exit", nargs=2, type=int, action="append", default=[], metavar=("PID", "START_TICKS"))
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--no-browser", action="store_true", help="start/reuse the shell without opening a window")
     mode.add_argument("--browser", action="store_true", help="open Ungoogled Chromium app instead of the owned desktop")
     args = parser.parse_args()
     try:
+        for pid, ticks in args.wait_for_exit:
+            wait_for_exit(pid, ticks)
         result = launch(args.config, args.no_browser, args.browser)
     except (LaunchError, OSError) as error:
         message = f"{APP}: {error}"

@@ -28,6 +28,7 @@ from PIL import Image, ImageCms
 from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
+from shp_photocraft_tools.shared.local_output import write_local_result
 
 from . import dodge_burn as D
 from . import skin_mask as K
@@ -45,9 +46,11 @@ HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
+PREVIEW_CACHE_LIMIT = 192 * 1024 * 1024
 STATE = {"img": None, "path": None, "S": None, "centre": None, "imgs": {}, "version": 0, "region_key": None, "region": None,
          "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True, "skintone_error": None,
-         "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None}
+         "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None,
+         "source_kind": None}
 DIRS = []
 
 
@@ -194,7 +197,7 @@ CROP_SIDES = {"detail": 2.5, "crop": 6.0}  # side of the preview crop in units o
 def get_region(view, S):
     """Preview region (image and mask components, downscaled together). Cached per (view, S)."""
     cx, cy = STATE["centre"]
-    key = (view, round(S), round(cx), round(cy))
+    key = (view, S, cx, cy)
     if STATE["region_key"] == key:
         return STATE["region"]
     img, masks = STATE["img"], STATE["masks"]
@@ -232,7 +235,7 @@ def api_load(req):
 
 
 def prepare_loaded_image(req):
-    path = Path(req["path"]).expanduser()
+    path = Path(req["path"]).expanduser().absolute()
     if path.suffix.lower() not in IMG_EXT or not path.is_file():
         raise ValueError(f"not an image file: {path}")
     raw = cv2.imread(str(path), cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
@@ -294,17 +297,19 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
         seen = t["seen"]
     if masks is None:
         progress.call("Mask not generated: no usable detected scale", lambda: None)
+    directory = path.parent.stat()
     STATE.update(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
                  seen=seen, pbox=pbox, last=None, struct=None, avers=0,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
-                 landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={})
+                 landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={}, preview_cache={},
+                 source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
     BRIDGE["doc"] = None
     return {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
             "seconds": time.perf_counter() - started,
             "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
                         "mask": mask_finished - mask_started if mask_started is not None else None},
             "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour,
-            "skintone_error": skintone_error, "generation": STATE["landmark_generation"]}
+            "skintone_error": skintone_error, "generation": STATE["landmark_generation"], "source_kind": "local"}
 
 
 def initial_skin_colour(img, sel):
@@ -446,6 +451,7 @@ def api_landmark_estimate(req):
         if result["S"] is None:
             raise ValueError("no usable scale cue")
         STATE["landmark_overrides"][index] = {"points": overrides, "excluded": excluded}
+        STATE["preview_cache"] = {}
     return {"S": result["S"], "confidence": result["confidence"], "sigma": result["sigma"],
             "used": result["used"], "dropped": result["dropped"],
             "segments": body["rows"] if body else [], "excluded": excluded, "unavailable": unavailable,
@@ -561,13 +567,28 @@ def api_color_pick(req):
 def api_run(req):
     if STATE["img"] is None:
         raise ValueError("load an image first")
+    if "generation" in req and req["generation"] != STATE.get("landmark_generation"):
+        raise ValueError("the loaded image changed; preview discarded")
     p = parse_params(req)
     if p["mode"] == "frequency":
         validate_skintone_source()
     view = req.get("view", "crop")
     reg, k, mreg = get_region(view, p["S"])
+    key = preview_key(p, view)
+    cache = STATE.setdefault("preview_cache", {})
+    saved = cache.get(p["mode"])
+    if saved and saved["key"] == key:
+        STATE.update(saved["state"])
+        STATE["imgs"] = dict(saved["state"]["imgs"])
+        STATE["version"] += 1
+        STATE["avers"] += 1
+        if saved["analysis"] != analysis_flags(p["analysis"]):
+            render_analysis(p["analysis"])
+        return {"version": STATE["version"], "avers": STATE["avers"], "stats": saved["stats"], "cached": True}
     if p["mode"] != "dnb":
-        return run_skin_preview(p, reg, k, mreg)
+        result = run_skin_preview(p, reg, k, mreg)
+        remember_preview(p, key, result)
+        return result
     flags = p["mask_flags"]
     mask = combine_mask(mreg, flags, p["S"] * k / D.IPD_MM) if (flags["on"] and mreg) else None
     mask = add_color_range(reg, mask, p["color_filter"], p["S"] * k / D.IPD_MM)
@@ -601,7 +622,63 @@ def api_run(req):
         "layermx": encode(u8(0.5 + (lm - 0.5) * 8), ".png"),
     }
     render_analysis(p["analysis"])
-    return {"version": STATE["version"], "avers": STATE["avers"], "stats": stats}
+    result = {"version": STATE["version"], "avers": STATE["avers"], "stats": stats}
+    remember_preview(p, key, result)
+    return result
+
+
+def analysis_flags(flags):
+    return {k: bool(flags.get(k, True)) for k in ANALYSIS_KEYS}
+
+
+def preview_key(p, view):
+    shared = {k: p[k] for k in ("S", "mask_flags", "shadows", "highlights", "tone_strength",
+                               "protect", "protect_mm", "protect_thr", "color_filter")}
+    if not shared["mask_flags"]["on"] or STATE["masks"] is None:
+        shared["mask_flags"] = {"on": False}
+    if not shared["color_filter"]["on"]:
+        shared["color_filter"] = {"on": False}
+    if shared["shadows"] is None and shared["highlights"] is None:
+        shared["tone_strength"] = None
+    if p["mode"] == "dnb":
+        shared.update({k: p[k] for k in ("bands", "strength", "edge", "tau", "max_ev", "layer_blur_at_s181")})
+    elif p["mode"] == "frequency":
+        shared.update(frequency={k: p["frequency"][k] for k in ("method", "radius", "blur_radius")}, skintone=p["skintone"])
+    return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
+            json.dumps(shared, sort_keys=True, allow_nan=False))
+
+
+def remember_preview(p, key, result):
+    # Copy only region-sized state: contiguous crops can otherwise retain a full source array.
+    def snapshot(value):
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, dict):
+            return {k: snapshot(v) for k, v in value.items()}
+        if isinstance(value, tuple):
+            return tuple(snapshot(v) for v in value)
+        return value
+
+    def size(value):
+        if isinstance(value, np.ndarray):
+            return value.nbytes
+        if isinstance(value, bytes):
+            return len(value)
+        if isinstance(value, dict):
+            return sum(size(v) for v in value.values())
+        if isinstance(value, (tuple, list)):
+            return sum(size(v) for v in value)
+        return 0
+
+    cache = STATE.setdefault("preview_cache", {})
+    cache.pop(p["mode"], None)
+    state = {k: STATE[k] for k in ("imgs", "last", "struct", "region_off", "region_box")}
+    required = size(state)
+    while cache and sum(entry["bytes"] for entry in cache.values()) + required > PREVIEW_CACHE_LIMIT:
+        del cache[next(iter(cache))]
+    if required <= PREVIEW_CACHE_LIMIT:
+        cache[p["mode"]] = {"key": key, "state": snapshot(state), "stats": result["stats"],
+                            "analysis": analysis_flags(p["analysis"]), "bytes": required}
 
 
 def source_region(shape, normalized=False):
@@ -669,6 +746,21 @@ def run_skin_preview(p, reg, k, mreg):
         "skintone": distribution}}
 
 
+def dnb_full_result(p):
+    img = STATE["img"]
+    flags = p["mask_flags"]
+    full_mask = progress.call("Preparing D&B skin mask", combine_mask, STATE["masks"], flags,
+                              p["S"] / D.IPD_MM) if STATE["masks"] else None
+    mask = full_mask if flags["on"] else None
+    mask = progress.call("Preparing D&B color range", add_color_range, img, mask, p["color_filter"], p["S"] / D.IPD_MM)
+    cs, after, change, diag, total = progress.call("Calculating D&B layer and final mask", D.process, img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
+                                               p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
+                                               protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
+    cs, after = progress.call("Blurring D&B layer" if p["layer_blur_at_s181"] else "Keeping D&B layer unblurred",
+                              D.blur_softlight_layer, img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
+    return cs, after, total
+
+
 def api_save(req):
     """Writes the three files for a layer-based workflow (Photoshop / PhotoCraft):
     1_result: the picture with the settings applied, 2_skinmask: the combined mask to apply to layer 3, and
@@ -680,14 +772,7 @@ def api_save(req):
         return save_skin(req, p)
     t = time.time()
     img = STATE["img"]
-    flags = p["mask_flags"]
-    full_mask = combine_mask(STATE["masks"], flags, p["S"] / D.IPD_MM) if STATE["masks"] else None
-    mask = full_mask if flags["on"] else None
-    mask = add_color_range(img, mask, p["color_filter"], p["S"] / D.IPD_MM)
-    cs, after, change, diag, total = D.process(img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
-                                               p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
-                                               protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
-    cs, after = D.blur_softlight_layer(img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
+    cs, after, total = dnb_full_result(p)
     stem = Path(STATE["path"]).stem
     out = ROOT / "results" / f"{stem}_{datetime.datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
@@ -772,6 +857,7 @@ def api_pc_fetch(req):
     res["timings"]["loaded"] += fetched - started
     res["seconds"] = time.perf_counter() - started
     BRIDGE["doc"] = doc
+    STATE["source_kind"] = res["source_kind"] = "photocraft"
     res["pc_doc"] = doc
     return res
 
@@ -798,17 +884,8 @@ def api_pc_send(req):
             r = bridge().send_skintone(layers,
                                       p["skintone"], mask8, BRIDGE["doc"], STATE["source_icc"])
         return {"sent": True, **r}
-    flags = p["mask_flags"]
-    full_mask = progress.call("Preparing D&B skin mask", combine_mask, STATE["masks"], flags,
-                              p["S"] / D.IPD_MM) if STATE["masks"] else None
-    mask = full_mask if flags["on"] else None
-    mask = progress.call("Preparing D&B color range", add_color_range, img, mask, p["color_filter"], p["S"] / D.IPD_MM)
-    cs, after, change, diag, total = progress.call("Calculating D&B layer and final mask", D.process, img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
-                                               p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
-                                               protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
-    cs, after = progress.call("Blurring D&B layer" if p["layer_blur_at_s181"] else "Keeping D&B layer unblurred",
-                              D.blur_softlight_layer, img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
-    del after, change, diag, full_mask, mask
+    cs, after, total = dnb_full_result(p)
+    del after
     mask_out = total if total is not None else np.ones(img.shape[:2], np.float32)
     g16 = np.round(cs * 65535).astype(np.uint16)
     del cs
@@ -822,6 +899,42 @@ def api_pc_send(req):
 
 def api_pc_launch(req):
     return bridge().launch()
+
+
+def api_send_result(req):
+    if STATE["img"] is None:
+        raise ValueError("load an image first")
+    if req.get("generation", STATE.get("landmark_generation")) != STATE.get("landmark_generation"):
+        raise ValueError("the loaded image changed; Get Image again before sending")
+    if STATE.get("source_kind") == "photocraft":
+        if not api_pc_status({})["connected"]:
+            raise ValueError("PhotoCraft is disconnected; reconnect to send this PhotoCraft source")
+        return api_pc_send(req)
+    if STATE.get("source_kind") != "local" or not STATE.get("path"):
+        raise ValueError("Get Image again to establish the output destination")
+    p = parse_params(req)
+    if p["mode"] == "dnb":
+        cs, result, total = dnb_full_result(p)
+        del cs, total
+        data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
+                             FS.rgb16(result), STATE["icc"] or SRGB_ICC)
+    else:
+        _, total, _ = progress.call("Preparing shared mask", tool_mask, STATE["img"], STATE["masks"], p, p["S"])
+        mask = np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+        if p["mode"] == "mask":
+            ok, encoded = cv2.imencode(".png", u8(mask))
+            if not ok:
+                raise ValueError("could not encode the skin mask")
+            data = encoded.tobytes()
+        else:
+            layers = progress.call("Calculating FS + Skintone result", skintone_layers, STATE["source_img"], mask, p)
+            _, result = ST.composite(layers, mask, p["skintone"])
+            data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
+                                 FS.rgb16(result), STATE["source_icc"] or SRGB_ICC)
+    suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs"}[p["mode"]]
+    path = progress.call("Saving result beside source", write_local_result, STATE["path"], suffix, data,
+                         STATE.get("source_directory"))
+    return {"saved": True, "path": path}
 
 
 def read_presets():
@@ -930,11 +1043,16 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def do_api_POST(self):
         token = None
         try:
+            if self.path == "/api/send-result" and (
+                    self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
+                    or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
+                return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
             fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
                   "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/launch": api_pc_launch,
+                  "/api/send-result": api_send_result,
                   "/api/presets/save": api_preset_save, "/api/presets/default": api_preset_default, "/api/presets/delete": api_preset_delete}.get(self.path)
             if fn is None:
                 return self.send(404, b"not found", "text/plain")

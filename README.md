@@ -34,8 +34,10 @@ Explicitly saved Current choices are retained. Selected tabs connect to their
 background with a matching bottom border, not a blue selection line; keyboard focus
 keeps its separate blue outline.
 Enabled Get/Send actions and standalone skin-tools Load/Save use the same primary
-accent styling as Generate/Apply. Disabled buttons and preset controls keep their
-existing appearance; utility controls are not promoted.
+accent styling as Generate/Apply. Primary/workflow buttons retain constant font weight, border and
+padding across states; disabled controls use subdued base colours with no hover effect.
+Get/Send and Crop Generate use fixed shared slots so status text does not jump when
+availability changes. Preset/utility controls are not promoted; Crop Cancel stays red.
 Module tab titles darken subtly while busy/starting/stopping, with no status icons
 or changes to backgrounds or label width. Tooltips and accessible labels retain the full state and error
 details. Top-bar completion checkmarks remain muted blue in both themes.
@@ -204,11 +206,21 @@ app ID, desktop basename and `StartupWMClass` all match `shp-photocraft-tools`, 
 GNOME dash application. The separate tray icon is intentional: it uses a transparent
 greyscale version of the same artwork with a white outer border, while the window and launcher keep the coloured icon.
 
-The tray provides **Show Tools**, **Hide Tools**, **Quit Tools**, and **Crop / D&B** status
-submenus with **Start / Stop / Restart**. Busy work blocks unsafe actions. Loaded images
+The tray provides **Show Tools**, **Hide Tools**, **Quit Tools…**, **Restart Tools…**,
+**Force Restart Tools…**, and **Crop / D&B** status submenus with
+**Start / Stop / Restart** and **Load on startup**. Busy work blocks unsafe actions. Loaded images
 require confirmation before discard, and changed instances/work invalidate stale confirmations.
 Stopping or restarting a module affects every window using that backend, but leaves the
 other module intact. Saved settings, presets and results remain on disk.
+Stopped modules show an unloaded panel with Start guidance; tabs and other modules remain
+usable. D&B is one service shared by Skin Mask, FS + Skintone and D&B, so its controls
+affect all three tabs. Genuine child failures remain visible separately from intentional Stop.
+
+**Load on startup** persists in `launcher.json` as
+`"startup": {"crop": true, "dnb": true}`; absent entries default to enabled.
+Changing it does not stop/start current work. Manual Start remains available and does not
+change the preference. If Crop is disabled, the shell initially selects the skin service;
+with both disabled, the shell/tray remain usable for manual Start.
 
 PhotoCraft has one **Reachable / Unreachable (TCP)** status line, not an authenticated
 connection claim. Equal endpoints share one probe; differing Crop/D&B ports report a
@@ -216,10 +228,23 @@ configuration mismatch. Tools never starts/stops PhotoCraft or reads its documen
 The separate **ComfyUI (Tools)** line reports owned startup, running/busy, stopping and errors.
 Without managed ComfyUI configuration, that line is a non-owning TCP reachability indicator.
 
-Quit protects active work and confirms loss of the window's unsent previews/view state.
-It releases only the desktop's lease: other browser shell sessions keep services alive.
-After the last session closes, a **15-second grace** precedes shutdown of owned services,
-once work drains. Hidden native windows retain their Python heartbeat lease; iframe
+Native Quit protects active work, confirms loss of unsent previews/view state and waits
+for an acknowledged shutdown. With other browser shell sessions, it closes only this desktop;
+otherwise it immediately marks services draining, without the browser grace. Rapid relaunch
+waits for the draining supervisor instead of reviving old code. Normal **Restart Tools**
+requires other windows to close, shuts down orderly, then launches fresh services/controller
+only after the old processes exit. It never force-kills active work.
+
+**Force Restart Tools** requires a separate destructive confirmation: processing and unsaved
+previews in all Tools windows can be lost; interrupted Send can leave exchange/scratch
+remnants. It targets only verified Tools-owned module/managed-Comfy session processes using
+Linux PID descriptors: per target, up to 3 seconds graceful, 3 seconds after TERM and
+2 seconds after KILL, plus control/lock overhead. PhotoCraft and external Comfy are never
+targets. Unverifiable ownership or incomplete cleanup blocks replacement and reports an error.
+The controller's shutdown wait is bounded at 90 seconds; no duplicate is launched on timeout.
+
+Browser final-close/refresh still has a **15-second grace** before shutdown once work drains.
+Hidden native windows retain their Python heartbeat lease; iframe
 switching does not affect lifetime. Browser heartbeats use 20-second long polls and
 90-second leases. Crashes, lost close beacons or OS/browser suspension can expire a lease;
 reopen the launcher to restart. Startup reservations allow two minutes for the first session.
@@ -227,8 +252,11 @@ reopen the launcher to restart. Startup reservations allow two minutes for the f
 
 If the tray host disappears, Tools keeps/reopens an accessible window. Without a tray host,
 Close offers guarded Quit. Renderer/load failures are surfaced with guarded **Reload UI**;
-that resets only the webview, never restarts servers. Notifications overlay the view rather
-than resizing it. Native dialogs and download Save choosers retain overwrite confirmation;
+that resets only the webview, never restarts servers. Native notifications occupy a separate
+row above the WebView, never cover the tabs, and ordinary info/errors disappear after one
+second. Timestamped diagnostics remain in `desktop.log`. Reload/retry recovery and pending
+shutdown notices retain their necessary guidance/actions. Confirmation dialogs and file
+choosers do not auto-dismiss. Native dialogs and download Save choosers retain overwrite confirmation;
 external navigation, popups and device/notification permission requests are blocked.
 
 Normal window size is persisted atomically in `webview/window.json`; maximized/fullscreen
@@ -248,11 +276,14 @@ Installer `--comfy-dir` adds optional configuration:
 }
 ```
 
-Tools starts a **dedicated process** using that checkout's existing `venv` or `.venv` Python,
+When Crop starts, Tools starts a **dedicated process** using that checkout's existing `venv` or `.venv` Python,
 models and custom nodes. It does not install dependencies/models or change the checkout.
 Port 8188 is reserved for independent use and cannot be the managed port. Any occupied
 dedicated port fails startup; existing ComfyUI processes are never adopted or stopped.
 Multiple runtimes can consume additional memory/VRAM.
+Disabling Crop's startup preference avoids starting owned Comfy solely for the skin service.
+Stopping Crop alone leaves an already-started owned Comfy running; whole-Tools shutdown
+owns its cleanup.
 
 Input/output/user/temp directories are isolated as `comfy-{input,output,user,temp}` in
 Tools' state directory. A watchdog verifies the actual spawned child's Linux listener
@@ -265,6 +296,13 @@ Quit is blocked by active queue work. Last-session shutdown stops modules, then 
 **only the owned ComfyUI child**. The watchdog also handles supervisor loss. If an established
 queue becomes unreadable, cleanup waits and reports the error rather than risking active work.
 Standalone Crop still defaults to `http://127.0.0.1:8188`, overridden by `--comfy` / `SHPC_COMFY`.
+
+Crop's **AI SETTINGS → Free Comfy memory** requests model unload and memory cleanup through
+the configured backend URL, not a browser cross-origin call. It refuses during Crop generation
+or any running/pending Comfy queue work. Success means **Memory release requested**:
+Comfy's `/free` sets asynchronous flags, not a synchronous reclaimed-memory measurement.
+The next generation reloads models; not all RAM/VRAM can be freed while the process lives.
+No automatic unload, cancellation or process termination is performed.
 
 ### Installed files and alternatives
 
@@ -296,7 +334,10 @@ Previous browser profiles are retained, not migrated.
 
 ## Using Crop and D&B
 
-**Crop:** **Get Image** from PhotoCraft, or choose a file supplied through standalone `--dir`.
+All send actions are labelled **Send Result**; their target follows the loaded source.
+See [Local-file Open and Send Result](#local-file-open-and-send-result) below.
+
+**Crop:** **Get Image** from PhotoCraft or a local file.
 Select **method** in the settings pane:
 
 | Method | Generation and post-processing |
@@ -325,7 +366,11 @@ in ComfyUI. Fill is based on the successful fully corrected comparison-workflow 
 not its raw/A/B outputs, and does not use Nunchaku or Turbo/Hyper LoRAs.
 
 Choose a ratio or Free, then drag the frame/corners/side handles. Each side can crop or expand,
-but generation requires new area. **Generate** creates 1-4 variations and becomes **Cancel**
+but generation requires new area. Each positive margin is capped at **999 original-image
+pixels per side**, independently, for both methods; negative crop amounts are not capped.
+Ratio constraints may shrink/crop the frame to stay within the cap. Invalid direct API geometry
+is rejected, not merely clamped in the displayed counters; `SHPC_LIMIT` can lower this cap.
+**Generate**, in the CROP panel, uses adjacent **1 / 2 / 3** variation buttons and becomes **Cancel**
 while working. Each completed variation appears immediately in a result tab while the rest
 continue generating; you can inspect completed results without interrupting the batch.
 New results do not replace the result you are viewing. Send stays disabled until generation
@@ -334,7 +379,14 @@ Result tabs select the variation sent by **Send Result**. Wheel zoom, drag pan
 and double-click fit remain. Send resizes the source canvas and copies the generated RGBA layer,
 retaining best-effort single-undo grouping.
 
-The empty-image instruction is removed; loaded dimensions/margins remain. Lowercase
+The variation slider is removed. A saved legacy count of 4 is retained and explicitly shown
+until another count is chosen, not silently rewritten or mislabelled as 1/2/3.
+CROP stays open; **AI SETTINGS** is default-open and collapses by its full keyboard-accessible
+header without an arrow. AI dropdowns precede sliders. The live crop readout sits between
+ratios and Generate: original resolution / arrow / new resolution, then spatially arranged
+top/left/right/bottom signed shifts without visible direction labels or `px` suffixes.
+Accessible direction/unit descriptions remain. An unloaded image shows zero placeholders.
+Lowercase
 **turbo lora** and **seam colour correction** occupy separate right-aligned rows above
 model/upscaler selection, without a right inset.
 
@@ -379,6 +431,39 @@ loading, and Send through scratch cleanup. It does not measure screen paint.
 dimensions/colour handling, detection confidence, mask availability, S, Hue midpoint,
 and light/color midpoints. It updates from shared state when settings change, without
 triggering analysis or resetting settings on tab switches.
+
+Skin-mode previews reuse a bounded in-memory cache (up to 192 MiB) keyed by loaded image,
+region/scale, shared mask and effective per-mode settings. New loads and landmark changes
+invalidate it; mismatched settings recompute. Fast mode switches keep the previous preview
+mounted and suppress busy flashing for 150 ms, while still blocking conflicting edits;
+slower work shows normal progress and failures remain explicit. Cache restoration is labelled
+as such, not reported as fresh processing. Full-resolution Send still runs its own pipeline.
+
+### Local-file Open and Send Result
+
+When PhotoCraft is disconnected, **Get Image** in the owned Tools desktop opens a native
+file chooser and runs the normal load/analysis path. Cancel preserves the previous image,
+crop and results. A standalone browser cannot expose a trustworthy source-folder path through
+an upload: use the existing path/list controls instead (Crop `--dir`, skin-tools Image analysis).
+No download to another folder is disguised as a next-to-source save.
+
+Provenance is retained: a local source always saves locally even if PhotoCraft connects later;
+a PhotoCraft source requires reconnection rather than saving beside its internal exchange file.
+Local **Send Result** writes one full-resolution flattened output beside the source, with the
+next unused number, never overwriting an existing file or emitting layers/settings sidecars:
+
+| Tool | Example output | Format |
+|---|---|---|
+| Crop | `portrait_shpcrop_001.png` | Selected generated variation only; RGB8 PNG, existing sRGB conversion, no new ICC embedding guarantee. |
+| D&B | `portrait_shpdnb_001.png` | 16-bit/channel RGB + opaque alpha PNG, processing ICC or sRGB. |
+| Skin Mask | `portrait_shpskinmask_001.png` | 8-bit grayscale PNG. |
+| FS + Skintone | `portrait_shpfs_001.png` | 16-bit/channel RGB + opaque alpha PNG, source ICC or sRGB. |
+
+Exclusive creation, symlink-safe names and load-time parent-directory identity checks protect
+allocation; permission/disk errors are explicit and failed partial writes are cleaned up.
+Existing standalone Save and PhotoCraft layer/mask application remain separate.
+
+### Progress and diagnostics
 
 Load/Get's temporary log records:
 **Image loaded** includes decoding/profile preparation and, for Get, PhotoCraft's
@@ -436,7 +521,7 @@ The label tooltip shows current pixels. It does not use or change FS Radius/Blur
 Legacy presets default to0 without rewriting files; zero preserves the existing D&B
 output exactly. Slider edits dirty the preset, while S-derived pixel changes do not.
 
-**Skin mask → Send Mask** adds a reusable grayscale RGB layer, not a mask on the selected
+**Skin mask → Send Result** to PhotoCraft adds a reusable grayscale RGB layer, not a mask on the selected
 PhotoCraft layer. Its numeric gray values match the displayed combined mask.
 With every mask component disabled the output is white (the whole image).
 
@@ -498,7 +583,7 @@ The chart does not rerun detection or use
 different correction rules for shadows/midtones/highlights. Shared masking still uses
 the existing analysis colour space. Adjust that mask in **Skin Mask**.
 
-**Send Layers** always creates one unmasked **Normal SHP FS + Skintone** folder, top to bottom:
+**Send Result** to PhotoCraft creates one unmasked **Normal SHP FS + Skintone** folder, top to bottom:
 **Detail** (Linear Light, unmasked), **Hue** (Normal native adjustment, combined skin mask),
 **Blur** (Normal, combined skin mask), **Color** (Normal, unmasked).
 Hue is **one editable native Color Lookup adjustment**, with its mask attached directly
@@ -595,10 +680,10 @@ Get still exports the merged image needed for analysis. No reduced-precision pat
 Get/analysis still has the same model/GPU requirements as D&B.
 
 Both modules use the same **grey-off / blue-on horizontal switches**, dark dropdowns,
-compact preset controls and **Get Image** action. D&B's Send label follows its selected
-skin-tool mode. Native checkbox state,
+compact preset controls and **Get Image / Send Result** actions. The Send label is constant
+across skin-tool modes; tooltips/status describe the target. Native checkbox state,
 keyboard focus, labels, disabled behavior and settings handlers remain. The Tools top tabs
-are **Skin Mask · FS + Skintone · D&B · Crop** (Crop remains the initial workflow).
+are **Skin Mask · FS + Skintone · D&B · Crop** (Crop is initial unless disabled on startup).
 All three skin tabs reuse one
 D&B iframe/backend and the same fetched image, mask, settings and PhotoCraft identity.
 No view is reloaded when switching; presets synchronize the selected skin tab.
@@ -622,6 +707,7 @@ XDG defaults are `~/.local/share` and `~/.local/state`. Logs include `shell.log`
 `dnb.log`, `desktop.log`, `comfy.log` and optional `chromium.log`. Module defaults use the
 home-directory paths above; standalone `SHPC_DATA`, `DNB_DATA`, `DNB_MODELS` and `DNB_EXIFTOOL`
 override them. Supervised modules use the launcher's own module data directories.
+Restart-helper output is `webview/restart.log` in the native data directory.
 
 No old settings, presets, images, credentials or caches are imported automatically.
 Crop retains `{presets,last}` plus `settings.json`; D&B retains `{presets,default}`.

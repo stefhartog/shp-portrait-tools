@@ -43,6 +43,27 @@ class BrowserLifetime:
             self.deadline = self.clock() + 120
             return True
 
+    def native_quit(self, client, busy, *, restart=False, force=False):
+        with self.lock:
+            if self.stopping:
+                raise ControlError("Tools is already draining; wait for shutdown.", "stopping")
+            now = self.clock()
+            clients = {key: expiry for key, expiry in self.clients.items() if expiry > now}
+            if client not in clients or not client.startswith("desktop-"):
+                raise ControlError("Desktop lease expired; reconnect before quitting.", "lease", 409)
+            others = len(clients) - 1
+            if others and restart and not force:
+                raise ControlError(f"{others} other Tools window(s) still connected. Close them before restarting.",
+                                   "other_windows", others=others)
+            if not force and (self.active or busy()):
+                raise ControlError("Tools is busy. Finish/cancel work before quitting or restarting.", "busy")
+            self.clients = clients
+            del self.clients[client]
+            if others and not force:
+                return {"draining": False, "others": others}
+            self.stopping = True
+            return {"draining": True, "others": others}
+
     @contextlib.contextmanager
     def work(self):
         with self.lock:

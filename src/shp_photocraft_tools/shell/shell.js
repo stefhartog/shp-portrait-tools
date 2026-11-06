@@ -21,6 +21,7 @@
   const frames = new Map();
   let modules = {};
   let active = 'crop';
+  let initialSelection = true;
   let skinMode = 'dnb';
   let sequence = 0, pending = null;
   const ready = new WeakSet();
@@ -39,6 +40,7 @@
   function select(name, notify = true) {
     if (name === 'skintone') name = 'frequency';
     if (!views.includes(name)) return;
+    initialSelection = false;
     active = name;
     for (const key of views) {
       const selected = key === active;
@@ -83,14 +85,22 @@
     };
   });
   function render() {
+    if (initialSelection && modules.crop?.startup_enabled === false) {
+      select(modules.dnb?.phase === 'running' || modules.dnb?.startup_enabled !== false ? 'dnb' : 'crop');
+    }
     for (const [name, state] of Object.entries(modules)) {
       document.querySelectorAll(`[role="tab"][data-service="${name}"]`).forEach(tab => {
         renderTabStatus(tab, state);
       });
       const placeholder = $(`panel-${name}`).querySelector('.placeholder');
       placeholder.hidden = state.phase === 'running';
-      placeholder.textContent = `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
+      placeholder.textContent = state.phase === 'stopped'
+        ? `${names[name]} is unloaded. Use Start in the Tools tray menu to load it again. Other modules remain available.`
+          + (state.startup_enabled === false ? ' Load on startup is disabled; manual Start does not change it.' : '')
+          + (name === 'dnb' ? ' Skin Mask, FS + Skintone and D&B share this service.' : '')
+        : `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
       const frame = frames.get(name);
+      if (frame) frame.hidden = state.phase !== 'running';
       if (state.phase === 'running' && (!frame || frame.dataset.instance !== state.instance)) {
         frame?.remove();
         const next = document.createElement('iframe');
@@ -103,7 +113,7 @@
         }
         $(`panel-${name}`).append(next);
         frames.set(name, next);
-      } else if (['stopped', 'error'].includes(state.phase)) {
+      } else if (['stopping', 'stopped', 'error'].includes(state.phase)) {
         frame?.remove();
         frames.delete(name);
         if (name === 'dnb') pending = null;

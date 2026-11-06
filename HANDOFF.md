@@ -45,6 +45,7 @@ aliases. No module registry, plugin framework or combined processing engine was 
 | `modules/dnb/photocraft_bridge.py` | Destination-ICC-tagged RGBA16 scratch layer, separate mask document, revealSelection retry, Soft Light mode and one layer copy. Never resizes the canvas. |
 | `launcher.py` / `supervisor.py` | Verified startup/reuse, fixed proxy, module controls, external status and owned lifecycle. |
 | `shared/health.py`, `supervision.py`, `lifecycle.py` | Identity, private work/stop gate, revision guards and desktop/browser leases. |
+| `shared/local_output.py`, `owned_process.py` | Exclusive numbered local saves; verified session identity/PID-descriptor escalation for explicit Force Restart. |
 | `desktop/controller.py` | Standalone system-Python GTK/WebKit window, tray, dialogs, geometry and guarded Quit/reload. |
 | `comfy.py` | Dedicated process watchdog, actual listener ownership and queue-aware shutdown. |
 
@@ -77,8 +78,11 @@ header controls; wrapped controls sit above the tab row so tabs still touch the 
 No shadow seam patch. Keyboard focus remains a separate blue outline.
 Main workflow buttons (`xGet`, `xSend`, `pcGet`, `pcSend`, `loadBtn`, output `save`)
 use `workflow`: shared Generate/primary colours only when enabled. Existing primary
-Generate/Apply/Apply scale retain disabled styling; primary/workflow share enabled
+Generate/Apply/Apply scale use the same subdued unavailable treatment; primary/workflow share enabled
 hover/active/focus states. Preset and other utility buttons are unchanged.
+Primary/workflow font-weight600 is constant across states; fixed shared Get/Send/Crop Generate
+slots (`calc(11ch + 26px)`) prevent status/geometry shifts. Padding/borders stay constant,
+disabled hover never changes colour, and Crop Cancel retains its red styling.
 Shared button/tool-tab and shell-tab hover selectors exclude `:disabled`, so
 unavailable controls keep the same background/text on mouseover in both themes.
 Shell tabs have no status badges/slots: busy/starting/stopping subtly darken only the
@@ -94,8 +98,65 @@ Right preview tabs: frequency Color/Detail, dnb Layer/Layer+mask, mask Mask/Anal
 change, falling back to the first valid tab. Blur has no UI tab.
 Skin Mask hides the left Result/Skin mask tab and falls back to Original on initial
 sync/mode changes; other modes retain Original/Result. Right Mask/Analysis unchanged.
-Backend preview encoding/math remain unchanged (no claimed speedup). Shell DOM/keyboard order is
-mask/frequency/dnb/crop; initial selected Crop and canonical mode IDs are unchanged.
+Preview math/encoding remain unchanged; cached revisits avoid recomputation as described below.
+Shell DOM/keyboard order is mask/frequency/dnb/crop; initial selection is Crop unless its
+startup preference is disabled, then the enabled skin service is preferred. Canonical mode IDs
+are unchanged and manual selection is not overridden on subsequent polls.
+
+### Preview reuse, Crop controls and local outputs
+
+Skin preview cache retains at most one latest entry per real skin mode within a192MiB
+budget. Keys include image generation, exact region/scale/center, mask identity and effective
+settings; inactive parameters are normalized rather than spuriously invalidating results.
+Cached region arrays are copied to avoid retaining full-source views. New Load/Get and
+landmark edits invalidate entries. Cache hits restore images/state/stats, update versions and
+re-render changed analysis flags without rerunning the processing pipeline. Full-res Send
+does not reuse these reduced previews. Mode switches keep panes mounted and apply quietly;
+a150ms feedback delay avoids flashing for fast work, with input interception during that
+interval and normal busy state afterward. Generation/epoch/settings guards reject stale
+responses. Cache restoration is explicitly logged, not timed as new processing.
+
+All action labels are **Send Result**. Crop Generate now lives in the static CROP panel
+beside evenly stretched1/2/3 ratio-style variation choices with aria-pressed state. No variation
+slider remains; localStorage `shpx-var` and the existing1–4 API domain remain compatible,
+including an explicit legacy-count4 note until selection changes. AI SETTINGS is an arrowless,
+default-open details/summary; values remain mounted on collapse, dropdowns precede sliders.
+Crop info between ratios and Generate shows a three-column resolution row and spatial signed
+top/left/right/bottom shifts, accessible directional units but no visible labels/px suffixes.
+Zero placeholders keep the empty readout mounted. Info inset is `clamp(16px,10%,40px)`,
+shift-only inset60px per side,16px above shifts and20px before Generate.
+
+`EXPAND_LIMIT = min(999, int(SHPC_LIMIT))` with default999 caps each positive requested
+outpaint margin in ORIGINAL image pixels, not inference padding, final size or summed margins.
+Backend frame validation rejects1000 per side for either graph; negative crop is unrestricted.
+Ratio/free drag constraints now respect the same cap, including previous base-width/2px snap
+loopholes; a ratio may require cropping/shrinking instead of larger outpaint.
+
+Owned desktop injects a same-origin `__shpNativeFileDialog` capability and handles the explicit
+`SHP_OPEN_IMAGE_V1` prompt with GTK's Open chooser only from the owned shell. Get checks
+PhotoCraft connection and chooses fetch vs native local Open; cancel leaves current state alone.
+Standalone browsers use existing native-path/list controls, not upload/download path fiction.
+Successful sources carry `source_kind` local/photocraft; Send routes by that provenance even
+after connection changes. PC disconnect is an explicit error, never a save beside exchange.
+`/api/send-result` requires same-origin JSON; the verified shell proxy supplies child Origin.
+Image generation/sequence/result-selection guards remain.
+
+Local sends share `shared/local_output.write_local_result`: directory-fd-relative exclusive
+`O_CREAT|O_EXCL|O_NOFOLLOW` numbering, load-time parent identity check, fsync and failed partial
+cleanup. No source overwrite, layer bundle or sidecar. `<stem>_shpdnb_NNN.png` is full-res
+D&B composite RGBA16 with processing ICC/sRGB; `_shpfs_` is full-res FS+Skintone composite
+RGBA16 with source ICC/sRGB; alpha is opaque. `_shpskinmask_` is grayscale8.
+Crop `_shpcrop_` exports only the selected final full-res RGB8 canvas, retaining existing sRGB
+input conversion and no new output ICC embedding guarantee. D&B full-res calculation was
+extracted into one helper shared by old Save/native Send/local Send, without changing math.
+
+Crop AI SETTINGS has a utility **Free Comfy memory** button. Same-origin `/api/comfy/free`
+checks local generation and configured Comfy `/queue` running AND pending lists (5s timeout),
+then POSTs `/free` with `unload_models:true,free_memory:true` (10s). Invalid/unreachable queue
+fails closed; no arbitrary URL, cancel or process kill. Installed Comfy sets asynchronous flags
+and returns empty200; worker processes them between prompts. Success therefore says only
+“Memory release requested”. Tooltip warns about next-generation reload and incomplete
+RAM/VRAM release. User request authorizes implementation, not automatic live invocation.
 
 ### D&B numeric Soft Light transfer
 
@@ -218,19 +279,33 @@ created with matching supervisor identity and private environment-only capabilit
 Standalone/unrelated servers are never adopted or stopped; port collisions fail visibly.
 One unavailable module leaves the shell/other module accessible.
 
-Module controls are `/api/modules/{crop|dnb}/{start|stop|restart}`. The exact loopback Host,
+Module controls are `/api/modules/{crop|dnb}/{start|stop|restart|startup}`. The exact loopback Host,
 same-origin JSON, non-simple `X-SHP-Control: 1` header, fixed allowlist, bounded bodies and
 confirmation types are checked. Owner routes/capabilities are not proxied or exposed.
 Stop/Restart cannot override active API work or Crop generation. Loaded work needs confirmation;
 the original instance and server-provided revision must still match. Other windows share
 backend work, so stale/changed-work confirmations are refused. Restart replaces only its frame.
 Only a never-ready owned startup child is eligible for forced startup cleanup.
+Intentional Stop is unloaded, not a supervisor failure. Late child exit settles `stopping`
+to `stopped`; stopped snapshots are not busy/loaded. Leftover iframe lifecycle close/heartbeat
+get an unmanaged acknowledgement, while other stopped/stopping routes return explicit409
+`module_stopped`/`module_stopping`. Real failures retain error/unavailable states.
+Shell removes stopping/stopped frames, keeps other frames and shows Start guidance; D&B's
+three tabs share ONE service. Module controls also reject whole-supervisor draining admission.
+
+`startup` maps real service names to strict booleans in launcher.json; absent entries default
+true. Tray **Load on startup** changes only that preference, leaving current work intact.
+Supervisor persists under a file lock with same-directory temporary/fsync/atomic replace,
+then updates its config; failure does not masquerade as success. Manual Start does not enable
+startup implicitly. All-disabled still serves shell/tray. Owned Comfy starts when Crop starts,
+not in the unconditional supervisor startup path; Stop Crop alone does not stop Comfy.
 
 The top-level shell owns browser leases: 20-second long polls, 90-second expiry,
 15-second final-close grace and two-minute startup reservation. The desktop owns an independent
 `desktop-<uuid>` lease from a Python thread, retained while hidden. The injected
 `__shpOwnedDesktop` marker disables only that webview's redundant JS lease; it adds no native
-privilege bridge. Other browser sessions keep independent leases. Direct backend pages do not
+privilege itself. The separate same-origin chooser capability is described above.
+Other browser sessions keep independent leases. Direct backend pages do not
 extend supervised lifetime. Manual module commands persist unless given `--close-with-ui`.
 
 Last-session shutdown drains API/generation work before closing owned modules and ComfyUI.
@@ -264,9 +339,31 @@ Disconnected/transitional/busy actions are disabled; failures surface rather tha
 
 Quit warns about unsent/view-state loss and rechecks busy state and work signature after
 confirmation. Cancel, stale or busy work keeps the window. Other browser leases retain services.
+Last native Quit calls acknowledged `/api/ui/native-quit`, atomically sets draining before
+lease release and skips browser15s grace. Heartbeat/admission serialization and launcher
+reserve409/draining wait prevent rapid reopen from reviving old code. Quit with other leases
+closes only this desktop; normal Restart refuses other active windows and waits old supervisor
+and controller identities to exit before a fresh launcher handoff.
+Explicit **Force Restart Tools** warns of ALL-window processing/unsent loss and interrupted-Send
+scratch/exchange remnants. It pins only launch-verified module/owned-Comfy session members
+through Linux PID descriptors, rechecks identities, then per target allows3s graceful,
+3s after TERM and2s after KILL (plus control/lock overhead). No name-based/process-wide kill,
+PhotoCraft/external Comfy target or result/inbox deletion. Partial cleanup/identity failures
+leave visible draining/error state, not duplicate replacements; same initiating controller can
+explicitly confirm a Force retry after the failed cleanup worker has ended. Late session
+members also block replacement. Normal strict cleanup never force-kills active work;
+late busy drain/managed-Comfy waits have30s failure bounds and controller wait is90s.
+Timestamped admission/cleanup diagnostics go to shell.log; restart helper output goes to
+webview/restart.log. These bounds are not promises of immediate process exit on an unhealthy OS.
 If the supervisor is unavailable, closing only the desktop is explicitly confirmed without
 force-stopping processes. Guarded Reload UI recovers renderer/load errors without service restart.
-Native notifications overlay rather than resize the viewport.
+Native notifications use a non-expanding GTK row above the expanding WebView, not Gtk.Overlay:
+the old overlay covered/captured the module tabs after Stop/Start. Ordinary info/error notices
+auto-dismiss after1000ms, with timestamped desktop.log retention. Cancelled timers plus generation
+guards prevent old callbacks from clearing new notices; repeated monitor text does not flash
+again. Destroy/shutdown cancels timers. Whole-shell connection loss, pending/failed shutdown and
+reload-required renderer errors keep actionable guidance/controls. No confirmation dialog,
+destructive decision or chooser is auto-dismissed.
 
 Same-origin navigation/downloads only; popups, external navigation and browser device/
 notification permissions are refused. Native prompt/confirm dialogs and Save chooser preserve
@@ -297,6 +394,7 @@ through the tray. Native Quit/lifetime protection includes owned queue work. Mod
 the watchdog drains the queue before stopping only its child, including after parent loss.
 If an established queue becomes unreadable, shutdown conservatively waits and reports it.
 Startup failures are visible and do not trigger a hidden retry loop.
+When Crop is disabled at startup, the watchdog is not launched just for skin tools.
 
 Standalone Crop retains its original ComfyUI URL/start API behavior. Crop's web AI panel no
 longer has a Start button/warning block; readiness retries remain, Generate is gated and genuine
@@ -345,7 +443,7 @@ and preset buttons 1px shorter than their dropdown. Global real-checkbox switche
 **32x18**, grey off/blue on, with disabled dimming, keyboard focus and reduced-motion support.
 IDs, label associations, checked state and settings/preset handlers remain.
 
-Crop's empty instruction is removed; loaded dimension/margin text remains. Lowercase
+Crop's empty instruction is replaced by the zero readout described above. Lowercase
 `turbo lora` / `seam colour correction` rows precede model/upscaler selection, aligned right
 with **zero inset**, matching D&B. Toggle rows have 2px vertical padding and compensated 6px
 inter-row margin; model rows have 4px vertical padding.
@@ -419,6 +517,19 @@ strength-zero bypass and unchanged inputs. It loaded no weights, started no Comf
 and made no changes to the existing node/runtime.
 
 ## Validation and limitations
+
+The post-`be7e12d` changes above were checked incrementally with focused synthetic/local
+tests: preview-cache keys/invalidation/memory bounds; local routing/chooser cancel,
+exclusive numbering and decoded output depths/profiles; Crop999/1000 geometry and variation
+state; mocked Comfy `/free`; fake-clock/process lifecycle/restart escalation and PID reuse;
+module isolation/startup persistence; headless JavaScriptCore markup/state/polling; and
+native notice fake timers/GTK layout structure. Python syntax and diff checks passed.
+This publication does not rerun broad suites, launch GUI/PhotoCraft/Comfy, issue live `/free`,
+restart services or mutate live settings/documents. Native overlay correction is supported
+by the supplied screenshot and GTK packing structure, not a new live visual test.
+Already-running Python/controller code needs a complete later user-directed Tools restart;
+refresh alone can load new HTML against stale routes. No speed/quality/inference or
+fresh-machine validation is implied by these focused checks.
 
 `tests/run.py` sets temporary data/model/token/exchange paths before imports, then runs eight
 migrated Crop checks and the complete unittest suite. `tests/preview.py` and

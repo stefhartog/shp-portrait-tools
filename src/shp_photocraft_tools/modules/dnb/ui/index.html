@@ -373,7 +373,9 @@ function switchMode(mode, request=null) {
   if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
   if (state.mode !== mode) {
-    state.mode = mode; syncMode(); state.version = 0; clearPanels(); markDirty();
+    state.mode = mode; syncMode(); state.version = 0; markDirty();
+    clearTimeout(markDirty.t);
+    if (state.loaded && !state.busy) apply({quiet:true});
   }
   announceMode(request);
 }
@@ -592,7 +594,8 @@ function applyLoaded(r) {
     state.imageGeneration = r.generation;
     state.hueCenterNote = '';
     state.hueCenterFailed = false;
-    state.loaded = true; state.pcFetched = false; state.version = 0; state.avers = 0; syncCropButtons(); state.estS = r.S;
+    state.loaded = true; state.pcFetched = r.source_kind === 'photocraft'; state.sourceKind = r.source_kind || 'local'; state.version = 0; state.avers = 0; syncCropButtons(); state.estS = r.S;
+    syncTransferTitles();
     state.skintoneError = r.skintone_error || null;
     state.color.hue = state.color.saturation = state.color.rgb = null;
     $('colorOn').checked = false; setColorSwatch(null); setPickingColor(false);
@@ -654,6 +657,7 @@ async function initializeHueCenter() {
   drawSkintone(null);
 }
 async function loadImage() {
+  if (state.busy) return;
   const path = $('imgPath').value.trim() || $('imgSel').value;
   if (!path) return;
   beginLoadTimings('Loading image...');
@@ -677,7 +681,7 @@ function setBusy(b) {
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = b;
   $('landmarkOpen').disabled = b || !state.loaded;
-  $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.pcFetched;
+  $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = b || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -686,6 +690,25 @@ function setBusy(b) {
     const requested = pendingShellMode; pendingShellMode = null;
     switchMode(requested.mode, requested.request);
   }
+}
+function previewFeedback(quiet) {
+  let visible = !quiet, message = 'Computing...';
+  const events = ['pointerdown', 'click', 'keydown', 'beforeinput', 'input', 'change'];
+  const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+  state.busy = true;
+  if (quiet) events.forEach(type => document.addEventListener(type, block, true));
+  else { setBusy(true); setStatus(message); }
+  const timer = quiet ? setTimeout(() => {
+    visible = true; setBusy(true); setStatus(message);
+  }, 150) : null;
+  return {
+    stage(text) { message = text; if (visible) setStatus(text); },
+    finish() {
+      clearTimeout(timer);
+      if (quiet) events.forEach(type => document.removeEventListener(type, block, true));
+      setBusy(false);
+    }
+  };
 }
 function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSkin').checked, structure: $('anStruct').checked}; }
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => $(id).onchange = async () => {
@@ -704,7 +727,7 @@ function params() {
            analysis: analysisFlags(),
            view: $('view').value };
 }
-async function apply() {
+async function apply({quiet=false}={}) {
   if (state.busy || !state.loaded) return;
   const p = params(); if (!(p.S > 0)) {
     if (loadProgress && !loadProgress.finished) {
@@ -716,14 +739,14 @@ async function apply() {
   const epoch = state.loadEpoch, progress = loadProgress, started = performance.now();
   const loadingPreview = progress && !progress.finished;
   const processingStarted = loadingPreview ? progress.started : started;
-  setBusy(true); setStatus('Computing...');
+  const feedback = previewFeedback(quiet);
   try {
-    const r = await api('/api/run', p);
-    if (revision === settingsRevision) {
+    const r = await api('/api/run', {...p, generation:state.imageGeneration});
+    if (epoch === state.loadEpoch && revision === settingsRevision) {
       state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
       if (loadingPreview && progress === loadProgress) recordLoadStage('Preview computed', (performance.now()-started)/1000);
       if (state.mode === 'frequency') drawSkintone(r.stats.skintone);
-      setStatus('Loading preview images...');
+      feedback.stage('Loading preview images...');
       const displayStarted = performance.now();
       const displayed = await showImages();
       if (epoch === state.loadEpoch && revision === settingsRevision && displayed) {
@@ -735,16 +758,22 @@ async function apply() {
         if (state.mode === 'frequency') logNote(r.stats.skintone.effect.note);
         logNote(state.hueCenterNote);
         if (state.hueCenterFailed) setStatus(state.hueCenterNote, true);
-        else finishProcessing(processingStarted);
+        else if (r.cached) {
+          logNote('Preview restored from cache ('+state.mode+').');
+          setStatus('Preview restored from cache.', false, true);
+        } else finishProcessing(processingStarted);
       } else if (loadingPreview && progress === loadProgress && !displayed) {
         recordLoadStage('Preview display failed or was replaced.'); progress.finished = true;
       }
-    } else setStatus('Settings changed; updating preview...');
+    } else if (epoch === state.loadEpoch) setStatus('Settings changed; updating preview...');
   } catch (e) {
-    if (loadingPreview && progress === loadProgress) { recordLoadStage('Preview failed: '+e.message); progress.finished = true; }
-    setStatus(e.message, true);
+    if (epoch === state.loadEpoch && revision === settingsRevision) {
+      if (loadingPreview && progress === loadProgress) { recordLoadStage('Preview failed: '+e.message); progress.finished = true; }
+      setStatus(e.message, true);
+    }
+  } finally {
+    feedback.finish();
   }
-  setBusy(false);
   if (state.dirty && revision !== settingsRevision) {
     clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350);
   }
@@ -762,33 +791,44 @@ async function save() {
 
 async function pcGet() {
   if (state.busy) return;
-  beginLoadTimings('Getting image from PhotoCraft...');
-  setBusy(true); setStatus('Getting image from PhotoCraft...');
+  setBusy(true);
   let loaded = false;
   try {
-    const r = await operationApi('/api/pc/fetch', {});
-    applyLoaded(r); state.pcFetched = true;
+    const connection = await api('/api/pc/status', {});
+    state.pcConnected = connection.connected; syncTransferTitles();
+    let path = null;
+    if (!connection.connected) {
+      if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis file path/list controls; Send Result then saves beside that source.');
+      path = window.prompt('SHP_OPEN_IMAGE_V1');
+      if (!path) return;
+    }
+    const message = path ? 'Opening local image...' : 'Getting image from PhotoCraft...';
+    beginLoadTimings(message); setStatus(message);
+    const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', path ? {path} : {});
+    applyLoaded(r);
     loaded = true;
     await initializeHueCenter();
   } catch (e) {
-    recordLoadStage('Image Get/analysis failed: '+e.message);
-    loadProgress.finished = true; setStatus(e.message, true);
+    if (loadProgress) { recordLoadStage('Image Get/analysis failed: '+e.message); loadProgress.finished = true; }
+    setStatus(e.message, true);
+  } finally {
+    setBusy(false);
   }
-  setBusy(false);
   if (loaded) apply();
 }
 async function pcSend() {
   if (state.busy || !state.loaded) return;
   const started = performance.now();
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
-  setBusy(true); setStatus('Sending ' + (state.mode === 'frequency' ? 'FS + Skintone folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
+  setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : 'Sending ' + (state.mode === 'frequency' ? 'FS + Skintone folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
   if (temporaryLog.send) logNote(temporaryLog.send);
   temporaryLog.send = 'Preparing Send...';
   renderTemporaryLog();
   try {
-    const r = await operationApi('/api/pc/send', p, true);
-    logNote(`Sent to ${r.document}.`);
+    const r = await operationApi('/api/send-result', {...p, generation:state.imageGeneration}, true);
+    logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
+    if (r.saved) setStatus(`Saved result: ${r.path}`, false, true);
   }
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
@@ -835,9 +875,13 @@ function syncMode() {
   const result = $('tabsA').querySelector('[data-k="result"]');
   result.textContent = state.mode === 'mask' ? 'Skin mask' : 'Result';
   result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skin-masked Blur over Color, then skin-masked Hue correction, then unmasked Linear Light Detail.' : 'The reusable combined grayscale skin mask.';
-  $('pcSend').textContent = dnb ? 'Send Result' : state.mode === 'mask' ? 'Send Mask' : 'Send Layers';
-  $('pcSend').title = dnb ? 'Add Soft Light with its mask.' : frequency ? 'Add an unmasked Normal folder: Detail / directly masked Hue adjustment / masked Blur / Color. Hue LUT is included even at zero Amount.' : 'Add a grayscale layer; do not change any existing layer mask.';
+  $('pcSend').textContent = 'Send Result';
+  syncTransferTitles();
   syncTabs();
+}
+function syncTransferTitles() {
+  $('pcGet').title = state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
+  $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'dnb' ? 'Add Soft Light with its mask.' : state.mode === 'frequency' ? 'Add an unmasked Normal folder: Detail / directly masked Hue adjustment / masked Blur / Color. Hue LUT is included even at zero Amount.' : 'Add a grayscale layer; do not change any existing layer mask.';
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();

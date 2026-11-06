@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
+from .shared.owned_process import process_identity
 
 
 def runtime(directory):
@@ -61,9 +62,11 @@ class ManagedComfy:
     def __init__(self, config, logs):
         self.config, self.logs = config, logs
         self.process = None
+        self.process_identity = None
         self.instance = None
         self.path = None
         self.lock = threading.Lock()
+        self.closed = False
 
     @property
     def url(self):
@@ -91,6 +94,8 @@ class ManagedComfy:
 
     def start(self):
         with self.lock:
+            if self.closed:
+                raise OSError("Tools is draining; ComfyUI cannot restart")
             if self.process is not None and self.process.poll() is None:
                 return {"started": False, "message": "Tools ComfyUI is running or starting"}
             if self.path is not None:
@@ -104,18 +109,20 @@ class ManagedComfy:
                 with (self.logs / "comfy.log").open("ab") as log:
                     self.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
                                                     stdin=subprocess.DEVNULL, start_new_session=True)
+                    self.process_identity = process_identity(self.process.pid)
             except OSError as error:
                 self.path.write_text(json.dumps({"instance": self.instance, "phase": "error",
                                                 "busy": False, "reachable": False, "error": str(error)}))
                 raise
             return {"started": True, "message": "Starting dedicated Tools ComfyUI"}
 
-    def close(self):
+    def close(self, timeout=None):
         with self.lock:
+            self.closed = True
             if self.process is not None and self.process.poll() is None:
                 self.process.terminate()
                 # The watchdog drains its own queue, including after supervisor loss.
-                self.process.wait()
+                self.process.wait(timeout=timeout)
             if self.path is not None:
                 self.path.unlink(missing_ok=True)
 

@@ -23,6 +23,7 @@ from PIL import Image
 from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
+from shp_photocraft_tools.shared.local_output import write_local_result
 
 from . import expand as X
 from . import photocraft_bridge as PCB
@@ -68,7 +69,7 @@ def running():
 
 
 def api_load(req):
-    path = Path(req["path"]).expanduser()
+    path = Path(req["path"]).expanduser().absolute()
     if path.suffix.lower() not in IMG_EXT or not path.is_file():
         raise ValueError(f"not an image file: {path}")
     if running():
@@ -76,13 +77,16 @@ def api_load(req):
     with Image.open(path) as im:
         im.load()
         rgb = X.to_srgb(im)
-    STATE.update(img=rgb, name=path.name, doc=None, seq=STATE["seq"] + 1, job=X.Job())
-    STATE["imgs"]["xorig"] = jpeg_bytes(rgb, 92, 2400)
+    directory = path.parent.stat()
+    preview = jpeg_bytes(rgb, 92, 2400)
+    STATE.update(img=rgb, name=path.name, doc=None, seq=STATE["seq"] + 1, job=X.Job(),
+                 path=str(path), source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
+    STATE["imgs"]["xorig"] = preview
     for k in [k for k in STATE["imgs"] if k.startswith("xvar")]:
         del STATE["imgs"][k]
     STATE["imgs"].pop("xresult", None)
     return {"name": path.name, "width": rgb.width, "height": rgb.height, "seq": STATE["seq"],
-            "ratios": X.RATIOS, "limit": X.EXPAND_LIMIT}
+            "ratios": X.RATIOS, "limit": X.EXPAND_LIMIT, "source_kind": "local"}
 
 
 def api_fetch(req):
@@ -91,6 +95,7 @@ def api_fetch(req):
     path, doc = bridge().fetch(DATA / "inbox")
     res = api_load({"path": str(path)})
     STATE["doc"] = doc
+    STATE["source_kind"] = res["source_kind"] = "photocraft"
     res["pc_doc"] = doc
     return res
 
@@ -174,6 +179,33 @@ def api_send(req):
     return {"sent": True, **bridge().send_expand(np.asarray(res["layer"], np.uint8), STATE["doc"], res["margins"])}
 
 
+def api_pc_status(req):
+    try:
+        return bridge().status()
+    except PCB.ControlError as error:
+        return {"connected": False, "message": str(error)}
+
+
+def api_send_result(req):
+    if running():
+        raise ValueError("wait for the running expansion to finish or cancel it")
+    if req.get("seq", STATE["seq"]) != STATE["seq"]:
+        raise ValueError("the loaded image changed; select its result again before sending")
+    res = STATE["job"].result
+    if res is None:
+        raise ValueError("expand the picture first")
+    if STATE.get("source_kind") == "photocraft":
+        if not api_pc_status({})["connected"]:
+            raise ValueError("PhotoCraft is disconnected; reconnect to send this PhotoCraft source")
+        return api_send(req)
+    if STATE.get("source_kind") != "local" or not STATE.get("path"):
+        raise ValueError("Get Image again to establish the output destination")
+    buffer = io.BytesIO()
+    res["canvas"].save(buffer, "PNG")
+    path = write_local_result(STATE["path"], "shpcrop", buffer.getvalue(), STATE["source_directory"])
+    return {"saved": True, "path": path}
+
+
 def api_save(req):
     res = STATE["job"].result
     if res is None:
@@ -188,6 +220,26 @@ def api_status(req):
     """Is ComfyUI reachable and complete; plus the settings and the model lists for the page."""
     settings = X.load_settings(SETTINGS_FILE)
     return {**X.status(settings), "settings": settings, "defaults": X.DEFAULTS, "comfy": X.COMFY_URL}
+
+
+def api_comfy_free(req):
+    if running():
+        raise ValueError("Crop is generating; finish or cancel it before freeing Comfy memory")
+    comfy = X.Comfy()
+    try:
+        queue = json.loads(comfy._req("GET", "/queue", timeout=5))
+    except ValueError as error:
+        raise ValueError("Could not verify the Comfy queue; memory release was not requested") from error
+    if not isinstance(queue, dict) or any(
+            not isinstance(queue.get(key), list) for key in ("queue_running", "queue_pending")):
+        raise ValueError("Could not verify the Comfy queue; memory release was not requested")
+    if queue["queue_running"] or queue["queue_pending"]:
+        raise ValueError("Comfy has running or queued work; wait until its queue is empty before freeing memory")
+    if running():
+        raise ValueError("Crop is generating; memory release was not requested")
+    comfy._req("POST", "/free", json.dumps({"unload_models": True, "free_memory": True}).encode(),
+               {"Content-Type": "application/json"}, timeout=10)
+    return {"requested": True, "message": "Memory release requested"}
 
 
 COMFY_DIR = Path(os.environ.get("SHPC_COMFY_DIR", "~/ComfyUI")).expanduser()
@@ -283,8 +335,9 @@ def api_preset_delete(req):
     return d
 
 
-ROUTES = {"/api/comfy/start": api_comfy_start, "/api/presets": api_presets, "/api/presets/save": api_preset_save, "/api/presets/load": api_preset_load, "/api/presets/delete": api_preset_delete, "/api/select": api_select, "/api/settings": api_settings, "/api/status": api_status, "/api/load": api_load, "/api/fetch": api_fetch, "/api/run": api_run, "/api/job": api_job,
-          "/api/cancel": api_cancel, "/api/send": api_send, "/api/save": api_save}
+ROUTES = {"/api/comfy/start": api_comfy_start, "/api/comfy/free": api_comfy_free, "/api/presets": api_presets, "/api/presets/save": api_preset_save, "/api/presets/load": api_preset_load, "/api/presets/delete": api_preset_delete, "/api/select": api_select, "/api/settings": api_settings, "/api/status": api_status, "/api/load": api_load, "/api/fetch": api_fetch, "/api/run": api_run, "/api/job": api_job,
+          "/api/cancel": api_cancel, "/api/send": api_send, "/api/save": api_save,
+          "/api/pc/status": api_pc_status, "/api/send-result": api_send_result}
 NO_LOCK = {"/api/job", "/api/cancel"}  # must answer while a run is going
 
 
@@ -324,6 +377,10 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
     def do_api_POST(self):
         try:
+            if self.path in ("/api/send-result", "/api/comfy/free") and (
+                    self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
+                    or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
+                return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
             fn = ROUTES.get(self.path)

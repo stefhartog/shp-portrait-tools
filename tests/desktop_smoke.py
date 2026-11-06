@@ -1004,7 +1004,7 @@ class Smoke(module.Desktop):
                 clearTimeout(markDirty.t);
                 await choose('frequency');
                 check($('g-bands').hidden&&!$('g-frequency').hidden,'Frequency controls not isolated');
-                check($('pcSend').textContent==='Send Layers'&&state.pcFetched,'Frequency send unavailable');
+                check($('pcSend').textContent==='Send Result'&&state.pcFetched,'Frequency send unavailable');
                 check([...$('tabsB').querySelectorAll('[data-k="color"],[data-k="detail"]')].every(t=>!t.hidden),
                   'Frequency layer previews hidden');
                 snapNow();
@@ -1038,7 +1038,7 @@ class Smoke(module.Desktop):
                 check(JSON.stringify(getSettings())===JSON.stringify(saved),'Fixture state not restored before final save');
                 await storePreset('p:Skin fixture','Skin fixture');
                 await choose('mask');
-                check($('g-bands').hidden&&$('g-frequency').hidden&&$('pcSend').textContent==='Send Mask',
+                check($('g-bands').hidden&&$('g-frequency').hidden&&$('pcSend').textContent==='Send Result',
                   'Mask mode has correction controls');
                 check(!paneKinds().some(k=>['layer','layerm','detail'].includes(k)),'Stale mode preview');
                 await pcSend();check(!$('status').classList.contains('err'),'Mask Send failed');
@@ -1129,7 +1129,7 @@ class Smoke(module.Desktop):
         self.evaluate("""
             document.getElementById('tab-crop').click();
             fixtureCrop.contentDocument.querySelector('#xRatios [data-i="3"]').click();
-            fixtureCrop.contentDocument.getElementById('xVar').value='4';
+            fixtureCrop.contentWindow.eval('setVariations(4)');
             fixtureCrop.contentDocument.getElementById('xRun').click();
             return true;
             """, lambda _: None)
