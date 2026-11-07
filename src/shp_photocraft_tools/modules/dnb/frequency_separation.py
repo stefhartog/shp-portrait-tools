@@ -1,6 +1,7 @@
 """Unmasked frequency separation with a skin-only extra Blur (BGR, 0..1)."""
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -9,9 +10,14 @@ from . import progress
 
 def settings(req):
     p = req.get("frequency", {})
+    if not isinstance(p, dict):
+        raise ValueError("frequency settings must be an object")
+    on = p.get("on", True)
+    if type(on) is not bool:
+        raise ValueError("frequency on must be a boolean")
     method = p.get("method", "gaussian")
-    if method not in ("gaussian", "median"):
-        raise ValueError("frequency method must be gaussian or median")
+    if method not in ("gaussian", "median", "median_fast"):
+        raise ValueError("frequency method must be gaussian, median or median_fast")
     radius, blur = float(p.get("radius", 8)), float(p.get("blur_radius", 12))
     calibration = float(p.get("radius_at_s181", 6))
     if not math.isfinite(calibration) or not 0.5 <= calibration <= 30:
@@ -30,7 +36,14 @@ def settings(req):
         raise ValueError("separation radius must be 1-100 full-image pixels")
     if not math.isfinite(blur) or not 0 <= blur <= 500:
         raise ValueError("Blur radius must be 0-500 full-image pixels")
-    result = {"method": method, "radius": radius, "blur_radius": blur, "radius_at_s181": calibration}
+    result = {"on": on, "method": method, "radius": radius, "blur_radius": blur, "radius_at_s181": calibration}
+    strength = float(p.get("blur_strength", 100))
+    masked = p.get("blur_mask", True)
+    if not math.isfinite(strength) or not 0 <= strength <= 100:
+        raise ValueError("Blur strength must be 0-100 percent")
+    if type(masked) is not bool:
+        raise ValueError("Blur skin mask must be a boolean")
+    result.update(blur_strength=strength, blur_mask=masked)
     if percent is not None:
         result["blur_percent"] = percent
     return result
@@ -70,8 +83,42 @@ def skin_filter(img, mask, radius, method="gaussian"):
     return np.where((m > 0)[..., None], filtered, img).astype(np.float32)
 
 
+def median_fast(img, radius):
+    """Square median on uniformly quantized RGB; exact stripe halos, no resizing."""
+    img = np.ascontiguousarray(img, dtype=np.float32)
+    if (img.ndim != 3 or img.shape[2] != 3 or not np.isfinite(img).all()
+            or img.min() < 0 or img.max() > 1):
+        raise ValueError("Median Fast requires finite RGB samples in 0..1")
+    if not math.isfinite(radius) or not 0 < radius <= 100:
+        raise ValueError("Median Fast radius must be positive and at most 100 pixels")
+    r = max(1, round(radius))
+    h, w = img.shape[:2]
+    quantized = np.empty(img.shape, np.uint8)
+    for y in range(0, h, 128):
+        quantized[y:y+128] = np.round(img[y:y+128] * 255).astype(np.uint8)
+    workers = min(8, max(1, h*w // 4_000_000), max(1, h // (2*r+1)))
+    if workers == 1:
+        filtered = cv2.medianBlur(quantized, 2*r+1)
+    else:
+        filtered = np.empty_like(quantized)
+        edges = np.linspace(0, h, workers+1, dtype=int)
+        def stripe(i):
+            y0, y1 = edges[i:i+2]
+            lo, hi = max(0, y0-r), min(h, y1+r)
+            tile = cv2.medianBlur(quantized[lo:hi], 2*r+1)
+            filtered[y0:y1] = tile[y0-lo:y1-lo]
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fs-median") as pool:
+            list(pool.map(stripe, range(workers)))
+    del quantized
+    color = np.empty(img.shape, np.float32)
+    for y in range(0, h, 128):
+        color[y:y+128] = filtered[y:y+128].astype(np.float32)/255
+    return color
+
+
 def split(img, method="gaussian", radius=8):
-    color = skin_filter(img, np.ones(img.shape[:2], np.float32), radius, method)
+    color = median_fast(img, radius) if method == "median_fast" else \
+        skin_filter(img, np.ones(img.shape[:2], np.float32), radius, method)
     detail = np.clip(0.5 + (img - color) * 0.5, 0, 1).astype(np.float32)
     return {"color": color, "detail": detail}
 

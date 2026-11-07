@@ -14,11 +14,16 @@ works at full resolution.
 import argparse
 import datetime
 import io
+import hashlib
 import json
 import math
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from contextlib import nullcontext
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -39,6 +44,7 @@ from . import skintone as ST
 from . import combine_scale as C
 from . import estimate_body_scale as B
 from . import progress
+from .mask_precache import MaskPrecache, Superseded
 from .paths import DATA, MODELS
 
 ROOT = DATA
@@ -46,6 +52,8 @@ HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
+FULL_MASK_LOCK = threading.Lock()
+FULL_MASK_CACHE_LIMIT = 256 * 1024 * 1024
 PREVIEW_CACHE_LIMIT = 192 * 1024 * 1024
 STATE = {"img": None, "path": None, "S": None, "centre": None, "imgs": {}, "version": 0, "region_key": None, "region": None,
          "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True, "skintone_error": None,
@@ -147,6 +155,7 @@ def parse_params(p):
     return dict(
         mode=mode, layer_blur_at_s181=layer_blur, frequency=FS.settings(p) if mode == "frequency" else None,
         skintone=ST.settings(p) if mode == "frequency" else None,
+        frequency_transfer=PCB.transfer_settings(p.get("frequency_transfer")) if mode == "frequency" else None,
         protect=min(1.0, max(0.0, float(st.get("protect", 0.0)))), protect_mm=max(0.5, float(st.get("mm", 4.0))),
         protect_thr=max(0.005, float(st.get("thr", 0.1))),
         tone_strength=min(1.0, max(0.0, float(tone.get("strength", 1.0)))), color_filter=color_filter, analysis=p.get("analysis", {}),
@@ -182,13 +191,142 @@ def add_color_range(img, mask, color_filter, px_per_mm):
     return cm if mask is None else mask * cm
 
 
-def tool_mask(img, masks, p, S):
+def base_skin_mask(img, masks, p, S):
     flags = p["mask_flags"]
     mask = combine_mask(masks, flags, S / D.IPD_MM) if flags["on"] and masks else None
-    mask = add_color_range(img, mask, p["color_filter"], S / D.IPD_MM)
+    return add_color_range(img, mask, p["color_filter"], S / D.IPD_MM)
+
+
+def tool_mask(img, masks, p, S):
+    mask = base_skin_mask(img, masks, p, S)
     total, structure = D.combined_mask(img, S, mask, p["shadows"], p["highlights"],
                                        p["tone_strength"], p["protect"], p["protect_mm"], p["protect_thr"])
     return mask, total, structure
+
+
+def full_skin_mask(p):
+    total, _ = cached_final_skin_mask(p)
+    return np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+
+
+def mask_settings_key(p, masks):
+    flags = p["mask_flags"] if p["mask_flags"]["on"] and masks else {"on": False}
+    effective = {"S": p["S"], "mask_flags": flags,
+                 "color_filter": p["color_filter"] if p["color_filter"]["on"] else {"on": False},
+                 "shadows": p["shadows"], "highlights": p["highlights"],
+                 "tone_strength": p["tone_strength"] if p["shadows"] is not None or p["highlights"] is not None else None,
+                 "protect": p["protect"], "protect_mm": p["protect_mm"] if p["protect"] else None,
+                 "protect_thr": p["protect_thr"] if p["protect"] else None}
+    return json.dumps(effective, sort_keys=True, allow_nan=False)
+
+
+def full_mask_key(p, img, masks, *, state=None):
+    state = STATE if state is None else state
+    def digest(array):
+        if array is None:
+            return None
+        return (array.shape, array.dtype.str, hashlib.sha256(memoryview(np.ascontiguousarray(array))).digest())
+    flags = p["mask_flags"]
+    components = None
+    if flags["on"] and masks:
+        used = ["A"] + (["features"] if flags["features"] else []) + (["colour"] if flags["colour"] else [])
+        components = tuple((key, digest(masks[key])) for key in used)
+    source = state.get("source_img")
+    return (state.get("landmark_generation"), state.get("path"), id(img), id(masks),
+            id(source), digest(img), digest(source) if source is not img else None, components,
+            state.get("icc"), state.get("source_icc"), mask_settings_key(p, masks))
+
+
+def cached_final_skin_mask(p, *, base_mask=None, state=None, commit_guard=None):
+    """One content-keyed, read-only final mask/structure entry shared by normal modes."""
+    with FULL_MASK_LOCK:
+        state = STATE if state is None else state
+        guard = commit_guard if commit_guard is not None else lambda: nullcontext(True)
+        with guard() as current:
+            if not current:
+                raise Superseded()
+        img, masks = state["img"], state["masks"]
+        key = full_mask_key(p, img, masks, state=state)
+        saved = STATE.get("full_mask_cache")
+        if saved is not None and saved[0] == key:
+            with guard() as current:
+                if not current:
+                    raise Superseded()
+                progress.call("Reusing cached full-resolution skin mask", lambda: None)
+                STATE["full_mask_status_entry"] = (saved[0], mask_request_key(p))
+                return tuple(None if a is None else a.view() for a in saved[1:])
+        STATE["full_mask_cache"] = None
+        def prepare():
+            base = base_mask if base_mask is not None else base_skin_mask(img, masks, p, p["S"])
+            return D.combined_mask(img, p["S"], base, p["shadows"], p["highlights"],
+                                   p["tone_strength"], p["protect"], p["protect_mm"], p["protect_thr"])
+        result = progress.call("Recomputing full-resolution skin mask", prepare)
+        with guard() as current:
+            if not current:
+                raise Superseded()
+        if (STATE["img"] is not img or STATE["masks"] is not masks
+                or full_mask_key(p, img, masks) != key):
+            with guard() as current:
+                if not current:
+                    raise Superseded()
+            raise ValueError("source or mask components changed during mask preparation; load/Get again")
+        arrays = tuple(None if a is None else np.ascontiguousarray(a, dtype=np.float32) for a in result)
+        if sum(a.nbytes for a in arrays if a is not None) <= FULL_MASK_CACHE_LIMIT:
+            with guard() as current:
+                if not current:
+                    raise Superseded()
+                for a in arrays:
+                    if a is not None:
+                        a.flags.writeable = False
+                STATE["full_mask_cache"] = (key, *arrays)
+                STATE["full_mask_status_entry"] = (key, mask_request_key(p))
+                return tuple(None if a is None else a.view() for a in arrays)
+        progress.call("Full-resolution mask exceeds cache budget; not retained", lambda: None)
+        return arrays
+
+
+def mask_request_key(p):
+    return (STATE.get("landmark_generation"), STATE.get("path"), STATE.get("icc"), STATE.get("source_icc"),
+            id(STATE["img"]), id(STATE["source_img"]),
+            id(STATE["masks"]), tuple((key, id(a)) for key, a in (STATE["masks"] or {}).items()),
+            mask_settings_key(p, STATE["masks"]))
+
+
+def precache_mask(job, guard):
+    p, state = job
+    # Background progress owns its record; never append to a completed preview.
+    token = f"mask-precache-{time.monotonic_ns()}"
+    try:
+        with progress.operation(token):
+            cached_final_skin_mask(p, state=state, commit_guard=guard)
+    finally:
+        progress.snapshot(token, consume=True)
+
+
+MASK_PRECACHE = MaskPrecache(precache_mask)
+
+
+def mask_cache_status():
+    status = MASK_PRECACHE.status()
+    saved = STATE.get("full_mask_cache")
+    entry = STATE.get("full_mask_status_entry")
+    status["cached"] = bool(saved is not None and entry is not None
+                            and entry[0] == saved[0] and entry[1] == STATE.get("mask_status_key"))
+    status["enabled"] = STATE.get("mask_precache_enabled", True)
+    return status
+
+
+def queue_mask_precache(p):
+    if p["mode"] not in ("mask", "dnb", "frequency"):
+        return
+    STATE["mask_status_key"] = mask_request_key(p)
+    count = STATE["img"].shape[0] * STATE["img"].shape[1] * 4 * (2 if p["protect"] else 1)
+    if count > FULL_MASK_CACHE_LIMIT:
+        MASK_PRECACHE.skip(mask_request_key(p), "Background mask skipped: exceeds the 256 MiB cache budget.")
+        return
+    state = {key: STATE.get(key) for key in ("img", "source_img", "masks", "path",
+                                             "landmark_generation", "icc", "source_icc")}
+    MASK_PRECACHE.request(mask_request_key(p), (deepcopy(p), state))
 
 
 CROP_SIDES = {"detail": 2.5, "crop": 6.0}  # side of the preview crop in units of S (63 mm); anything else = whole image
@@ -298,10 +436,12 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
     if masks is None:
         progress.call("Mask not generated: no usable detected scale", lambda: None)
     directory = path.parent.stat()
+    MASK_PRECACHE.reset()
     STATE.update(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
                  seen=seen, pbox=pbox, last=None, struct=None, avers=0,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
                  landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={}, preview_cache={},
+                 full_mask_cache=None,
                  source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
     BRIDGE["doc"] = None
     return {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
@@ -337,6 +477,9 @@ def api_hue_center(req):
         return {"generation": generation, "center": None,
                 "note": f"Hue Center not estimated: {note}; previous Center retained. Set Center manually."}
     p = parse_params({**req, "mode": "frequency", "S": STATE["S"]})
+    if not p["skintone"]["on"]:
+        return {"generation": generation, "center": None,
+                "note": "Skintone correction is off; Hue Center estimation skipped, previous Center retained."}
     native, analysis = STATE["source_img"], STATE["img"]
     h, w = native.shape[:2]
     scale = min(1.0, 1400 / max(h, w))
@@ -643,7 +786,9 @@ def preview_key(p, view):
     if p["mode"] == "dnb":
         shared.update({k: p[k] for k in ("bands", "strength", "edge", "tau", "max_ev", "layer_blur_at_s181")})
     elif p["mode"] == "frequency":
-        shared.update(frequency={k: p["frequency"][k] for k in ("method", "radius", "blur_radius")}, skintone=p["skintone"])
+        shared.update(frequency={k: p["frequency"][k] for k in
+                                 (("on", "method", "radius", "blur_radius", "blur_strength", "blur_mask") if p["frequency"]["on"]
+                                  else ("on", "method", "radius"))}, skintone=p["skintone"])
     return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
             json.dumps(shared, sort_keys=True, allow_nan=False))
 
@@ -700,6 +845,8 @@ def frequency_layers(img, mask, p, scale=1):
     if not STATE["source_opaque"]:
         raise ValueError("frequency separation currently needs an opaque merged image; flatten transparency before Get")
     f = p["frequency"]
+    if not f["on"]:
+        return FS.split(img, f["method"], f["radius"] * scale)
     return FS.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale)
 
 
@@ -713,7 +860,14 @@ def validate_skintone_source():
 def skintone_layers(img, mask, p, scale=1, *, native=False):
     validate_skintone_source()
     f = p["frequency"]
-    return ST.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale,
+    if not f["on"]:
+        layers = FS.split(img, f["method"], f["radius"] * scale)
+        for key, value in layers.items():
+            pixels = progress.call("Preparing RGB16 " + key.title(), FS.rgb16, value)
+            layers[key] = pixels if native else pixels.astype(np.float32)/65535
+        return layers
+    blur_mask = mask if f["blur_mask"] else np.ones(mask.shape, np.float32)
+    return ST.separate(img, blur_mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale,
                        native=native)
 
 
@@ -731,12 +885,15 @@ def run_skin_preview(p, reg, k, mreg):
     else:
         src = source_region(reg.shape, normalized=True)
         layers = skintone_layers(src, show, p, k)
-        corrected, result = ST.composite(layers, show, p["skintone"])
+        corrected, result = ST.composite(layers, show, p["skintone"], p["frequency"])
         imgs["orig"] = encode(u8(src), ".jpg", 92, STATE["source_icc"])
         imgs["result"] = encode(u8(result), ".png", icc=STATE["source_icc"])
         imgs.update({key: encode(u8(a), ".png", icc=STATE["source_icc"]) for key, a in layers.items()})
-        imgs["blur"] = encode(u8(ST.base(layers, show)), ".png", icc=STATE["source_icc"])
+        if p["frequency"]["on"]:
+            imgs["blur"] = encode(u8(ST.base(layers, show, p["frequency"])), ".png", icc=STATE["source_icc"])
         distribution = ST.distribution(layers["color"], corrected, show, p["skintone"])
+        if not p["frequency"]["on"] and not p["skintone"]["on"]:
+            distribution["effect"]["note"] = "Skintone correction and added Blur are off; Color/Detail reconstruct the source."
     STATE["imgs"] = imgs
     STATE["version"] += 1
     render_analysis(p["analysis"])
@@ -748,14 +905,13 @@ def run_skin_preview(p, reg, k, mreg):
 
 def dnb_full_result(p):
     img = STATE["img"]
-    flags = p["mask_flags"]
-    full_mask = progress.call("Preparing D&B skin mask", combine_mask, STATE["masks"], flags,
-                              p["S"] / D.IPD_MM) if STATE["masks"] else None
-    mask = full_mask if flags["on"] else None
-    mask = progress.call("Preparing D&B color range", add_color_range, img, mask, p["color_filter"], p["S"] / D.IPD_MM)
+    mask = progress.call("Preparing D&B base skin/color mask", base_skin_mask,
+                         img, STATE["masks"], p, p["S"])
+    mask_result = cached_final_skin_mask(p, base_mask=mask)
     cs, after, change, diag, total = progress.call("Calculating D&B layer and final mask", D.process, img, p["S"], p["bands"], p["strength"], p["edge"], p["tau"], p["max_ev"],
                                                p["shadows"], p["highlights"], mask=mask, tone_strength=p["tone_strength"],
-                                               protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"])
+                                               protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"],
+                                               mask_result=mask_result)
     cs, after = progress.call("Blurring D&B layer" if p["layer_blur_at_s181"] else "Keeping D&B layer unblurred",
                               D.blur_softlight_layer, img, cs, after, total, p["layer_blur_at_s181"] * p["S"] / 181)
     return cs, after, total
@@ -799,33 +955,38 @@ def save_skin(req, p):
     if p["mode"] == "frequency":
         validate_skintone_source()
     t = time.time()
-    _, total, _ = tool_mask(STATE["img"], STATE["masks"], p, p["S"])
-    mask = np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+    mask = full_skin_mask(p)
     layers = {}
     result = None
     if p["mode"] == "frequency":
         layers = skintone_layers(STATE["source_img"], mask, p)
-        _, result = ST.composite(layers, mask, p["skintone"])
+        _, result = ST.composite(layers, mask, p["skintone"], p["frequency"])
     stem = Path(STATE["path"]).stem
     out = ROOT / "results" / f"{stem}_{p['mode']}_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
     out.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(out / "skinmask.png"), u8(mask)):
+    mask_name = "skinmask.png"
+    if not cv2.imwrite(str(out / mask_name), u8(mask)):
         raise ValueError("could not write skin mask")
     for key, pixels in layers.items():
         (out / f"{key}.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(pixels), STATE["source_icc"] or SRGB_ICC))
     if result is not None:
         (out / "result.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(result), STATE["source_icc"] or SRGB_ICC))
-        for name, table in zip(("Hue",), ST.tables(p["skintone"])):
-            (out / f"{name}.cube").write_text(ST.cube_text(table, name))
+        if p["skintone"]["on"]:
+            for name, table in zip(("Hue",), ST.tables(dict(p["skintone"], hue_amount=100))):
+                (out / f"{name}.cube").write_text(ST.cube_text(table, name))
+    recipe = ("SHP FS + Skintone: Normal unmasked outer group. Top-down: Detail (Linear Light, unmasked), "
+                         + (f"Hue (opacity {p['skintone']['hue_amount']}%; with skinmask.png; Hue.cube, native Color Lookup, Normal, "
+                            "trilinear, dither off), " if p["skintone"]["on"] else "")
+                         + (f"Blur (Normal, opacity {p['frequency']['blur_strength']}%, "
+                            + ("with skinmask.png" if p["frequency"]["blur_mask"] else "unmasked") + "), " if p["frequency"]["on"] else "")
+                         + "Color (Normal, unmasked)."
+                         if result is not None else mask_name + ": reusable grayscale layer in Normal mode; no healing.")
     (out / "settings.json").write_text(json.dumps({**req, "image": STATE["path"],
-        "layer_recipe": ("SHP FS + Skintone: Normal unmasked outer group. Top-down: Detail (Linear Light, unmasked), "
-                         "Hue (with skinmask.png; Hue.cube, native Color Lookup, Normal, "
-                         "trilinear, dither off), Blur (Normal with skinmask.png), Color (Normal, unmasked)."
-                         if result is not None else "skinmask.png: reusable grayscale layer in Normal mode."),
+        "layer_recipe": recipe,
         "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "
                    "No saturation correction. Neutrals protected. Gaussian/median Color/Detail separation and "
                    "skin-aware Gaussian Blur use full-image radii. RGB16, source numeric space. Hue LUT is "
-                   "always embedded by Send; edit ranges in Tools and resend."
+                   "embedded by Send only while Skintone correction is on; off bypasses hue calculations."
                    if result is not None else
                    "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
                    "Median uses equal votes among positive-mask samples. RGB16, source numeric space.")}, indent=2))
@@ -868,21 +1029,13 @@ def api_pc_send(req):
     p = parse_params(req)
     img = STATE["img"]
     if p["mode"] != "dnb":
-        skin, total, structure = progress.call("Preparing shared mask", tool_mask, img, STATE["masks"], p, p["S"])
-        del skin, structure
-        mask = np.ones(img.shape[:2], np.float32) if total is None else total
-        del total
+        if p["mode"] == "frequency":
+            return {"sent": True, **send_skintone_parallel(p)}
+        mask = progress.call("Preparing shared mask", full_skin_mask, p)
         if p["mode"] == "mask":
             mask8 = u8(mask)
             del mask
             r = bridge().send_mask(mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
-        else:
-            validate_skintone_source()
-            layers = skintone_layers(STATE["source_img"], mask, p, native=True)
-            mask8 = u8(mask)
-            del mask
-            r = bridge().send_skintone(layers,
-                                      p["skintone"], mask8, BRIDGE["doc"], STATE["source_icc"])
         return {"sent": True, **r}
     cs, after, total = dnb_full_result(p)
     del after
@@ -895,6 +1048,48 @@ def api_pc_send(req):
     del mask_out, total
     r = bridge().send(layer16, mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
     return {"sent": True, **r}
+
+
+def send_skintone_parallel(p):
+    """One compute worker; only this request thread touches PhotoCraft."""
+    validate_skintone_source()
+    source = STATE["source_img"]
+    error = ST.source_error(source)
+    if error:
+        raise ValueError(error)
+    f = p["frequency"]
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="skin-fs") as pool:
+        mask_job = pool.submit(copy_context().run, progress.call, "Preparing shared mask", full_skin_mask, p)
+        try:
+            layers = progress.call("Separating Color and Detail", FS.split, source, f["method"], f["radius"])
+            mask = mask_job.result()
+            if not f["on"]:
+                pixels = {key: progress.call("Preparing RGB16 " + key.title(), FS.rgb16, value)
+                          for key, value in layers.items()}
+                return bridge().send_skintone(pixels, p["skintone"], u8(mask), BRIDGE["doc"],
+                                              STATE["source_icc"], transfer=p["frequency_transfer"], include_blur=False)
+
+            def prepare_blur(color, skin):
+                blur = progress.call("Computing skin-aware Blur", FS.skin_filter,
+                                     color, skin if f["blur_mask"] else np.ones(skin.shape, np.float32),
+                                     f["blur_radius"], "gaussian")
+                return progress.call("Preparing RGB16 Blur", FS.rgb16, blur)
+
+            blur_job = pool.submit(copy_context().run, prepare_blur, layers["color"], mask)
+            try:
+                # Blur uses unquantized Color and the original soft mask, as before.
+                for key in ("color", "detail"):
+                    layers[key] = progress.call("Preparing RGB16 " + key.title(), FS.rgb16, layers[key])
+                mask8 = u8(mask)
+                del mask
+                return bridge().send_skintone(layers, p["skintone"], mask8, BRIDGE["doc"],
+                                              STATE["source_icc"], blur_future=blur_job,
+                                              transfer=p["frequency_transfer"], blur_strength=f["blur_strength"],
+                                              blur_masked=f["blur_mask"])
+            finally:
+                blur_job.cancel()
+        finally:
+            mask_job.cancel()
 
 
 def api_pc_launch(req):
@@ -919,8 +1114,7 @@ def api_send_result(req):
         data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
                              FS.rgb16(result), STATE["icc"] or SRGB_ICC)
     else:
-        _, total, _ = progress.call("Preparing shared mask", tool_mask, STATE["img"], STATE["masks"], p, p["S"])
-        mask = np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+        mask = progress.call("Preparing shared mask", full_skin_mask, p)
         if p["mode"] == "mask":
             ok, encoded = cv2.imencode(".png", u8(mask))
             if not ok:
@@ -928,7 +1122,7 @@ def api_send_result(req):
             data = encoded.tobytes()
         else:
             layers = progress.call("Calculating FS + Skintone result", skintone_layers, STATE["source_img"], mask, p)
-            _, result = ST.composite(layers, mask, p["skintone"])
+            _, result = ST.composite(layers, mask, p["skintone"], p["frequency"])
             data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
                                  FS.rgb16(result), STATE["source_icc"] or SRGB_ICC)
     suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs"}[p["mode"]]
@@ -1005,6 +1199,8 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/mask-precache":
+            return self.send(200, json.dumps(mask_cache_status()).encode(), "application/json")
         if path == "/api/progress":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             result = progress.snapshot(query.get("token", [""])[0], query.get("consume") == ["1"])
@@ -1059,7 +1255,23 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             token = req.pop("_progress", None)
             with progress.operation(token):
                 with LOCK:
+                    mask_params = None
+                    if self.path in ("/api/run", "/api/pc/send", "/api/send-result", "/api/save") and STATE["img"] is not None:
+                        if self.path == "/api/run" and type(req.get("precache_mask", True)) is not bool:
+                            raise ValueError("precache_mask must be a boolean")
+                        if self.path == "/api/run":
+                            STATE["mask_precache_enabled"] = req.get("precache_mask", True)
+                        mask_params = parse_params(req)
+                        STATE["mask_status_key"] = mask_request_key(mask_params)
+                        MASK_PRECACHE.select(STATE["mask_status_key"])
+                        if self.path == "/api/run" and req.get("precache_mask", True) is False:
+                            MASK_PRECACHE.reset()
                     res = fn(req)
+                    if self.path == "/api/run" and mask_params is not None:
+                        if req.get("precache_mask", True) is not False:
+                            queue_mask_precache(mask_params)
+                    if mask_params is not None:
+                        res["mask_precache"] = mask_cache_status()
             if token is not None:
                 res["_progress"] = progress.snapshot(token, consume=True)
             self.send(200, json.dumps(res).encode(), "application/json")
@@ -1086,6 +1298,7 @@ def main():
         pass
     finally:
         srv.server_close()
+        MASK_PRECACHE.close()
 
 
 if __name__ == "__main__":

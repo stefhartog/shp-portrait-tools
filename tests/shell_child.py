@@ -39,7 +39,9 @@ def main():
             assert all(a.shape == (600, 800, 3) and a.dtype == np.uint16 for a in layers.values())
             return {"layer": 11, "document": document["name"]}
 
-        def send_skintone(self, layers, settings, mask, document, source_icc):
+        def send_skintone(self, layers, settings, mask, document, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+            if blur_future is not None:
+                layers = {**layers, "blur": blur_future.result()}
             assert mask.shape == (600, 800) and mask.dtype == np.uint8
             assert set(layers) == {"color", "blur", "detail"}
             assert all(a.shape == (600,800,3) and a.dtype == np.uint16 for a in layers.values())

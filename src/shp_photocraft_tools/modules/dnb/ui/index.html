@@ -41,13 +41,17 @@
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
   details.grp[hidden], .tab[hidden], #toolModeRow[hidden] { display:none; }
-  #g-bands, #g-mask { border-top:0; }
+  #g-bands, #g-mask, #g-frequency { border-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
   details.grp > summary::after { display:none; }
   .sub { font-size:11px; color:var(--dim); font-weight:600; margin:10px 0 4px; }
   details.mask-group > summary { gap:8px; }
   details.mask-group > summary label { display:flex; align-items:center; gap:4px; margin-left:auto; flex:none; color:var(--dim); font-size:11px; font-weight:400; letter-spacing:0; text-transform:none; cursor:pointer; }
   details.mask-group > summary input { margin:0; }
+  #maskCacheStatus { display:inline-block; width:1em; text-align:center; }
+  #maskCacheStatus.running { animation:mask-cache-spin 1s linear infinite; }
+  @keyframes mask-cache-spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce) { #maskCacheStatus.running { animation:none; } }
   .color-pick { display:flex; align-items:center; gap:6px; margin:4px 0; }
   .sub-title { display:flex; align-items:center; gap:8px; }
   .color-swatch { width:14px; height:14px; flex:none; padding:0; border:1px solid var(--line); border-radius:3px; background:var(--bg); cursor:pointer; }
@@ -74,7 +78,7 @@
 </head>
 <body>
 <div id="app">
-<div id="bar"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Add the Soft Light layer with its mask to that document in PhotoCraft, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<div id="bar"><div id="barActions"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Add the correction with its mask to that document in PhotoCraft." disabled>Send Result</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
   <div class="row" id="toolModeRow"><label for="toolMode">Skin tool</label><select id="toolMode" style="flex:1">
     <option value="dnb">D&amp;B layers</option><option value="mask">Skin mask</option><option value="frequency">FS + Skintone</option>
@@ -82,14 +86,21 @@
   <details class="grp" id="g-frequency" open hidden>
     <summary>Frequency separation</summary>
     <div class="gbody">
-      <div class="row"><label for="frequencyMethod" title="Full-image separation into unmasked Color and Detail. Gaussian: Radius is the sigma; Median: Radius is the square neighbourhood radius. Only the extra Blur layer samples skin before filtering and uses the skin mask to feather its effect." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">Gaussian</option><option value="median">Median</option></select></div>
+      <div class="row"><label for="frequencyMethod" title="Gaussian: sigma. Median: square radius. Median Fast: same radius, faster 8-bit intermediate; quantization and outer borders differ. RGB16 output." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">Gaussian</option><option value="median">Median</option><option value="median_fast">Median Fast</option></select></div>
       <div id="frequencySliders"></div>
     </div>
   </details>
-  <details class="grp" id="g-skintone" open hidden>
-    <summary>Skintone</summary>
+  <details class="grp mask-group" id="g-blur" open hidden>
+    <summary><span>Blur</span><label><input type="checkbox" id="blurOn" aria-label="Enable added Blur" title="Calculate and send the additional Blur layer. Color/Detail stay active when off." checked></label></summary>
     <div class="gbody">
-      <p class="hint">Hue correction acts on Color plus skin-masked Blur, before restoring unmasked Detail. One editable Hue LUT is always sent.</p>
+      <div id="blurSliders"></div>
+      <div class="row"><label style="width:auto" title="On: skin-aware filtering and the shared Blur layer mask. Off: filter the whole image and send Blur unmasked for manual inpainting. Hue still uses the shared mask."><input type="checkbox" id="blurMask" checked> Skin mask</label></div>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-skintone" open hidden>
+    <summary><span>Skintone Correction</span><label><input type="checkbox" id="skintoneOn" aria-label="Enable skintone correction" title="When off, skip hue correction calculations and the Hue adjustment on Send. Color, skin-masked Blur and Detail remain active." checked></label></summary>
+    <div class="gbody">
+      <p class="hint">Hue correction acts between Color and Detail, with optional skin-masked Blur. Off skips hue calculations and sends no Hue LUT.</p>
       <div class="sub">Hue</div><div id="skintoneHue"></div>
       <canvas class="distribution" id="hueDistribution" width="680" height="180" aria-label="Skin hue distribution before and after correction by brightness"></canvas>
     </div>
@@ -130,6 +141,18 @@
   <details class="grp" id="g-file" open>
     <summary>Image analysis</summary>
     <div class="gbody">
+      <div id="maskOperations">
+        <div class="row" id="maskPrecacheRow"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> Precache skin mask <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></label></div>
+        <details id="g-transfer">
+          <summary>PhotoCraft layer transfer (FS + Skintone only)</summary>
+          <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">PNG</option><option value="tiff">TIFF</option></select></div>
+          <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">Lossless compressed</option><option value="none">Uncompressed</option></select></div>
+          <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> Include opaque alpha</label></div>
+          <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> Parallel encoding (two encoders)</label></div>
+          <p class="hint" id="transferHint"></p>
+          <p class="hint">RGB16 with the captured ICC. Color / Detail stay active; switching FS off omits only added Blur. Shared masks remain grayscale PNG8. Does not change preview or local exports. PhotoCraft calls stay serialized; source must remain opaque.</p>
+        </details>
+      </div>
       <div id="info">No photo loaded.</div>
       <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
       <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
@@ -187,10 +210,15 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const SKINTONE_DEFAULTS = {hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
+const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
+function uiMode(mode) {
+  return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency'].includes(mode) ? mode : 'dnb';
+}
+const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:true, parallel:true};
 const state = {
-  mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200}, pcFetched: false,
+  mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
+  frequencyTransfer: {...TRANSFER_DEFAULTS},
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
   strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0, layerBlur: 0,
   tone: {mid:0.52, range:0.87, taper:0.16, strength:1}, maskFeather: 1.0, structure: {protect:0, mm:4, thr:0.1},
@@ -238,6 +266,7 @@ function renderTemporaryLog() {
 function setStatus(msg, err=false, ok=false) {
   const s=$('status'); s.textContent = msg; statusOk = ok && !err;
   s.className = err ? 'err' : state.busy ? 'busy' : ok ? 'ok' : '';
+  s.setAttribute('aria-busy', String(state.busy));
   if (err) logNote(msg);
 }
 function finishProcessing(started) {
@@ -286,6 +315,7 @@ function slider(parent, label, min, max, step, value, onInput, opts={}) {
   return { set, row, rng, num, lab };
 }
 function markDirty() {
+  invalidateMaskCacheStatus();
   renderAnalysisSummary();
   settingsRevision++;
   if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
@@ -300,16 +330,50 @@ const FREQUENCY_BLUR_TIP = 'Extra skin-aware Gaussian sigma as a percentage of t
 sliders.frequencyCalibration = slider($('frequencySliders'), 'Radius', 0.5, 30, 0.1, state.frequency.radius_at_s181, v => {
   state.frequency.radius_at_s181 = v; scaleFrequencyRadius(); markDirty();
 }, {tip:FREQUENCY_RADIUS_TIP});
-sliders.blurPercent = slider($('frequencySliders'), 'Blur', 100, 500, 1, state.frequency.blur_percent, v => {
+sliders.blurPercent = slider($('blurSliders'), 'Radius', 100, 500, 1, state.frequency.blur_percent, v => {
   state.frequency.blur_percent = v; scaleFrequencyRadius(); markDirty();
 }, {tip:FREQUENCY_BLUR_TIP});
 $('frequencyMethod').onchange = () => { state.frequency.method = $('frequencyMethod').value; markDirty(); };
+sliders.blurStrength = slider($('blurSliders'), 'Strength', 0, 100, 1, state.frequency.blur_strength, v => {
+  state.frequency.blur_strength = v; markDirty();
+}, {tip:'Preview and PhotoCraft layer opacity, 0-100%. Sent Blur pixels remain full strength.'});
+function syncFrequencyControls() {
+  $('blurOn').checked = state.frequency.on;
+  $('blurMask').checked = state.frequency.blur_mask;
+  $('blurMask').disabled = !state.frequency.on;
+  [sliders.blurPercent, sliders.blurStrength].forEach(s => {
+    s.rng.disabled = s.num.disabled = !state.frequency.on;
+  });
+}
+$('blurOn').onclick = event => event.stopPropagation();
+$('blurOn').onchange = () => {
+  state.frequency.on = $('blurOn').checked; syncFrequencyControls(); markDirty();
+};
+$('blurMask').onchange = () => { state.frequency.blur_mask = $('blurMask').checked; markDirty(); };
+function syncTransfer() {
+  const t = state.frequencyTransfer;
+  $('transferFormat').value = t.format;
+  $('transferCompression').value = t.compressed ? 'compressed' : 'none';
+  $('transferAlpha').checked = t.opaque_alpha;
+  $('transferParallel').checked = t.parallel;
+  $('transferHint').textContent = t.format === 'tiff'
+    ? 'TIFF uses lossless ZIP/Deflate or no compression; explicitly tagged unassociated alpha when enabled. Classic TIFF limit: 4 GiB per file.'
+    : 'PNG uses lossless Deflate level 1 or level 0 (stored blocks, not raw pixels). Alpha off writes RGB, not RGBA.';
+}
+['transferFormat','transferCompression','transferAlpha','transferParallel'].forEach(id => {
+  $(id).onchange = () => {
+    state.frequencyTransfer = {format:$('transferFormat').value,
+      compressed:$('transferCompression').value === 'compressed',
+      opaque_alpha:$('transferAlpha').checked, parallel:$('transferParallel').checked};
+    syncTransfer(); updateStar();
+  };
+});
 const skintoneSliders = {};
 [
   ['hue_center','Center',10,50,'Centre of the allowed hue arc in degrees, 10–50° with 30° at the midpoint. HSV is measured in native document RGB. Legacy values outside the slider window remain in the readout until edited.'],
   ['hue_width','Range ±',1,8,'Allowed hue half-width, 1–8° around Center. Amount, neutral protection and LUT approximation still apply. Legacy values outside this slider window remain until edited.'],
   ['hue_softness','Softness',0,30,'Shoulder width in hue degrees. The core stays unchanged; near-boundary colours also compress. Zero gives hard limits. Capped internally at the half-width.'],
-  ['hue_amount','Amount',0,100,'Hue correction strength in percent. Zero leaves hue unchanged; lower amounts may leave colours outside the allowed arc.'],
+  ['hue_amount','Amount',0,100,'Hue adjustment opacity in percent. Preview blends the full-strength correction; Send embeds the 100% LUT and sets layer opacity.'],
 ].forEach(([key,label,min,max,tip]) => {
   skintoneSliders[key] = slider($('skintoneHue'),
     label, min, max, 1, state.skintone[key], value => {
@@ -323,7 +387,7 @@ const skintoneSliders = {};
 function drawSkintone(data) {
   const rows = data?.bins || [], populated = rows.some(Boolean);
   if (state.skintoneError) logNote(state.skintoneError);
-  if (data && !populated) logNote('No non-neutral skin samples in this view. Check the shared Skin Mask or choose Whole image.');
+  if (data && state.skintone.on && !populated) logNote('No non-neutral skin samples in this view. Check the shared Skin Mask or choose Whole image.');
   if (data?.effect) logNote(data.effect.note);
   [['hueDistribution','hue',10,50]].forEach(([id,key,lo,hi]) => {
     const c = $(id), ctx = c.getContext('2d'), w = c.width, h = c.height;
@@ -366,10 +430,10 @@ function drawSkintone(data) {
 }
 let shellConnected = false, shellUiReady = false, pendingShellMode = null;
 function announceMode(request=null) {
-  if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:state.mode, request}, location.origin);
+  if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:uiMode(state.mode), request}, location.origin);
 }
 function switchMode(mode, request=null) {
-  if (mode === 'skintone') mode = 'frequency';
+  mode = uiMode(mode);
   if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
   if (state.mode !== mode) {
@@ -467,6 +531,8 @@ function syncColorControls() {
 }
 $('toneOn').onchange = () => { drawTone(); markDirty(); };
 $('maskOn').onchange = markDirty;
+$('skintoneOn').onclick = event => event.stopPropagation();
+$('skintoneOn').onchange = () => { state.skintone.on = $('skintoneOn').checked; markDirty(); };
 $('structureOn').onchange = () => { syncStructureControls(); markDirty(); };
 $('colorOn').onchange = () => { syncColorControls(); markDirty(); };
 syncStructureControls();
@@ -573,6 +639,7 @@ function renderLoadTimings() {
   renderTemporaryLog();
 }
 function beginLoadTimings(message) {
+  invalidateMaskCacheStatus();
   if (temporaryLog.load) logNote(temporaryLog.load);
   loadProgress = {started:performance.now(), steps:[message]};
   renderLoadTimings();
@@ -677,9 +744,11 @@ async function loadImage() {
 function setBusy(b) {
   state.busy = b;
   const st = $('status');
+  st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = b;
+  ['transferFormat','transferCompression','transferAlpha','transferParallel','skintoneOn','blurOn'].forEach(id => { $(id).disabled = b; });
   $('landmarkOpen').disabled = b || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
@@ -718,7 +787,7 @@ function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSki
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).checked = v === '1'; });
 function params() {
-  return { mode: state.mode, layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: uiMode(state.mode), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -741,7 +810,7 @@ async function apply({quiet=false}={}) {
   const processingStarted = loadingPreview ? progress.started : started;
   const feedback = previewFeedback(quiet);
   try {
-    const r = await api('/api/run', {...p, generation:state.imageGeneration});
+    const r = await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked});
     if (epoch === state.loadEpoch && revision === settingsRevision) {
       state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
       if (loadingPreview && progress === loadProgress) recordLoadStage('Preview computed', (performance.now()-started)/1000);
@@ -762,6 +831,7 @@ async function apply({quiet=false}={}) {
           logNote('Preview restored from cache ('+state.mode+').');
           setStatus('Preview restored from cache.', false, true);
         } else finishProcessing(processingStarted);
+        watchMaskPrecache(r.mask_precache, epoch);
       } else if (loadingPreview && progress === loadProgress && !displayed) {
         recordLoadStage('Preview display failed or was replaced.'); progress.finished = true;
       }
@@ -777,6 +847,64 @@ async function apply({quiet=false}={}) {
   if (state.dirty && revision !== settingsRevision) {
     clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350);
   }
+}
+let maskPrecacheWatch = 0, maskPrecacheNote = null;
+function renderMaskCacheStatus(value) {
+  const running = value.status === 'running';
+  const cached = value.cached === true;
+  const label = (value.enabled === false ? 'Background precache disabled. ' : '') + (running ? 'Calculating full-resolution skin mask'
+    : cached ? 'Matching full-resolution skin mask cached'
+    : value.error ? `Full-resolution skin mask failed: ${value.error}`
+    : value.status === 'queued' ? 'Full-resolution skin mask queued; not cached yet'
+    : value.message || 'No matching full-resolution skin mask cached');
+  const symbol = $('maskCacheStatus');
+  symbol.textContent = running ? '\u21bb' : cached ? '\u2713' : '\u2717';
+  symbol.classList.toggle('running', running);
+  symbol.title = label;
+  symbol.setAttribute('aria-label', label);
+}
+function invalidateMaskCacheStatus() {
+  ++maskPrecacheWatch;
+  clearTimeout(watchMaskPrecache.timer);
+  renderMaskCacheStatus({status:'idle', cached:false});
+}
+$('maskPrecache').checked = localStorage.getItem('shp-mask-precache') !== '0';
+$('maskPrecache').onchange = () => {
+  localStorage.setItem('shp-mask-precache', $('maskPrecache').checked ? '1' : '0');
+  markDirty();
+};
+function watchMaskPrecache(info, epoch) {
+  if (!info) return;
+  const watch = ++maskPrecacheWatch;
+  clearTimeout(watchMaskPrecache.timer);
+  const display = value => {
+    if (watch !== maskPrecacheWatch || epoch !== state.loadEpoch) return;
+    renderMaskCacheStatus(value);
+    if (['queued','running'].includes(value.status)) {
+      watchMaskPrecache.timer = setTimeout(poll, 700);
+      return;
+    }
+    if (state.mode === 'mask' && state.loaded) watchMaskPrecache.timer = setTimeout(poll, 1500);
+    const key = `${value.sequence}:${value.status}:${value.cached}`;
+    if (key === maskPrecacheNote) return;
+    maskPrecacheNote = key;
+    if (value.error) {
+      const message = `Background skin mask failed: ${value.error}. Send will recompute it.`;
+      if (!state.busy) setStatus(message, true); else logNote(message);
+    } else if (value.status === 'ready' && value.cached) {
+      logNote(`Full-resolution skin mask ready in background (${value.seconds.toFixed(2)} s).`);
+    } else if (value.message) logNote(value.message);
+  };
+  const poll = async () => {
+    try { display(await api('/api/mask-precache')); }
+    catch (e) {
+      if (watch === maskPrecacheWatch && epoch === state.loadEpoch) {
+        renderMaskCacheStatus({status:'error', error:e.message});
+        logNote(`Background mask status failed: ${e.message}`);
+      }
+    }
+  };
+  display(info);
 }
 async function save() {
   if (state.busy || !state.loaded) return;
@@ -826,6 +954,7 @@ async function pcSend() {
   renderTemporaryLog();
   try {
     const r = await operationApi('/api/send-result', {...p, generation:state.imageGeneration}, true);
+    watchMaskPrecache(r.mask_precache, state.loadEpoch);
     logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
     if (r.saved) setStatus(`Saved result: ${r.path}`, false, true);
@@ -864,9 +993,14 @@ function syncTabs() {
   $('optsLayer').hidden = tabSel.B !== 'layer' && tabSel.B !== 'layerm';
 }
 function syncMode() {
+  state.mode = uiMode(state.mode);
   const dnb = state.mode === 'dnb', frequency = state.mode === 'frequency';
+  syncFrequencyControls();
+  $('maskOperations').hidden = state.mode !== 'mask';
   $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
   $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
+  $('g-blur').hidden = !frequency;
+  syncTransfer();
   $('g-skintone').hidden = !frequency;
   $('g-file').hidden = state.mode !== 'mask';
   renderAnalysisSummary();
@@ -874,8 +1008,9 @@ function syncMode() {
   ['g-mask', 'g-structure', 'g-range', 'g-color'].forEach(id => { $(id).hidden = state.mode !== 'mask'; });
   const result = $('tabsA').querySelector('[data-k="result"]');
   result.textContent = state.mode === 'mask' ? 'Skin mask' : 'Result';
-  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skin-masked Blur over Color, then skin-masked Hue correction, then unmasked Linear Light Detail.' : 'The reusable combined grayscale skin mask.';
+  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skintone correction between Color and Detail, with optional added skin-aware Blur.' : 'The reusable combined grayscale skin mask.';
   $('pcSend').textContent = 'Send Result';
+  $('tabsA').querySelector('[data-k="orig"]').title = 'Original image.';
   syncTransferTitles();
   syncTabs();
 }
@@ -1241,8 +1376,9 @@ document.querySelectorAll('details.grp').forEach(d => {
 
 /* ---------- presets ---------- */
 const FACTORY = {
-  mode: 'dnb', frequency: {method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200},
+  mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true},
   skintone: {...SKINTONE_DEFAULTS},
+  frequency_transfer: {...TRANSFER_DEFAULTS},
   bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
   strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12, layer_blur_at_s181: 0,
   tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
@@ -1253,7 +1389,7 @@ const FACTORY = {
 };
 function getSettings() {
   return {
-    mode: state.mode, frequency: {...state.frequency}, skintone: {...state.skintone},
+    mode: uiMode(state.mode), frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
     strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge, layer_blur_at_s181:state.layerBlur,
     tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
@@ -1267,8 +1403,10 @@ function getSettings() {
 function applySettings(o) {
   const f = JSON.parse(JSON.stringify(FACTORY));
   const v = Object.assign({}, f, o || {}, {frequency: Object.assign({}, f.frequency, (o || {}).frequency), tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
-  state.mode = v.mode === 'skintone' ? 'frequency' : ['dnb', 'mask', 'frequency'].includes(v.mode) ? v.mode : 'dnb';
+  state.mode = uiMode(v.mode);
   state.skintone = {...SKINTONE_DEFAULTS, ...(o?.skintone || {})};
+  $('skintoneOn').checked = state.skintone.on;
+  state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...(o?.frequency_transfer || {})};
   if (state.loaded) state.hueCenterNote = 'Hue Center restored from settings; next Load/Get will estimate it again.';
   Object.entries(skintoneSliders).forEach(([key,s]) => {
     const n=+state.skintone[key];
@@ -1278,9 +1416,12 @@ function applySettings(o) {
   });
   const legacyRatio = 100 * +v.frequency.blur_radius / +v.frequency.radius;
   const percent = o?.frequency?.blur_percent ?? (o?.frequency ? legacyRatio : 200);
-  state.frequency = {method:v.frequency.method === 'median' ? 'median' : 'gaussian', radius:+v.frequency.radius, blur_radius:+v.frequency.blur_radius, radius_at_s181:+v.frequency.radius_at_s181, blur_percent:Math.min(500,Math.max(100,Number.isFinite(+percent)?+percent:200))};
+  state.frequency = {on:v.frequency.on !== false, blur_mask:v.frequency.blur_mask !== false,
+    blur_strength:Math.min(100,Math.max(0,Number.isFinite(+v.frequency.blur_strength)?+v.frequency.blur_strength:100)),
+    method:['median','median_fast'].includes(v.frequency.method) ? v.frequency.method : 'gaussian', radius:+v.frequency.radius, blur_radius:+v.frequency.blur_radius, radius_at_s181:+v.frequency.radius_at_s181, blur_percent:Math.min(500,Math.max(100,Number.isFinite(+percent)?+percent:200))};
   sliders.frequencyCalibration.set(state.frequency.radius_at_s181, false);
   sliders.blurPercent.set(state.frequency.blur_percent, false);
+  sliders.blurStrength.set(state.frequency.blur_strength, false);
   scaleFrequencyRadius();
   syncMode();
   state.bands = [(v.bands && v.bands.length ? v.bands : f.bands)[0]].map(b => ({lo:+b.lo, hi:+b.hi, gain:1, taper:+b.taper, linked:!!b.linked}));

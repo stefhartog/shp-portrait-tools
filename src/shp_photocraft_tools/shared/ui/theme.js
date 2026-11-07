@@ -59,6 +59,8 @@
     picker.title = storageError || 'Colour theme for all tools; saved in this browser.';
     picker.onchange = () => apply(picker.value, true);
     label.append(picker);
-    host.insertBefore(label, host.querySelector('#presetBar'));
+    const presets = host.querySelector('#presetBar');
+    if (presets) presets.insertBefore(label, presets.firstChild);
+    else host.insertBefore(label, null);
   });
 })();

@@ -453,7 +453,8 @@ def combined_mask(img, S, mask=None, shadows=None, highlights=None, tone_strengt
 
 
 def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows=None, highlights=None, guided_up=True,
-            mask=None, blend_mm=6.0, protect=0.0, protect_mm=4.0, protect_thr=0.03, tone_strength=1.0):
+            mask=None, blend_mm=6.0, protect=0.0, protect_mm=4.0, protect_thr=0.03, tone_strength=1.0,
+            mask_result=None):
     """Whole pipeline for library/UI use. img: float32 BGR 0..1. Returns (cs, after, change, diag, total_mask):
     cs         = gray Soft Light layer (0..1) with NO mask of any kind applied: no skin mask and no tone window. Inside the
                  skin and up to blend_mm outside it the layer comes from the mask-aware analysis (hair and background do
@@ -462,7 +463,8 @@ def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows
     after      = img with the layer blended in Soft Light mode through total_mask (the final result),
     change     = the ln-luminance change of that result,
     total_mask = skin mask x tone window x (1 - protect x structure) (None if none is used): the one mask to use as the
-                 layer mask of cs. The structure map is returned as diag["structure"] (None if protect is 0)."""
+                 layer mask of cs. The structure map is returned as diag["structure"] (None if protect is 0).
+    mask_result optionally reuses an unchanged (total_mask, structure) from combined_mask."""
     Y = luminance_linear(img).astype(np.float32)
     change_u, diag = compute_change_band(Y, S, strength, bands, edge, tau, max_ev, guided_up, None, None,
                                          mask=mask, apply_mask=False)
@@ -473,8 +475,9 @@ def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows
         W = (1.0 - smoothstep(0.0, max(1.0, blend_mm * S / IPD_MM), dist)).astype(np.float32)
         change_u = W * change_u + (1 - W) * change_p
     cs = layer_from_change(Y, change_u)
-    total, diag["structure"] = combined_mask(img, S, mask, shadows, highlights, tone_strength,
-                                            protect, protect_mm, protect_thr)
+    total, diag["structure"] = (combined_mask(img, S, mask, shadows, highlights, tone_strength,
+                                             protect, protect_mm, protect_thr)
+                                if mask_result is None else mask_result)
     if total is None:
         change, after = change_u, np.clip(softlight(img, cs[..., None]), 0, 1).astype(np.float32)
     else:

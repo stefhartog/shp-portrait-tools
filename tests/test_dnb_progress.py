@@ -46,8 +46,9 @@ class ProgressTests(unittest.TestCase):
         js.JSStringRelease.argtypes = [ctypes.c_void_p]
         js.JSGlobalContextRelease.argtypes = [ctypes.c_void_p]
         html = T.S.HTML.read_text()
+        crop = files("shp_photocraft_tools.modules.crop.ui").joinpath("index.html").read_text()
         self.assertIn("#pcGet, #pcSend, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }", stylesheet().decode())
-        self.assertIn("#statusWrap { flex:1 1 0; min-width:0;", stylesheet().decode())
+        self.assertIn("#statusWrap { min-width:0;", stylesheet().decode())
         self.assertNotIn('id="loadTimings"', html.split('id="g-file"')[1].split('</details>')[0])
         self.assertNotIn('id="loadTimings"', html)
         self.assertNotIn('id="sendTimings"', html)
@@ -59,12 +60,12 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn('skintoneSummary', html)
         self.assertIn("if (state.skintoneError) logNote(state.skintoneError);", html)
         self.assertIn("if (data?.effect) logNote(data.effect.note);", html)
-        self.assertIn("if (data && !populated) logNote(", html)
+        self.assertIn("if (data && state.skintone.on && !populated) logNote(", html)
         self.assertNotIn('data-k="blur"', html)
         right_tabs = html.split("function rightPreviewKinds(mode) {", 1)[1].split("function paneKinds()", 1)[0]
         preview_harness = """
           (() => {
-            const state={mode:'dnb'},tabSel={A:'result',B:'mask'};
+            const state={mode:'dnb',frequency:{on:true}},tabSel={A:'result',B:'mask'};
             const tabs=['mask','analysis','layer','layerm','color','detail'].map(k=>({dataset:{k},hidden:false}));
             const left=['orig','result'].map(k=>({dataset:{k},hidden:false}));
             const $=id=>({querySelectorAll:()=>id==='tabsA'?left:tabs});
@@ -82,6 +83,156 @@ class ProgressTests(unittest.TestCase):
                 if(tabSel.A!==(mode==='mask'?'orig':previous))throw Error('Left fallback');
               }
             }
+          })();
+        """
+        settings_helpers = html.split("const FACTORY =", 1)[1].split("const presets =", 1)[0]
+        params_helper = html.split("function params() {", 1)[1].split("async function apply(", 1)[0]
+        transfer_defaults = html.split("const TRANSFER_DEFAULTS =", 1)[1].split("const state =", 1)[0]
+        transfer_helpers = "function syncTransfer() {" + html.split("function syncTransfer() {", 1)[1].split("const skintoneSliders =", 1)[0]
+        ui_mode_helper = "function uiMode(mode) {" + html.split("function uiMode(mode) {", 1)[1].split("const TRANSFER_DEFAULTS", 1)[0]
+        switch_mode_helper = "function switchMode(mode, request=null) {" + html.split(
+            "function switchMode(mode, request=null) {", 1)[1].split("$('toolMode').onchange", 1)[0]
+        frequency_controls = "function syncFrequencyControls() {" + html.split(
+            "function syncFrequencyControls() {", 1)[1].split("function syncTransfer()", 1)[0]
+        skintone_switch = "$('skintoneOn').onclick" + html.split("$('skintoneOn').onclick", 1)[1].split("$('structureOn').onchange", 1)[0]
+        mask_status_helper = "function renderMaskCacheStatus(value) {" + html.split(
+            "function renderMaskCacheStatus(value) {", 1)[1].split("$('maskPrecache').checked =", 1)[0]
+        mask_watch_helper = "function watchMaskPrecache(info, epoch) {" + html.split(
+            "function watchMaskPrecache(info, epoch) {", 1)[1].split("async function save()", 1)[0]
+        mask_status_harness = """
+          (() => {
+            const symbol={classList:{toggle(k,v){this[k]=v;}},setAttribute(k,v){this[k]=v;}};
+            const $=()=>symbol;
+            const state={loadEpoch:1,mode:'mask',loaded:true,busy:false};
+            let maskPrecacheWatch=0,maskPrecacheNote=null;
+            const timers=[],setTimeout=(fn,ms)=>{timers.push(ms);return timers.length;};
+            const clearTimeout=()=>{},logNote=()=>{},setStatus=()=>{},api=async()=>({});
+            function check(ok){if(!ok)throw Error('Mask cache status');}
+        """ + mask_status_helper + mask_watch_helper + """
+            for(const status of ['idle','queued','superseded','skipped','error','ready']) {
+              renderMaskCacheStatus({status,cached:false,error:status==='error'?'failed':null});
+              check(symbol.textContent==='\\u2717' && !symbol.classList.running);
+            }
+            renderMaskCacheStatus({status:'running',cached:false});
+            check(symbol.textContent==='\\u21bb' && symbol.classList.running);
+            renderMaskCacheStatus({status:'ready',cached:true});
+            check(symbol.textContent==='\\u2713' && !symbol.classList.running);
+            renderMaskCacheStatus({status:'idle',cached:true,enabled:false});
+            check(symbol.textContent==='\\u2713' && symbol.title.includes('disabled'));
+            renderMaskCacheStatus({status:'error',cached:false,error:'failed'});
+            check(symbol['aria-label'].includes('failed'));
+            watchMaskPrecache({status:'running',cached:false,sequence:1},1);
+            check(symbol.classList.running && timers.at(-1)===700);
+            watchMaskPrecache({status:'ready',cached:true,sequence:1,seconds:.2},1);
+            check(symbol.textContent==='\\u2713' && timers.at(-1)===1500);
+            watchMaskPrecache({status:'running',cached:false,sequence:0},0);
+            check(symbol.textContent==='\\u2713' && !symbol.classList.running);
+            invalidateMaskCacheStatus();
+            check(symbol.textContent==='\\u2717');
+          })();
+        """
+        dnb_status = "function setStatus(msg, err=false, ok=false) {" + html.split(
+            "function setStatus(msg, err=false, ok=false) {", 1)[1].split("function finishProcessing", 1)[0]
+        crop_status = "function setStatus(msg, err=false, ok=false) {" + crop.split(
+            "function setStatus(msg, err=false, ok=false) {", 1)[1].split("\n", 1)[0] + "\n"
+        for status_helper, busy_expression in ((dnb_status,"state.busy"),(crop_status,"busy")):
+            mask_status_harness += """
+              (() => {
+                const symbol={setAttribute(k,v){this[k]=v;}},$=()=>symbol,logNote=()=>{};
+                const state={busy:false};let busy=false,statusOk=false;
+                function check(ok){if(!ok)throw Error('Status operation state');}
+            """ + status_helper + f"""
+                {busy_expression}=true;setStatus('Working');
+                check(symbol.className==='busy' && symbol['aria-busy']==='true');
+                {busy_expression}=false;setStatus('Done',false,true);
+                check(symbol.className==='ok' && symbol['aria-busy']==='false');
+                setStatus('Failed',true);check(symbol.className==='err');
+              }})();
+            """
+        self.assertEqual(html.count('id="maskCacheStatus"'), 1)
+        self.assertEqual(html.count('id="maskPrecache"'), 1)
+        operations = html.split('<div id="maskOperations">', 1)[1].split('<div id="info">', 1)[0]
+        self.assertIn('id="maskCacheStatus"', operations)
+        self.assertIn('id="transferFormat"', operations)
+        self.assertIn("FS + Skintone only", operations)
+        self.assertIn("$('maskOperations').hidden = state.mode !== 'mask'", html)
+        self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
+        settings_harness = """
+          (() => {
+            const state={tone:{},loaded:false}, elements=new Map();
+            const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
+            const SKINTONE_DEFAULTS={on:true,hue_center:30,hue_width:30,hue_softness:5,hue_amount:100};
+            let transferStars=0;
+            const updateStar=()=>{transferStars++;};
+            let dirty=0;
+            const markDirty=()=>{dirty++;};
+            const noop=()=>{}, scaleFrequencyRadius=noop, syncMode=noop,
+              updateLayerBlurTip=noop, setToneSwatch=noop, syncStructureControls=noop,
+              setColorSwatch=noop, syncColorControls=noop, syncCropButtons=noop,
+              renderBands=noop, drawTone=noop, announceMode=noop;
+            const closeLandmarks=noop,setPickingColor=noop,clearTimeout=noop,apply=noop;
+            function slider(parent,label,min,max,step,value,change) {
+              return {set:noop,change,rng:{min,max}};
+            }
+            const sliders=new Proxy({}, {get:()=>({set:noop,rng:{},num:{}})}), skintoneSliders={};
+            const syncTabs=noop;
+            const bandsPayload=()=>state.bands, analysisFlags=()=>({});
+            function check(ok){if(!ok)throw Error('FS settings / controls');}
+        """ + ui_mode_helper + switch_mode_helper + frequency_controls + "const TRANSFER_DEFAULTS =" + transfer_defaults + transfer_helpers + skintone_switch + \
+            "const FACTORY =" + settings_helpers + "function params() {" + params_helper + """
+            applySettings(null);
+            const original=getSettings();
+            applySettings({...original,mode:'blemish'});
+            check(state.mode==='dnb');
+            $('S').value='181';
+            const payload=params();
+            check(payload.mode==='dnb' && payload.S===181 && !('blemish' in payload));
+            state.mode='blemish';
+            check(params().mode==='dnb' && getSettings().mode==='dnb');
+            state.mode='dnb';
+            state.mode='frequency';switchMode('blemish');
+            check(state.mode==='dnb' && params().mode==='dnb');
+            applySettings(original);
+            applySettings({...original,mode:'frequency',frequency:{...original.frequency,method:'median_fast'},
+              frequency_transfer:{format:'tiff',compressed:false,opaque_alpha:false,parallel:false}});
+            check(state.frequency.method==='median_fast');
+            check(JSON.stringify(getSettings().frequency_transfer)===JSON.stringify(state.frequencyTransfer));
+            syncTransfer();
+            check($('transferFormat').value==='tiff' && $('transferCompression').value==='none');
+            check(!$('transferAlpha').checked && !$('transferParallel').checked);
+            check($('transferHint').textContent.includes('4 GiB'));
+            $('transferFormat').value='png';$('transferFormat').onchange();
+            check(state.frequencyTransfer.format==='png' && transferStars===1);
+            check($('transferHint').textContent.includes('stored blocks'));
+            const transferred=params();transferred.frequency_transfer.parallel=true;
+            check(!state.frequencyTransfer.parallel);
+            state.loaded=true;state.sourceKind='photocraft';state.pcConnected=true;state.busy=false;
+            applySettings(original);
+            check(JSON.stringify(state.frequencyTransfer)===JSON.stringify(TRANSFER_DEFAULTS));
+            syncFrequencyControls();check(state.frequency.on && $('blurOn').checked);
+            $('blurOn').checked=false;$('blurOn').onchange();
+            check(!state.frequency.on && !params().frequency.on && !getSettings().frequency.on);
+            const fsOff=getSettings();applySettings(fsOff);syncFrequencyControls();
+            check(!state.frequency.on && !$('blurOn').checked);
+            applySettings({...original,frequency:{...original.frequency,blur_strength:31,blur_mask:false}});
+            syncFrequencyControls();
+            check(state.frequency.blur_strength===31 && !$('blurMask').checked);
+            check(params().frequency.blur_strength===31 && !getSettings().frequency.blur_mask);
+            $('blurMask').checked=true;$('blurMask').onchange();
+            check(state.frequency.blur_mask && params().frequency.blur_mask);
+            applySettings({...original,frequency:{method:'median_fast',radius:8,blur_radius:16}});
+            syncFrequencyControls();check(state.frequency.on);
+            check(state.skintone.on && $('skintoneOn').checked);
+            const beforeToggle=dirty;
+            $('skintoneOn').checked=false;$('skintoneOn').onchange();
+            check(!state.skintone.on && dirty===beforeToggle+1);
+            let stopped=false;$('skintoneOn').onclick({stopPropagation:()=>{stopped=true;}});
+            check(stopped);
+            applySettings({...original,skintone:{...original.skintone,on:false}});
+            check(!state.skintone.on && !$('skintoneOn').checked);
+            check(!params().skintone.on && !getSettings().skintone.on);
+            applySettings({...original,skintone:{hue_center:27}});
+            check(state.skintone.on && $('skintoneOn').checked && state.skintone.hue_center===27);
           })();
         """
         self.assertIn("$('g-file').hidden = state.mode !== 'mask'", html)
@@ -132,7 +283,6 @@ class ProgressTests(unittest.TestCase):
         """
         self.assertIn("logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);\n    finishProcessing(started);", html)
         self.assertIn("$('pcSend').textContent = 'Send Result';", html)
-        crop = files("shp_photocraft_tools.modules.crop.ui").joinpath("index.html").read_text()
         self.assertNotIn('id="xRun"', crop.split('<aside>')[0])
         crop_panel, ai_panel = crop.split('<section class="crop-section">')[1].split('<details class="crop-section" open>')
         self.assertIn('id="xRun"', crop_panel)
@@ -233,7 +383,7 @@ class ProgressTests(unittest.TestCase):
             const applyLoaded=r=>{state.sourceKind=r.source_kind;calls.push('loaded');};
             const initializeHueCenter=async()=>{},apply=()=>applied++;
             const params=()=>({S:181}),logNote=t=>notes.push(t),finishProcessing=()=>{};
-            const renderTemporaryLog=()=>{};
+            const renderTemporaryLog=()=>{},watchMaskPrecache=()=>{},invalidateMaskCacheStatus=()=>{};
             const api=async()=>({connected});
             const operationApi=async(path,payload)=>{
               calls.push(path);
@@ -362,7 +512,7 @@ class ProgressTests(unittest.TestCase):
         helpers = html.split("const temporaryLog =")[1].split("function slider(")[0]
         harness = """
           const elements = {};
-          const $ = id => elements[id] ||= {textContent:'',value:'',checked:true};
+          const $ = id => elements[id] ||= {textContent:'',value:'',checked:true,setAttribute(k,v){this[k]=v;}};
           let statusOk = false;
           const performance = {now:()=>3456};
           const state = {busy:false, estS:181, imageInfo:{name:'<portrait>.png',
@@ -499,7 +649,8 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('[role="tab"][aria-busy="true"] { color:color-mix', shell_css)
         self.assertNotIn('[aria-busy="true"] { background:', shell_css)
         self.assertIn("--status-symbol-size:11px", css)
-        self.assertIn("width:var(--status-symbol-size); height:var(--status-symbol-size);", css)
+        self.assertIn("animation:status-progress 1.8s ease-in-out infinite", css)
+        self.assertIn("#status.busy::before { animation:none; transform:none;", css)
         self.assertIn("--status-accent:#6a9fc5", css)
         self.assertIn("#status.ok::after", css)
         shell_js = files("shp_photocraft_tools.shell").joinpath("shell.js").read_text()
@@ -569,6 +720,15 @@ class ProgressTests(unittest.TestCase):
         """
         self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'crop'])
         self.assertIn("const views = ['mask', 'frequency', 'dnb', 'crop'];", shell_js)
+        self.assertNotIn('<option value="blemish">', html)
+        self.assertNotIn('id="g-blemish"', html)
+        fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
+        blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
+        self.assertNotIn('type="checkbox"',fs_panel)
+        self.assertIn('id="blurOn"',blur_panel)
+        self.assertIn('id="blurMask"',blur_panel)
+        self.assertIn("#g-bands, #g-mask, #g-frequency { border-top:0; }",html)
+        self.assertIn("['mask','skintone','frequency','dnb'].includes(data.mode)", html)
         self.assertIn("const modes = views.filter(view => view !== 'crop');", shell_js)
         self.assertNotIn('class="badge"', shell_page)
         self.assertEqual(shell_page.count('title="Starting" data-service='), 4)
@@ -591,12 +751,12 @@ class ProgressTests(unittest.TestCase):
         context = js.JSGlobalContextCreate(None)
         try:
             routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, preview_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, preview_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:
                     self.assertTrue(js.JSCheckScriptSyntax(context, source, None, 1, ctypes.byref(error)))
-                    if script in (harness, theme_harness, badge_harness, preview_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
+                    if script in (harness, theme_harness, badge_harness, preview_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
                         js.JSEvaluateScript(context, source, None, None, 1, ctypes.byref(error))
                         if error.value:
                             message = js.JSValueToStringCopy(context, error, None)

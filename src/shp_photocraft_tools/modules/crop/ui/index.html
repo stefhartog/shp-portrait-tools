@@ -56,7 +56,7 @@
 </head>
 <body>
 <div id="app">
-<div id="bar"><button class="workflow" id="xGet" title="Take the active document in PhotoCraft (merged) to expand.">Get Image</button><button class="workflow" id="xSend" title="Grow the canvas of that document and add the generated area as a layer, as one undo step." disabled>Send Result</button><div id="statusWrap"><div id="status"></div></div><select id="xFiles" title="Open a picture from the --dir folders." hidden></select><span id="presetBar" style="margin-left:auto;display:flex;gap:6px;align-items:center"><select id="presetSel" title="Choose a saved set of Advanced settings. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<div id="bar"><div id="barActions"><button class="workflow" id="xGet" title="Take the active document in PhotoCraft (merged) to expand.">Get Image</button><button class="workflow" id="xSend" title="Grow the canvas of that document and add the generated area as a layer, as one undo step." disabled>Send Result</button><select id="xFiles" title="Open a picture from the --dir folders." hidden></select></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar" style="margin-left:auto;display:flex;gap:6px;align-items:center"><select id="presetSel" title="Choose a saved set of Advanced settings. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
   <section class="crop-section">
     <h2>Crop</h2>
@@ -91,8 +91,8 @@ async function api(path, body) {
   return j;
 }
 let busy = false;
-function setBusy(b) { busy = b; $('status').classList.toggle('busy', b); }
-function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; s.className = err ? 'err' : busy ? 'busy' : ok ? 'ok' : ''; }
+function setBusy(b) { busy = b; $('status').classList.toggle('busy', b); $('status').setAttribute('aria-busy', String(b)); }
+function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; s.className = err ? 'err' : busy ? 'busy' : ok ? 'ok' : ''; s.setAttribute('aria-busy', String(busy)); }
 
 const X = {ready:false, img:null, el:null, resEl:null, W:0, H:0, ratio:[4,3], land:true, fx:0, fy:0, fw:0, view:'frame', free:false, fh:0, aspect:1, running:false, hasResult:false, hasDoc:false, limit:999, seq:0, v:null, drag:null};
 const BASE_RATIOS = [[1,1],[4,3],[3,2],[16,9],[5,4]];

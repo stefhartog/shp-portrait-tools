@@ -148,7 +148,9 @@ class SkinApiTests(unittest.TestCase):
                 received.append(("mask", source_icc))
                 return {"layer": 2}
 
-            def send_skintone(inner, layers, settings, mask, doc, source_icc):
+            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+                if blur_future is not None:
+                    layers = {**layers, "blur": blur_future.result()}
                 received.append(("frequency", source_icc))
                 self.assertTrue(all(a.dtype == np.uint16 for a in layers.values()))
                 return {"layer": 3}
@@ -170,7 +172,9 @@ class SkinApiTests(unittest.TestCase):
                 sent.append(("mask", mask.copy()))
                 return {"layer": 10, "document": doc["name"]}
 
-            def send_skintone(inner, layers, settings, mask, doc, source_icc):
+            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+                if blur_future is not None:
+                    layers = {**layers, "blur": blur_future.result()}
                 sent.append(("frequency", layers, mask.copy(), source_icc))
                 return {"layer": 11, "document": doc["name"]}
 

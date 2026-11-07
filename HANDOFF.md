@@ -88,8 +88,10 @@ unavailable controls keep the same background/text on mouseover in both themes.
 Shell tabs have no status badges/slots: busy/starting/stopping subtly darken only the
 title via aria-busy, without changing backgrounds, borders or dimensions. State/error text
 stays in tab title/aria-label. Lost supervisor polling marks status unavailable.
-Top-bar symbols are unchanged: --status-symbol-size 11px progress spinner and
---status-accent #6a9fc5 completion checkmark, not success text/error colours.
+Top-bar status uses a muted-blue indeterminate background during operations, an accessible
+live region and a static reduced-motion treatment. Symmetric grid side columns keep it
+screen-centred; narrower layouts use full-width rows. Standalone theme controls sit inside
+the preset group. The completion checkmark retains --status-accent #6a9fc5.
 FS + Skintone has no help/summary paragraph below its hue graph. Empty-sample,
 unsupported-source and correction-effect diagnostics remain in Log; genuine errors
 still use existing top-bar handling. Graph drawing/controls/tooltips are unchanged.
@@ -680,6 +682,54 @@ and existing Crop Fill/incremental-result checks, using isolated synthetic fixtu
 
 ### FS + Skintone: combined separation, Blur and one editable Hue adjustment
 
+Current UI is three panels: Frequency Separation (method/radius only, no divider/toggle),
+Blur (the former `frequency.on` toggle, Radius, Strength and independent Skin mask),
+Skintone Correction (`skintone.on` and existing Hue controls).
+`frequency.on=false` skips ONLY added Blur; Color/Detail always run. New settings are
+strict-boolean `blur_mask=true`, finite `blur_strength=100` in0–100 and strict-boolean
+`skintone.on=true`. Existing presets default enabled without rewriting.
+Unmasked Blur uses whole-image sampling AND no layer mask, not just mask removal.
+Correction off skips Hue Center estimation, LUT/HSV/distribution work and the Hue layer.
+Preview/local results blend full-strength Blur and Hue through their masks and strengths.
+Native Send uses full assets plus normalized `layer.setProps.opacity=strength/100`;
+Save assets are full strength with an explicit recipe. Isolated CLI0.18.0 verifies raster/
+colorLookup opacity and exported composites at0/partial/100. Default100 stays unchanged;
+partial Hue Amount intentionally changes from inside-LUT interpolation.
+
+`median_fast` retains the rounded full-image radius but uses uniform uint8 OpenCV
+`medianBlur`, with at most eight radius-halo row stripes and row-bounded conversion
+temporaries. Detail uses original float source minus actual Color; final assets stayRGB16.
+Quantization/borders intentionally differ from original Median, which remains unchanged
+alongside Gaussian. Preview, native/local Send, Save, validation and presets are wired.
+Native-test UI/handler/route are removed; the isolated low-level benchmark helper remains.
+
+`frequency_transfer` stores png/tiff plus strict booleans compressed/opaque_alpha/parallel;
+defaults png/true/true/true. PNG level0 uses stored Deflate; TIFF classic IFD preserves
+RGB16/ICC with none or ZIP/Deflate and optional unassociated alpha, subject to4GiB.
+Mask PNG8/local encodings are unchanged. One Detail encoder overlaps request-thread work;
+native control is serialized, futures joined before cleanup and final copy is non-replaying.
+Real-engine tests cover eight codec variants and serial/parallel folder parity.
+User live evidence found11–13s for all combinations and similar~1GB PSDs after two sends:
+do not describe TIFF as a verified live speedup.
+
+`send_skintone_parallel` overlaps final-mask preparation with Color/Detail and extra Blur
+with raster preparation/import. A read-only `(total_mask,structure)` cache capped256MiB
+uses source/content/profile/component signatures and effective mask/S settings, shared
+across normal modes only when identical. `dodge_burn.process(mask_result=...)` avoids
+duplicate final-mask work without using that final mask for base change-band analysis.
+One separate precache worker waits600ms after settled preview, coalesces edits and rejects
+stale publication. Its localStorage-only checkbox and cross/spinner/check status are only
+in Skin Mask > Image analysis, alongside transfer controls labelled FS + Skintone only.
+Status uses actual retained cache readiness, including entries filled by Send; polling
+does not hash full images or retain arrays. Source load resets cache; over-budget arrays
+are not retained. Forced overlap increased preview time20–24% and parent RAM1.53→2.83GiB;
+precache remains optional. Synthetic32.7MP/r15 warm-mask Send averaged Median28.864s vs
+Fast8.741s, not a live-image guarantee.
+
+Commit boundary excludes the separate uncommitted Blemish runtime, ClearFrame evaluation,
+dataset scripts/data and desktop changes. Unknown/stale UI modes normalize to D&B; no
+Blemish tab is exposed in this committed snapshot. The working prototype is not removed.
+
 User combined the two workflows and removed saturation correction. `frequency` is the
 canonical mode; `skintone` remains an input alias only. The existing `frequency` and
 `skintone` preset fields remain distinct. Hue settings default to center30°, half-width30°,
@@ -696,8 +746,8 @@ actual tagged RGB16 raster layers. Preview computes Color + quantized-mask Norma
 samples the Hue LUT on that base, feathers Hue with the same mask once, then restores
 unmasked Linear Light Detail. Blur and Hue each have their own mask; neither is applied
 twice. Hue does not act on original or Detail. Outside the mask the original reconstructs
-within rounding. Hue Amount0 leaves Blur active; only neutral Hue plus Blur radius0
-(or an empty mask) is a complete no-op. Final detail recomposition can clip endpoints.
+within rounding. Hue Amount0 leaves enabled Blur active; disabling both effects produces
+the Color/Detail reconstruction. Final detail recomposition can clip endpoints.
 Reduced-view radii scale with resolution; full-resolution Send/Save uses native source.
 
 Bridge assembles an unmasked Normal `SHP FS + Skintone` folder, top-down:
@@ -740,7 +790,8 @@ the same image/mask/preset state. Native matrix coverage includes eight profiles
 soft/empty/outside masks, Blur-only/hue-only/combined/neutral cases, distinct textured
 outliers, unmasked Detail, persistence/editing, one undo and failed final-copy cleanup.
 A normal Tools/D&B backend restart then Get is needed; HTML reload alone is insufficient.
-No live restart, user document mutation, commit or push is part of activation.
+Activation is a separate user-directed step; this commit does not restart Tools or mutate
+live PhotoCraft documents.
 
 Hue Center load fix: the old `skin_colour` estimate initialized only Color Range/tone
 controls, never Skintone Center; the FS merge did not remove prior Center initialization.

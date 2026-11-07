@@ -21,7 +21,7 @@ def snapshot(token, consume=False):
         record = _records.get(token)
         if record is None:
             return {"token": token, "pending": True}
-        result = {key: value for key, value in record.items() if key != "updated"}
+        result = {key: value for key, value in record.items() if key not in ("updated", "_running")}
         result["steps"] = [dict(step) for step in record["steps"]]
         if consume and record["done"]:
             del _records[token]
@@ -45,7 +45,7 @@ def operation(token):
                 raise ValueError("too many progress operations")
             del _records[oldest]
         record = {"token": token, "steps": [], "active": None, "done": False,
-                  "error": None, "updated": time.monotonic()}
+                  "error": None, "updated": time.monotonic(), "_running": []}
         _records[token] = record
     context = _current.set(record)
     started = time.perf_counter()
@@ -67,8 +67,9 @@ def call(label, fn, *args, **kwargs):
     if record is None:
         return fn(*args, **kwargs)
     started = time.perf_counter()
+    span = object()
     with _lock:
-        previous = record["active"]
+        record["_running"].append((span, label))
         record["active"] = label
         record["updated"] = time.monotonic()
     error = None
@@ -81,5 +82,6 @@ def call(label, fn, *args, **kwargs):
         with _lock:
             record["steps"].append({"label": label, "seconds": time.perf_counter() - started,
                                     "error": error})
-            record["active"] = previous
+            record["_running"] = [(key, value) for key, value in record["_running"] if key is not span]
+            record["active"] = record["_running"][-1][1] if record["_running"] else None
             record["updated"] = time.monotonic()

@@ -20,7 +20,10 @@ def settings(req):
     p = req.get("skintone", {})
     if not isinstance(p, dict):
         raise ValueError("skintone settings must be an object")
-    result = {}
+    on = p.get("on", True)
+    if type(on) is not bool:
+        raise ValueError("skintone on must be a boolean")
+    result = {"on": on}
     for key, default in DEFAULTS.items():
         value = float(p.get(key, default))
         lo, hi = BOUNDS[key]
@@ -117,10 +120,12 @@ def process(bgr, mask, p):
         raise ValueError(error)
     if not np.isfinite(mask).all():
         raise ValueError("Skintone mask must be finite")
-    hue, = tables(p)
+    if not p.get("on", True):
+        return bgr
+    hue, = tables(dict(p, hue_amount=100))
     rgb = np.ascontiguousarray(bgr[..., ::-1])
     corrected = sample(rgb, hue)[..., ::-1]
-    opacity = np.round(np.clip(mask, 0, 1) * 255) / 255
+    opacity = np.round(np.clip(mask, 0, 1) * 255) / 255 * p["hue_amount"] / 100
     return (bgr + (corrected - bgr) * opacity[..., None]).astype(np.float32)
 
 
@@ -136,13 +141,18 @@ def separate(img, mask, method, radius, blur_radius, *, native=False):
     return layers
 
 
-def base(layers, mask):
-    opacity = np.round(np.clip(mask, 0, 1) * 255) / 255
+def base(layers, mask, frequency=None):
+    if "blur" not in layers:
+        return layers["color"]
+    frequency = frequency or {}
+    opacity = (np.round(np.clip(mask, 0, 1) * 255) / 255
+               if frequency.get("blur_mask", True) else np.ones(mask.shape, np.float32))
+    opacity = opacity * frequency.get("blur_strength", 100) / 100
     return layers["color"] + (layers["blur"] - layers["color"]) * opacity[..., None]
 
 
-def composite(layers, mask, p):
-    color = process(base(layers, mask), mask, p)
+def composite(layers, mask, p, frequency=None):
+    color = process(base(layers, mask, frequency), mask, p)
     return color, np.clip(color + 2 * layers["detail"] - 1, 0, 1)
 
 
@@ -166,6 +176,9 @@ def estimate_center(color, mask):
 
 def distribution(before, after, mask, p):
     """Weighted 10/50/90% HSV summaries by brightness, never a new skin detection."""
+    if not p.get("on", True):
+        return {"bins": [], "hue_center": p["hue_center"], "sampled_weight": 0,
+                "effect": {"note": "Skintone correction is off; Color, skin-masked Blur and Detail remain active."}}
     stride = max(1, math.ceil(math.sqrt(mask.size / 100000)))
     delta = np.max(np.abs(after[::stride, ::stride] - before[::stride, ::stride]), axis=-1)
     active = mask[::stride, ::stride] > 1 / 255

@@ -104,9 +104,12 @@ class SkintoneTests(unittest.TestCase):
         self.assertIn("mask is empty", ST.distribution(img,img,mask*0,p)["effect"]["note"])
         zero = dict(p,hue_amount=0,sat_amount=0)
         self.assertIn("Hue Amount is zero", ST.distribution(img,img,mask,zero)["effect"]["note"])
+        with patch.object(ST.cv2, "cvtColor", side_effect=AssertionError("no disabled HSV conversion")):
+            off = ST.distribution(img, img, mask, dict(p, on=False))
+        self.assertEqual(off["bins"], [])
 
     def test_validation(self):
-        for bad in (None, [], {"hue_center": float("nan")},
+        for bad in (None, [], {"on": 0}, {"on": "false"}, {"hue_center": float("nan")},
                     {"hue_width": -1}, {"hue_softness": 31}, {"hue_amount": -1}):
             with self.assertRaises((ValueError, TypeError)):
                 ST.settings({"skintone": bad})
@@ -137,6 +140,56 @@ class SkintoneApiTests(unittest.TestCase):
     close_server = T.DnbTests.close_server
     get = T.DnbTests.get
     post = T.DnbTests.post
+
+    def test_disabled_preview_send_save_and_hue_estimation_bypass_correction(self):
+        sent = []
+        class FakeBridge:
+            def fetch(inner, dest):
+                return self.image, {"index": 1, "name": self.image.name}
+            def send_skintone(inner, layers, settings, mask, doc, icc, *, blur_future=None, transfer=None, include_blur=True, blur_strength=100, blur_masked=True):
+                sent.append((settings, {**layers, "blur": blur_future.result()}, mask))
+                return {"layer": 20, "document": doc["name"]}
+        S.BRIDGE["b"] = FakeBridge()
+        loaded = self.post("/api/pc/fetch", {})
+        p = dict(T.PARAMS, mode="frequency", skintone={"on": False, "hue_width": 0})
+        enabled = S.parse_params(dict(p, skintone={"on": True, "hue_width": 0}))
+        disabled = S.parse_params(p)
+        with patch.dict(S.STATE, centre=(64,48), region_box=(0,0,128,96)):
+            self.assertNotEqual(S.preview_key(enabled, "crop"), S.preview_key(disabled, "crop"))
+        self.assertEqual(S.mask_settings_key(enabled, None), S.mask_settings_key(disabled, None))
+        with patch.object(ST, "tables", side_effect=AssertionError("no LUT construction")), \
+                patch.object(ST, "sample", side_effect=AssertionError("no LUT sampling")), \
+                patch.object(ST, "transform", side_effect=AssertionError("no HSV correction")), \
+                patch.object(ST, "estimate_center", side_effect=AssertionError("no hue estimate")):
+            run = self.post("/api/run", p)
+            self.assertIn("correction is off", run["stats"]["skintone"]["effect"]["note"])
+            self.assertEqual(run["stats"]["skintone"]["bins"], [])
+            reg, k = S.STATE["last"]["reg"], S.STATE["last"]["k"]
+            _, preview_mask, _ = S.tool_mask(reg, S.STATE["last"]["mreg"], disabled, p["S"]*k)
+            if preview_mask is None:
+                preview_mask = np.ones(reg.shape[:2], np.float32)
+            preview_layers = S.skintone_layers(S.source_region(reg.shape, normalized=True), preview_mask, disabled, k)
+            preview = np.clip(ST.base(preview_layers, preview_mask) + 2*preview_layers["detail"] - 1, 0, 1)
+            np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(self.get("/img/result")[0], np.uint8), 1),
+                                          S.u8(preview))
+            self.assertTrue(self.post("/api/pc/send", p)["mask_precache"]["cached"])
+            saved = self.post("/api/save", p)
+            estimate = self.post("/api/hue-center", dict(p, generation=loaded["generation"]))
+        self.assertIsNone(estimate["center"])
+        self.assertFalse(sent[0][0]["on"])
+        layers = {key: a.astype(np.float32)/65535 for key, a in sent[0][1].items()}
+        expected = np.clip(ST.base(layers, sent[0][2]/255) + 2*layers["detail"] - 1, 0, 1)
+        actual = cv2.imread(str(Path(saved["dir"])/"result.png"), cv2.IMREAD_UNCHANGED)
+        np.testing.assert_array_equal(actual[..., :3], S.FS.rgb16(expected))
+        self.assertNotIn("Hue.cube", saved["files"])
+        recipe = json.loads((Path(saved["dir"])/"settings.json").read_text())["layer_recipe"]
+        self.assertNotIn("Hue", recipe)
+        self.assertIn("Blur (Normal, opacity 100.0%, with skinmask.png)", recipe)
+        self.post("/api/presets/save", {"name": "Off", "settings": p})
+        self.assertFalse(json.loads(self.get("/api/presets")[0])["presets"]["Off"]["skintone"]["on"])
+        with patch.object(ST, "tables", wraps=ST.tables) as tables:
+            self.post("/api/run", dict(p, skintone={"on": True, "hue_width": 0}))
+            self.assertTrue(tables.called)
 
     def test_load_and_get_estimate_new_native_color_not_prior_center_or_lut(self):
         class FakeBridge:
@@ -185,7 +238,9 @@ class SkintoneApiTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send_skintone(inner, layers, settings, mask, doc, icc):
+            def send_skintone(inner, layers, settings, mask, doc, icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+                if blur_future is not None:
+                    layers = {**layers, "blur": blur_future.result()}
                 sent.append((settings, mask, doc, icc, layers))
                 return {"layer": 20, "document": doc["name"]}
 
@@ -223,8 +278,8 @@ class SkintoneApiTests(unittest.TestCase):
             np.testing.assert_array_equal(cv2.imread(str(Path(saved["dir"])/f"{key}.png"),cv2.IMREAD_UNCHANGED)[...,:3],
                                           sent[0][4][key])
         recipe=json.loads((Path(saved["dir"])/"settings.json").read_text())["layer_recipe"]
-        self.assertIn("Blur (Normal with skinmask.png)",recipe)
-        self.assertIn("Hue (with skinmask.png;", recipe)
+        self.assertIn("Blur (Normal, opacity 100.0%, with skinmask.png)",recipe)
+        self.assertIn("with skinmask.png; Hue.cube", recipe)
         self.assertNotIn("Pass Through", recipe)
         self.assertNotIn("Saturation",recipe)
         self.post("/api/presets/save", {"name": "Tone", "settings": p})

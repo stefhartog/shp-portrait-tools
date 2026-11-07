@@ -586,6 +586,7 @@ the existing analysis colour space. Adjust that mask in **Skin Mask**.
 **Send Result** to PhotoCraft creates one unmasked **Normal SHP FS + Skintone** folder, top to bottom:
 **Detail** (Linear Light, unmasked), **Hue** (Normal native adjustment, combined skin mask),
 **Blur** (Normal, combined skin mask), **Color** (Normal, unmasked).
+Blur and Hue are omitted when their respective panel switches are off.
 Hue is **one editable native Color Lookup adjustment**, with its mask attached directly
 and no intermediate subgroup, even at
 zero Hue Amount: Normal, trilinear interpolation, dither off. It is not a
@@ -613,6 +614,7 @@ cover the nested stack, partial masks and numeric-space ICC handling; 8-bit laye
 quantization can differ from the RGB16 preview by about three8-bit levels.
 FS + Skintone requires an opaque, normalized source. Manual **Save** writes
 `Hue.cube`, tagged RGB16 Color/Blur/Detail/result, `skinmask.png` and settings with the layer recipe.
+Disabled Blur omits `blur.png`; disabled correction omits `Hue.cube`.
 Older presets receive Skintone defaults in memory without rewriting files until Save.
 The loader checks the original numeric range: 8/16-bit integers normalize by their own
 maximum; floating-point samples are already numeric RGB and are not divided by255.
@@ -622,12 +624,12 @@ HDR clipping or tone mapping is applied to source pixels. On validated SDR sourc
 the reduced Skintone preview repairs float32 area-resize endpoint roundoff (for example
 white becoming1.0000001); this is not interpreted as HDR and leaves original samples intact.
 
-The **Frequency separation** section has Gaussian or Median separation, controlled by
+The **Frequency separation** section has Gaussian, Median or Median Fast separation, controlled by
 **Radius** (a calibration in px at S = 181 px / 63 mm, default **6**). There are no direct pixel sliders.
 On each new image/Get, or an edit to S or calibration, the radius becomes
 `calibration × S / 181`, rounded to whole pixels and limited to 1–100 px (current values are shown in
 the Radius/Blur label tooltips). Thus S181 → 6 px, S362 → 12 px and S90.5 → 3 px.
-**Blur** is 100–500% (step 1%, default 200%): actual Blur Gaussian sigma is
+The separate **Blur** panel's Radius is 100–500% (step 1%, default 200%): actual Blur Gaussian sigma is
 the **rounded/clamped separation radius × percentage / 100**, not a multiple of calibration.
 S181/calibration6 gives radius6/Blur12; S362 gives radius12/Blur24 at 200%.
 At radius100 and 500%, Blur is 500 px; there is no hidden 100 px Blur cap.
@@ -641,7 +643,7 @@ If no valid S was estimated, enter it manually in Image analysis; no scale is gu
 For Gaussian, radius means sigma; for Median it is the square neighborhood's radius,
 rounded to the nearest pixel after preview scaling. These are not D&B's millimeter bands.
 Preview radii scale with the preview resolution; Send and Save calculate at full resolution.
-Color uses ordinary full-image Gaussian or Median filtering, completely independent of
+Color uses ordinary full-image Gaussian, Median or Median Fast filtering, completely independent of
 the skin mask. Median can be slower on large pictures/radii and OpenCV internally quantizes
 floating-point median values; Detail is derived from the actual resulting Color.
 
@@ -651,7 +653,8 @@ the blurred mask, excluding non-skin samples before filtering without introducin
 edges. Outside support it keeps Color unchanged. The same combined mask then feathers
 Blur as its actual layer mask, applying opacity once, not baking it into the pixels.
 This cannot undo color mixing already present in the ordinary full-image Color split.
-Blur is active immediately, smoothing skin tones under the unmasked Detail.
+Blur defaults on, smoothing skin tones under the unmasked Detail. Turning Blur off
+skips only this extra filter/layer; Color and Detail are always calculated and sent.
 The right pane offers **Color / Detail** in FS + Skintone, **Layer / Layer + mask**
 in D&B, and **Mask / Analysis** in Skin Mask. Hidden or obsolete remembered choices
 fall back to the first available preview. This is a UI change only: existing backend
@@ -676,7 +679,8 @@ are prepared directly, without retaining three additional float RGB export copie
 PNG tagging also avoids redundant full-buffer copies. Precision, RGB channels, masks,
 blend modes and the final one-step target insertion are unchanged. Full-resolution
 processing, PNG encoding/import and the Color/Blur/Detail assembly itself still cost memory;
-Get still exports the merged image needed for analysis. No reduced-precision path is used.
+Get still exports the merged image needed for analysis. Median Fast alone uses an explicitly
+disclosed 8-bit filtering intermediate; final transfers remain RGB16.
 Get/analysis still has the same model/GPU requirements as D&B.
 
 Both modules use the same **grey-off / blue-on horizontal switches**, dark dropdowns,
@@ -693,6 +697,65 @@ The two backend iframes stay mounted at the same size, preserving image/zoom/pro
 Refreshing resets browser-only views; stopping a backend discards its in-memory work.
 
 ## Data and compatibility
+
+### Current FS controls, transfer and caching
+
+The left side has three panels: **Frequency Separation** (method/radius, always active),
+**Blur** (on/off, Radius, Strength and Skin mask), and **Skintone Correction** (on/off
+and Hue controls). The former native-FS test button and long method explanation are
+removed; method differences are explained by a short tooltip.
+
+**Blur Strength** and **Skintone Amount** are 0–100%. Preview and local result PNGs
+blend each effect at its selected strength. PhotoCraft Send instead supplies full-strength
+Blur pixels and a 100%-strength Hue LUT, then sets each layer's native opacity to
+strength/100. Raster and Color Lookup opacity were verified with isolated PhotoCraft
+CLI 0.18.0 at zero, partial and full strength, without touching live documents.
+Default 100% behavior is unchanged; partial Hue Amount intentionally differs from the
+former inside-LUT interpolation. Save bundles contain full-strength assets and an explicit
+opacity/mask recipe. Correction off bypasses Hue estimation, LUT/HSV correction and
+distribution calculations, and creates no Hue layer.
+
+**Blur Skin mask** is independent of Blur on/off. On uses skin-aware sampling and attaches
+the shared skin mask; off filters the whole image and sends an unmasked Blur layer for
+manual inpainting. Hue retains its own shared mask. Legacy presets keep Blur and correction
+enabled, Strength100 and Skin mask on; values persist without rewriting old presets on load.
+
+**Median Fast** uses the same rounded radius and square kernel as Median, but uniformly
+quantizes to 8-bit for OpenCV's faster histogram median. Large images use at most eight
+halo-correct row stripes; Detail is calculated from the original source and actual Color.
+It is deliberately not numerically identical to Median; quantization and outer borders
+can differ. Gaussian and original Median remain unchanged. On a synthetic 32.7 MP RGB16
+fixture at radius15, warm-mask full Send averaged28.864s for Median and8.741s for Fast;
+these are benchmark results, not a guarantee for live images.
+
+Advanced shared controls live only in **Skin Mask → Image analysis**:
+**Precache full skin mask** and its status (cross: no matching cached mask; spinning arrow:
+background calculation; check: matching retained mask), plus **FS + Skintone only** transfer
+options. Precache waits600ms after a settled preview, runs one worker, coalesces edits and
+rejects stale results. Send can fill the same cache; disabling background work does not
+remove an already-valid cache entry. One read-only final mask/structure entry is capped
+at256MiB and shared across FS, D&B and Skin Mask only when source, scale, model components
+and effective mask settings match. Source changes invalidate it; no disk cache is added.
+Forced overlap on a representative fixture increased preview time about20–24% and peak
+parent RAM1.53→2.83GiB, so background precaching remains optional.
+
+Transfer options are PNG/TIFF, compressed/uncompressed, optional opaque alpha and optional
+parallel encoding. Defaults remain PNG level1, opaque alpha and parallel encoding. PNG
+uncompressed means level0 stored Deflate blocks; TIFF supports none or lossless ZIP/Deflate
+and classic TIFF's4GiB file limit. Exact RGB16 values and destination ICC are retained;
+masks remain PNG8 and local output encoding is unchanged. Unsupported settings fail
+explicitly. Encoding is bounded and PhotoCraft operations stay serialized, with joined
+cleanup on failure. Full Send also overlaps mask preparation, separation and Blur work.
+
+Isolated real-engine imports cover all eight format/compression/alpha combinations and
+serial/parallel complete folders, including sample values, ICC, masks and composites.
+The user's live tests took11–13s for every combination, with roughly1GB PSDs after two sends
+for both PNG and TIFF. **TIFF is not a demonstrated real-world speedup**, and transfer codec
+does not imply a smaller PSD.
+
+Top-bar status is screen-centred independently of button/preset widths, with responsive
+full-width rows and a muted-blue indeterminate background during operations. Reduced-motion
+users get a static background; the accessible live region never intercepts clicks.
 
 | Resource | Default |
 |---|---|

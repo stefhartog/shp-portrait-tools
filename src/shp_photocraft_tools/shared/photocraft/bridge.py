@@ -88,15 +88,19 @@ class Client:
         return json.loads(line)
 
     def call(self, method, **params):
-        for attempt in (1, 2):
+        return self._call(method, params, 2)
+
+    def _call(self, method, params, attempts):
+        for attempt in range(1, attempts + 1):
             if self._sock is None:
                 self._connect()
             try:
                 reply = self._exchange({"id": next(self._id), "method": method, "params": params})
             except (OSError, ConnectionError, ValueError) as e:
                 self.close()
-                if attempt == 2:
-                    raise ControlError(f"lost the connection to PhotoCraft: {e}") from e
+                if attempt == attempts:
+                    note = "; command may have executed; it was not retried" if attempts == 1 else ""
+                    raise ControlError(f"lost the connection to PhotoCraft: {e}{note}") from e
                 continue
             if not reply.get("ok"):
                 raise ControlError(f"{method}: {reply.get('error')}")
@@ -104,6 +108,10 @@ class Client:
 
     def run(self, command, **params):
         return self.call("engine.execute", command=command, params=params)
+
+    def run_once(self, command, **params):
+        """Do not replay a possibly executed mutation after losing its reply."""
+        return self._call("engine.execute", {"command": command, "params": params}, 1)
 
 
 class Bridge:
