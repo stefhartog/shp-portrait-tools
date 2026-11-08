@@ -50,7 +50,7 @@ button.primary:not(:disabled):active, button.workflow:not(:disabled):active { ba
 button.primary:focus-visible, button.workflow:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 button:disabled { opacity:.5; cursor:default; }
 #presetBar button { padding:3.5px 8px; }
-#pcGet, #pcSend, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }
+#pcGet, #pcSend, #pcSendLayers, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }
 .row { display:flex; align-items:center; gap:8px; margin:4px 0; }
 .row > label { width:74px; flex:none; }
 .row .val { width:42px; flex:none; }

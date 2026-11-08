@@ -162,8 +162,15 @@ class GeometryTests(unittest.TestCase):
                 bad["kp"][[11,12]]=bad["kp"][[12,11]]
             else:
                 bad["kp"][6]=bad["kp"][5]
-            with self.subTest(problem=problem),self.assertRaisesRegex(ValueError,"torso"):
-                D.apply(image,skin,p,bad,181)
+            with self.subTest(problem=problem):
+                with self.assertRaisesRegex(D.GeometryUnavailable,"torso"):
+                    D.torso_geometry(p,bad,image.shape)
+                effective,missing=D.effective_settings(p,bad,image.shape)
+                self.assertFalse(effective["torso"])
+                self.assertIn("torso",missing)
+                raster,coverage=D.apply(image,skin,p,bad,181)
+                np.testing.assert_array_equal(raster,image)
+                self.assertFalse(coverage.any())
         for controls in (None,{"width":0},{"width":201},{"width":True},{"taper":91},{"distance":float("nan")}):
             with self.assertRaises((ValueError,TypeError)):
                 D.settings({"directional":{"torso_controls":controls}})
@@ -714,9 +721,8 @@ class IntegrationTests(unittest.TestCase):
             np.testing.assert_array_equal(self.mask, skin_before)
             with patch.dict(U.STATE, masks=None), self.assertRaisesRegex(ValueError, "no shared skin mask"):
                 U.skintone_layers(self.source, self.mask, p)
-        with patch.dict(U.STATE, pose=None), patch.object(U.FS, "split", side_effect=AssertionError("invalid pose must fail first")):
-            with self.assertRaisesRegex(ValueError, "no pose"):
-                U.skintone_layers(self.source, self.mask, p)
+        with patch.dict(U.STATE, pose=None), patch.object(D, "motion", side_effect=AssertionError("missing pose filtered")):
+            self.assertNotIn("directional",U.skintone_layers(self.source, self.mask, p))
 
 
 class LocalTests(unittest.TestCase):
@@ -867,12 +873,75 @@ class LocalTests(unittest.TestCase):
                                       U.FS.rgb16(expected))
         U.STATE["pose"] = None
         U.STATE["preview_cache"] = {}
-        with self.assertRaisesRegex(ValueError, "no pose"):
-            U.api_send_result(dict(req, generation=loaded["generation"]))
+        skipped=U.api_send_result(dict(req, generation=loaded["generation"]))
+        self.assertTrue(Path(skipped["path"]).is_file())
+        saved=self.post("/api/save",req)
+        self.assertNotIn("directional.png",saved["files"])
+        self.assertNotIn("Directional Blur (",json.loads((Path(saved["dir"])/"settings.json").read_text())["layer_recipe"])
         U.STATE["pose"] = pose(U.STATE["img"].shape)
         fresh = self.post("/api/load", {"path": str(self.image)})
         self.assertIsNone(U.STATE["pose"])
         self.assertNotEqual(fresh["generation"], loaded["generation"])
+
+    def test_preset_missing_geometry_effective_selection_preserves_settings_and_other_effects(self):
+        self.post("/api/load",{"path":str(self.image)})
+        shape=U.STATE["img"].shape
+        available=pose(shape)
+        U.STATE["masks"]={"A":np.ones(shape[:2],np.float32),
+                          "features":np.ones(shape[:2],np.float32),"colour":np.ones(shape[:2],np.float32)}
+        req={**T.T.PARAMS,"mode":"frequency","view":"whole","S":181,"precache_mask":False,
+             "skintone":{"on":False},"directional":{"on":True,"left":True,"right":True,
+             "left_upper_arm":True,"torso":True,"width":15,"distance":5,
+             "pairs":{"upper_arm":{"strength":20},"upper_leg":{"strength":70}},
+             "torso_controls":{"strength":40}}}
+        self.post("/api/presets/save",{"name":"Missing limbs","settings":req})
+        p=U.parse_params(req)
+        requested=json.loads(json.dumps(p["directional"]))
+        partial={"kp":available["kp"].copy()}
+        partial["kp"][7]=np.nan
+        partial["kp"][12]=np.nan
+        U.STATE["pose"]=partial
+        effective,missing=D.effective_settings(p["directional"],partial,shape)
+        self.assertTrue(effective["left"])
+        self.assertFalse(effective["right"])
+        self.assertFalse(effective["torso"])
+        self.assertFalse(effective["left_upper_arm"])
+        self.assertEqual(set(missing),{"right","left_upper_arm","torso"})
+        self.assertEqual(D.output_strength(effective),70)
+        mask=U.full_skin_mask(p)
+        layers=U.skintone_layers(U.STATE["source_img"],mask,p)
+        reference=U.skintone_layers(U.STATE["source_img"],mask,{**p,"directional":effective})
+        self.assertEqual(layers["directional_strength"],70)
+        for key in layers:
+            np.testing.assert_array_equal(layers[key],reference[key])
+        self.assertEqual(p["directional"],requested)
+        for current in (partial,None,available):
+            U.STATE["pose"]=current
+            for mode in ("frequency","combine","dnb","frequency"):
+                self.post("/api/run",{**req,"mode":mode})
+                if mode=="frequency":
+                    self.assertEqual("directional_region" in U.STATE["imgs"],current is not None)
+            self.assertTrue(self.post("/api/run",req)["cached"])
+            self.post("/api/save",req)
+            U.api_send_result(req)
+        U.STATE["pose"]=None
+        with patch.object(D,"motion",side_effect=AssertionError("missing geometry filtered")):
+            disabled=U.skintone_layers(U.STATE["source_img"],mask,p,native=True)
+        self.assertNotIn("directional",disabled)
+        self.assertEqual(p["directional"],requested)
+        self.assertEqual(json.loads(self.get("/api/presets")[0])["presets"]["Missing limbs"],req)
+        self.post("/api/load",{"path":str(self.image)})
+        self.post("/api/run",req)
+        self.assertNotIn("directional_region",U.STATE["imgs"])
+        U.STATE["pose"]=available
+        U.STATE["masks"]={"A":np.ones(shape[:2],np.float32),
+                          "features":np.ones(shape[:2],np.float32),"colour":np.ones(shape[:2],np.float32)}
+        self.post("/api/run",req)
+        self.assertIn("directional_region",U.STATE["imgs"])
+        with self.assertRaises(ValueError):
+            U.parse_params({**req,"directional":{"on":True,"width":0}})
+        with self.assertRaisesRegex(ValueError,"finite shared skin mask"):
+            D.apply(U.STATE["source_img"],np.full(shape[:2],np.nan),p["directional"],None,181)
 
 
 @unittest.skipUnless(shutil.which("photocraft-cli"), "photocraft-cli unavailable")

@@ -137,6 +137,7 @@ class StatusLayoutTests(unittest.TestCase):
                     """, args=[], sandbox=None)
                     self.assertEqual(reduced, {"animation":"none", "transform":"none"})
                     if module == "dnb":
+                        self.check_combine_controls(command, html, profile)
                         self.check_analysis_controls(command, html, profile)
                         self.check_preview_images(command, html, profile)
                         self.check_panel_availability(command, html, profile)
@@ -301,6 +302,15 @@ class StatusLayoutTests(unittest.TestCase):
           const missingHidden=$('directionalPair-forearm').hidden;
           const missingGrey=getComputedStyle($('directionalLeftForearm')).backgroundColor===getComputedStyle($('directionalRightForearm')).backgroundColor;
           const reason=$('directionalLeftForearm').title;
+          const partialStatus=$('directionalStatus').textContent.includes('Unavailable selected regions skipped');
+          const availability={...state.imageInfo.directional_pose};
+          for(const key of Object.keys(availability)) state.imageInfo.directional_pose[key]='Unavailable: no coordinates';
+          syncDirectionalControls();setBusy(true);setBusy(false);
+          const allMissing=controls.every(e=>e.disabled)&&$('directionalTorso').disabled&&
+            $('directionalStatus').textContent.includes('Directional Blur skipped')&&
+            Object.keys(directionalPairSliders).every(key=>$('directionalPair-'+key).hidden)&&
+            $('directionalTorsoControls').hidden&&state.directional.left_forearm&&state.directional.torso;
+          state.imageInfo.directional_pose=availability;
           state.imageInfo.directional_pose.left_forearm='Available';
           syncDirectionalControls();
           setBusy(true);
@@ -324,11 +334,11 @@ class StatusLayoutTests(unittest.TestCase):
           window.directionalTest={controls};
           return {initiallyOff,defaults,enabled,selected,busy,restored,dimmed,missing,missingGrey,torsoEnabled,torsoMissing,
             hiddenAvailability:!document.querySelector('#directionalSegments .hint'),reason,parity,
-            hiddenOff,hiddenUnselected,torsoVisible,missingHidden,busyVisible,groupSettings};
+            hiddenOff,hiddenUnselected,torsoVisible,missingHidden,busyVisible,groupSettings,partialStatus,allMissing};
         """,args=[],sandbox=None)
         self.assertTrue(all(result[k] for k in ("initiallyOff","enabled","selected","busy","restored","dimmed","missing","missingGrey","torsoEnabled","torsoMissing","hiddenAvailability")),result)
         self.assertEqual(result["defaults"],[True,True,False,False,False,False,False,False])
-        self.assertTrue(all(result[k] for k in ("hiddenOff","hiddenUnselected","torsoVisible","missingHidden","busyVisible","groupSettings")),result)
+        self.assertTrue(all(result[k] for k in ("hiddenOff","hiddenUnselected","torsoVisible","missingHidden","busyVisible","groupSettings","partialStatus","allMissing")),result)
         self.assertIn("Unavailable: no wrist coordinates",result["reason"])
         for snapshot in result["parity"]:
             with self.subTest(state=snapshot["name"],theme=snapshot["theme"]):
@@ -457,18 +467,22 @@ class StatusLayoutTests(unittest.TestCase):
         source=re.search(r"function paneKinds\(\) \{.*?\n\}",html,re.S).group(0)
         command("WebDriver:Navigate",url=page.as_uri())
         result=command("WebDriver:ExecuteScript",script="""
-          const paneKinds=new Function('tabSel',arguments[0]+';return paneKinds;');
+          const paneKinds=new Function('tabSel','state',arguments[0]+';return paneKinds;');
           localStorage.setItem('dnb-layerX','1');
-          const stretchedPreference=paneKinds({A:'orig',B:'layer'})();
+          const stretchedPreference=paneKinds({A:'orig',B:'layer'},{mode:'dnb'})();
           localStorage.setItem('dnb-layerX','0');
-          const normalPreference=paneKinds({A:'orig',B:'layerm'})();
+          const normalPreference=paneKinds({A:'orig',B:'layerm'},{mode:'dnb'})();
+          const band2=paneKinds({A:'result',B:'layer2m'},{mode:'dnb'})();
+          const combined=paneKinds({A:'result',B:'dnb_result'},{mode:'combine'})();
           return {control:!!document.getElementById('layerX'),
-            options:!!document.getElementById('optsLayer'),stretchedPreference,normalPreference};
+            options:!!document.getElementById('optsLayer'),stretchedPreference,normalPreference,band2,combined};
         """,args=[source],sandbox=None)
         self.assertFalse(result["control"])
         self.assertFalse(result["options"])
-        self.assertEqual(result["stretchedPreference"],["orig","layer"])
-        self.assertEqual(result["normalPreference"],["orig","layerm"])
+        self.assertEqual(result["stretchedPreference"],["orig","layerx"])
+        self.assertEqual(result["normalPreference"],["orig","layermx"])
+        self.assertEqual(result["band2"],["result","layer2mx"])
+        self.assertEqual(result["combined"],["result","dnb_result"])
 
     def check_preview_tabs(self, command, root, profile):
         for module in ("dnb", "crop"):
@@ -692,6 +706,91 @@ class StatusLayoutTests(unittest.TestCase):
         """,args=[],sandbox=None)
         self.assertEqual(result,{"queued":True,"flushed":True,"held":True,"release":True,"restored":True})
 
+    def check_combine_controls(self, command, html, profile):
+        markup=re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>","",html,flags=re.S)
+        page=profile/"combine-controls.html"
+        page.write_text(markup.replace("</head>","<style>"+stylesheet().decode()+"</style></head>"))
+        command("WebDriver:Navigate",url=page.as_uri())
+        mode="function rightPreviewKinds(mode) {"+html.split("function rightPreviewKinds(mode) {",1)[1].split("function syncMode()",1)[0]
+        mode+="function syncMode() {"+html.split("function syncMode() {",1)[1].split("[['A', $('tabsA')]",1)[0]
+        command("WebDriver:ExecuteScript",script="""
+          const $=id=>document.getElementById(id);
+          const state={mode:'combine',sourceKind:'photocraft',loaded:true,busy:false,frequency:{method:'gaussian'}};
+          const tabSel={A:'result',B:'color'};
+          const uiMode=m=>m,syncFrequencyControls=()=>{},syncDirectionalControls=()=>{},syncTransfer=()=>{},
+            renderAnalysisSummary=()=>{},drawSkintone=()=>{};
+        """+mode+"""
+          window.combineMode=(mode,source,busy=false)=>{
+            state.mode=mode;state.sourceKind=source;state.busy=busy;syncMode();
+          };
+        """,args=[],sandbox=None)
+        for mode_name in ("combine","frequency","dnb","mask"):
+            for source in ("photocraft","local"):
+                command("WebDriver:ExecuteScript",script="combineMode(arguments[0],arguments[1]);",
+                        args=[mode_name,source],sandbox=None)
+                result=command("WebDriver:ExecuteScript",script="""
+                  const visible=id=>!document.getElementById(id).hidden;
+                  return {layers:visible('pcSendLayers'),combine:visible('g-combine'),
+                    fs:visible('g-frequency'),dnb:visible('g-bands'),source:visible('g-file'),
+                    processing:['g-blur','g-directional','g-skintone','g-band2','g-dnb-shared',
+                      'g-mask','g-structure','g-range','g-color'].filter(visible),
+                    tabs:[...document.querySelectorAll('#tabsB .tab')].filter(t=>!t.hidden).map(t=>t.dataset.k),
+                    result:document.querySelector('#tabsA [data-k=result]').textContent,
+                    directionalStatus:visible('directionalStatus'),
+                    headings:['g-bands','g-band2','g-dnb-shared'].map(id=>
+                      document.querySelector('#'+id+' > summary').textContent.trim()),
+                    bandLabels:['layer','layerm','layer2','layer2m'].map(key=>
+                      document.querySelector('#tabsB [data-k="'+key+'"]').textContent.trim())};
+                """,args=[],sandbox=None)
+                self.assertEqual(result["layers"],source=="photocraft" and mode_name!="mask")
+                self.assertEqual(result["combine"],mode_name=="combine")
+                self.assertEqual(result["fs"],mode_name=="frequency")
+                self.assertEqual(result["dnb"],mode_name=="dnb")
+                self.assertEqual(result["source"],mode_name=="mask")
+                self.assertFalse(result["directionalStatus"])
+                self.assertEqual(result["headings"],["Band 1","Band 2","shared controls"])
+                self.assertEqual(result["bandLabels"],["Band 1","Band 1 + mask","Band 2","Band 2 + mask"])
+                if mode_name=="combine":
+                    self.assertEqual(result["result"],"Combined")
+                    self.assertFalse(result["source"])
+                    self.assertEqual(result["processing"],[])
+                    self.assertEqual(result["tabs"],["fs_result","dnb_result","mask"])
+        command("WebDriver:ExecuteScript",script="""
+          combineMode('combine','photocraft');
+          document.getElementById('pcGet').disabled=false;
+          document.getElementById('pcSend').disabled=false;
+          document.getElementById('presetSel').innerHTML='<option>Default</option>';
+          window.clickedControls=[];
+          for(const id of ['pcGet','pcSend','pcSendLayers','presetSave','presetNew','presetRemove']){
+            document.getElementById(id).disabled=false;
+            document.getElementById(id).onclick=()=>clickedControls.push(id);
+          }
+        """,args=[],sandbox=None)
+        for theme in ("photocraft","dark"):
+            for width in (1800,1400,980,640,480,360):
+                command("WebDriver:SetWindowRect",width=width,height=800)
+                result=command("WebDriver:ExecuteScript",script="""
+                  document.documentElement.dataset.theme=arguments[0];
+                  const ids=['pcGet','pcSend','pcSendLayers','presetSel','presetSave','presetNew','presetRemove'];
+                  const rects=ids.map(id=>document.getElementById(id).getBoundingClientRect());
+                  return {widths:rects.slice(0,3).map(r=>r.width),
+                    bounds:rects.every(r=>r.left>=0&&r.right<=innerWidth),
+                    overlap:rects.some((a,i)=>rects.slice(i+1).some(b=>
+                      a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top)),
+                    overflow:document.documentElement.scrollWidth>innerWidth};
+                """,args=[theme],sandbox=None)
+                with self.subTest(theme=theme,width=width):
+                    self.assertTrue(result["bounds"])
+                    self.assertFalse(result["overlap"])
+                    self.assertFalse(result["overflow"])
+                    self.assertAlmostEqual(result["widths"][0],result["widths"][2],delta=1)
+        for selector in ("#pcGet","#pcSend","#pcSendLayers","#presetSave","#presetNew","#presetRemove"):
+            element=command("WebDriver:FindElement",using="css selector",value=selector)
+            element_id=element["element-6066-11e4-a52e-4f735466cecf"]
+            command("WebDriver:ElementClick",id=element_id)
+        self.assertEqual(command("WebDriver:ExecuteScript",script="return clickedControls;",args=[],sandbox=None),
+                         ["pcGet","pcSend","pcSendLayers","presetSave","presetNew","presetRemove"])
+
     def check_slider_release(self, command, html, profile):
         page=profile/"slider-release.html"
         page.write_text('<aside><input id="ordinary" type="range" value="30"><div class="directional-range"><input id="dual" type="range" value="30"></div></aside><button id="apply"></button><select id="presetSel"></select>')
@@ -706,7 +805,18 @@ class StatusLayoutTests(unittest.TestCase):
           document.querySelectorAll('input').forEach(e=>e.oninput=markDirty);
           window.releaseTest={requests:()=>requests,reset:()=>{requests=0;},dirty:()=>state.dirty};
         """,args=[],sandbox=None)
-        for selector in ("#ordinary","#dual"):
+        slider="function slider("+html.split("function slider(",1)[1].split("let sliderDrag",1)[0]
+        mixes="const combineSliders="+html.split("const combineSliders=",1)[1].split("const directionalSegments",1)[0]
+        command("WebDriver:ExecuteScript",script="""
+          const $=id=>document.getElementById(id),state={combine:{fs_mix:100,dnb_mix:100}};
+          const markDirty=()=>releaseTest.markMix();
+          const parent=document.createElement('div');parent.id='combineSliders';document.querySelector('aside').append(parent);
+          releaseTest.markMix=()=>document.getElementById('ordinary').dispatchEvent(new Event('input'));
+        """+slider+mixes+"""
+          Object.entries(combineSliders).forEach(([key,s])=>s.rng.id='mix-'+key);
+          releaseTest.mixValues=()=>({...state.combine});
+        """,args=[],sandbox=None)
+        for selector in ("#ordinary","#dual","#mix-fs_mix","#mix-dnb_mix"):
             element=command("WebDriver:FindElement",using="css selector",value=selector)
             command("WebDriver:ExecuteScript",script="releaseTest.reset();",args=[],sandbox=None)
             command("WebDriver:PerformActions",actions=[{"type":"pointer","id":"held-slider",
@@ -715,6 +825,10 @@ class StatusLayoutTests(unittest.TestCase):
                     {"type":"pointerDown","button":0},
                     {"type":"pointerMove","origin":element,"x":20,"y":0,"duration":100},
                     {"type":"pause","duration":700}]}])
+            if selector.startswith("#mix-"):
+                values=command("WebDriver:ExecuteScript",script="return releaseTest.mixValues();",args=[],sandbox=None)
+                key=selector.removeprefix("#mix-")
+                self.assertLess(values[key],100)
             self.assertEqual(command("WebDriver:ExecuteScript",script="return releaseTest.requests();",args=[],sandbox=None),0)
             command("WebDriver:PerformActions",actions=[{"type":"pointer","id":"held-slider","parameters":{"pointerType":"mouse"},
                 "actions":[{"type":"pointerUp","button":0},{"type":"pause","duration":100}]}])

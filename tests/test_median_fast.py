@@ -90,7 +90,7 @@ class MedianFastApiTests(unittest.TestCase):
         self.assertTrue(local["saved"])
         self.post("/api/pc/fetch",{})
         self.assertFalse(hasattr(U,"api_native_fs_test"))
-        self.post("/api/pc/send",p)
+        self.post("/api/pc/send_layers",p)
         layers,mask,transfer = received[0]
         expected = F.rgb16(F.split(U.STATE["source_img"],"median_fast",15)["color"])
         np.testing.assert_array_equal(layers["color"],expected)

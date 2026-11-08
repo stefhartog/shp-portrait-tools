@@ -140,7 +140,7 @@ class SkinApiTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send(inner, layer, mask, doc, *, source_icc=None):
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
                 received.append(("dnb", source_icc))
                 return {"layer": 1}
 
@@ -158,7 +158,7 @@ class SkinApiTests(unittest.TestCase):
         S.BRIDGE["b"] = FakeBridge()
         self.post("/api/pc/fetch", {})
         for mode in ("dnb", "mask", "frequency"):
-            self.post("/api/pc/send", dict(PARAMS, mode=mode))
+            self.post("/api/pc/send_layers", dict(PARAMS, mode=mode))
         self.assertEqual(received, [(mode, icc) for mode in ("dnb", "mask", "frequency")])
 
     def test_mode_previews_saves_and_send_shapes(self):
@@ -190,7 +190,7 @@ class SkinApiTests(unittest.TestCase):
                 data, _ = self.get("/img/" + key)
                 with Image.open(io.BytesIO(data)) as img:
                     self.assertEqual(img.size, (128, 96))
-            self.assertTrue(self.post("/api/pc/send", p)["sent"])
+            self.assertTrue(self.post("/api/pc/send_layers", p)["sent"])
             if mode == "frequency":
                 layers = {key: a.astype(np.float32) / 65535 for key, a in sent[-1][1].items()}
                 expected = S.encode(S.u8(F.composite(layers, sent[-1][2].astype(np.float32) / 255)), ".png")

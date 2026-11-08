@@ -5,6 +5,13 @@ D&B models or Crop/ComfyUI models. The desktop installer only validates/referenc
 files; it does not fetch them. rtmlib is the exception: it downloads pose weights lazily on
 first D&B analysis. Starting an HTTP UI or running synthetic tests does not download weights.
 
+Skin Mask, FS + Skintone, D&B and Combine share this same source analysis and model set.
+Directional Blur reuses the selected subject's existing pose coordinates; its per-region
+controls and missing-geometry bypass introduce no additional inference or model weights.
+Combine reuses existing FS/D&B engines. No Blemish/ClearFrame research model is a release
+dependency. Use the root [README](README.md) and [handoff](HANDOFF.md) for current behavior,
+not the frozen `docs/source/` installation notes.
+
 ## D&B: three manually supplied ONNX files
 
 Create `~/.local/share/shp-photocraft-tools/dnb/models/` and download the following files there.

@@ -66,7 +66,7 @@ class SkintoneTransferTests(unittest.TestCase):
                     self.bridge.send_skintone(layers, p, mask, doc, icc)
                 outputs.append(self.save_pixels("result.png"))
                 if not legacy:
-                    self.assertEqual(groups, ["SHP FS + Skintone"])
+                    self.assertEqual(groups, ["SkinTools"])
                     self.assertEqual(sum("mask" in rel for rel in opened), int(mask.any()))
                     self.assertEqual(len(masks), 2 if mask.any() else 0)
                     group = self.client.run("document.inspect")["layers"][0]
@@ -144,7 +144,7 @@ class SkintoneTransferTests(unittest.TestCase):
         path = self.bridge.exchange / "tone.pcraft"
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("manifest.json"))
-            stored_group = next(a for a in manifest["document"]["layers"] if a["name"] == "SHP FS + Skintone")
+            stored_group = next(a for a in manifest["document"]["layers"] if a["name"] == "SkinTools")
             hue = next(a for a in stored_group["content"]["children"] if a["name"] == "Hue")
             lut = hue["content"]["adjustment"]["ColorLookup"]
             self.assertEqual(len(lut["lut"]), 33**3*3)

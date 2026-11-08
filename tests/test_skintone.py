@@ -172,7 +172,7 @@ class SkintoneApiTests(unittest.TestCase):
             preview = np.clip(ST.base(preview_layers, preview_mask) + 2*preview_layers["detail"] - 1, 0, 1)
             np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(self.get("/img/result")[0], np.uint8), 1),
                                           S.u8(preview))
-            self.assertTrue(self.post("/api/pc/send", p)["mask_precache"]["cached"])
+            self.assertTrue(self.post("/api/pc/send_layers", p)["mask_precache"]["cached"])
             saved = self.post("/api/save", p)
             estimate = self.post("/api/hue-center", dict(p, generation=loaded["generation"]))
         self.assertIsNone(estimate["center"])
@@ -252,7 +252,7 @@ class SkintoneApiTests(unittest.TestCase):
             run = self.post("/api/run", p)
         self.assertGreater(run["stats"]["skintone"]["sampled_weight"], 0)
         mask_bytes = self.get("/img/mask")[0]
-        self.post("/api/pc/send", p)
+        self.post("/api/pc/send_layers", p)
         self.assertEqual(sent[0][0]["hue_center"], 25)
         self.assertEqual(sent[0][1].dtype, np.uint8)
         mask = sent[0][1] / 255
@@ -288,7 +288,7 @@ class SkintoneApiTests(unittest.TestCase):
         self.assertEqual(json.loads(self.get("/api/presets")[0])["presets"]["Tone"],p)
         self.post("/api/load", {"path": str(self.image)})
         with self.assertRaises(HTTPError):
-            self.post("/api/pc/send", p)
+            self.post("/api/pc/send_layers", p)
 
     def test_empty_analysis_invalid_settings_and_transparency_are_explicit(self):
         self.post("/api/load", {"path": str(self.image)})

@@ -101,27 +101,49 @@ def settings(req):
     return p
 
 
+class GeometryUnavailable(ValueError):
+    """A requested region has no usable geometry in this image."""
+
+
+def effective_settings(p, pose, shape):
+    effective = {**p}
+    unavailable = {}
+    if not p["on"]:
+        return effective, unavailable
+    for key in (*SEGMENTS, "torso"):
+        if not p.get(key, DEFAULTS.get(key, False)):
+            continue
+        selected = {**p, **{region: region == key for region in (*SEGMENTS, "torso")}}
+        try:
+            segments(selected, pose, shape)
+        except GeometryUnavailable as error:
+            effective[key] = False
+            unavailable[key] = str(error)
+    effective["on"] = any(effective.get(key, False) for key in (*SEGMENTS, "torso"))
+    return effective, unavailable
+
+
 def torso_geometry(p, pose, shape, *, origin=(0, 0), scale=1):
     if pose is None or pose.get("kp") is None:
-        raise ValueError("Directional Blur unavailable: no torso pose. Get Image again.")
+        raise GeometryUnavailable("Directional Blur unavailable: no torso pose. Get Image again.")
     kp = np.asarray(pose["kp"])
     if kp.ndim != 2 or kp.shape[1] != 2 or len(kp) <= 12:
-        raise ValueError("Directional Blur unavailable: invalid torso pose")
+        raise GeometryUnavailable("Directional Blur unavailable: invalid torso pose")
     quad = kp[[5, 6, 12, 11]].astype(np.float64)
     h, w = shape[:2]
     if not np.isfinite(quad).all() or np.any(quad < 0) or np.any(quad[:, 0] >= w) or np.any(quad[:, 1] >= h):
-        raise ValueError("Directional Blur unavailable: torso coordinates non-finite or outside the image")
+        raise GeometryUnavailable("Directional Blur unavailable: torso coordinates non-finite or outside the image")
     edges = np.roll(quad, -1, axis=0) - quad
     following = np.roll(edges, -1, axis=0)
     cross = edges[:, 0] * following[:, 1] - edges[:, 1] * following[:, 0]
     if (not (np.all(cross > 0) or np.all(cross < 0))
             or np.min(np.linalg.norm(edges, axis=1)) < 1):
-        raise ValueError("Directional Blur unavailable: torso region is degenerate or crossed")
+        raise GeometryUnavailable("Directional Blur unavailable: torso region is degenerate or crossed")
     shoulder = (quad[0] + quad[1]) / 2
     hip = (quad[2] + quad[3]) / 2
     axis = hip - shoulder
     if np.linalg.norm(axis) < 1:
-        raise ValueError("Directional Blur unavailable: torso axis is degenerate")
+        raise GeometryUnavailable("Directional Blur unavailable: torso axis is degenerate")
     controls = p.get("torso_controls", {"width": 100, "taper": 0})
     start = controls.get("start", p.get("start", 0)) / 100
     end = controls.get("end", p.get("end", 100)) / 100
@@ -147,7 +169,7 @@ def segments(p, pose, shape, *, origin=(0, 0), scale=1):
     if not p["on"]:
         return []
     if pose is None or pose.get("kp") is None:
-        raise ValueError("Directional Blur unavailable: no pose for the selected subject. Get Image again.")
+        raise GeometryUnavailable("Directional Blur unavailable: no pose for the selected subject. Get Image again.")
     kp = np.asarray(pose["kp"])
     h, w = shape[:2]
     result = []
@@ -155,14 +177,14 @@ def segments(p, pose, shape, *, origin=(0, 0), scale=1):
         if not p.get(key, DEFAULTS[key]):
             continue
         if kp.ndim != 2 or kp.shape[1] != 2 or len(kp) <= max(ia, ib):
-            raise ValueError(f"Directional Blur unavailable: invalid {label.lower()} pose")
+            raise GeometryUnavailable(f"Directional Blur unavailable: invalid {label.lower()} pose")
         points = kp[[ia, ib]].astype(np.float64)
         if not np.isfinite(points).all():
-            raise ValueError(f"Directional Blur unavailable: {label.lower()} non-finite joint coordinates")
+            raise GeometryUnavailable(f"Directional Blur unavailable: {label.lower()} non-finite joint coordinates")
         if np.any(points < 0) or np.any(points[:, 0] >= w) or np.any(points[:, 1] >= h):
-            raise ValueError(f"Directional Blur unavailable: {label.lower()} joints outside the image")
+            raise GeometryUnavailable(f"Directional Blur unavailable: {label.lower()} joints outside the image")
         if np.linalg.norm(points[1] - points[0]) < 1:
-            raise ValueError(f"Directional Blur unavailable: {label.lower()} segment is degenerate")
+            raise GeometryUnavailable(f"Directional Blur unavailable: {label.lower()} segment is degenerate")
         config = pair_settings(p, next(pair for pair, keys in PAIRS.items() if key in keys))
         start, end = config.get("start", 0), config.get("end", config.get("length", 100))
         if start != 0 or end != 100:
@@ -266,6 +288,9 @@ def apply(img, skin, p, pose, S, *, source_shape=None, origin=(0, 0), scale=1):
         return None
     if skin.shape != img.shape[:2] or not np.isfinite(skin).all():
         raise ValueError("Directional Blur requires a matching finite shared skin mask")
+    p, _ = effective_settings(p, pose, source_shape or img.shape)
+    if not p["on"]:
+        return img.copy(), np.zeros(img.shape[:2], np.float32)
     lines = segments(p, pose, source_shape or img.shape, origin=origin, scale=scale)
     configurations = {SEGMENTS[key][0]: pair_settings(p, pair)
                       for pair, keys in PAIRS.items() for key in keys}

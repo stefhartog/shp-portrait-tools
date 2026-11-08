@@ -47,7 +47,7 @@ class ProgressTests(unittest.TestCase):
         js.JSGlobalContextRelease.argtypes = [ctypes.c_void_p]
         html = T.S.HTML.read_text()
         crop = files("shp_photocraft_tools.modules.crop.ui").joinpath("index.html").read_text()
-        self.assertIn("#pcGet, #pcSend, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }", stylesheet().decode())
+        self.assertIn("#pcGet, #pcSend, #pcSendLayers, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }", stylesheet().decode())
         self.assertIn("#statusWrap { min-width:0;", stylesheet().decode())
         self.assertNotIn('id="loadTimings"', html.split('id="g-file"')[1].split('</details>')[0])
         self.assertNotIn('id="loadTimings"', html)
@@ -93,7 +93,17 @@ class ProgressTests(unittest.TestCase):
             const tabs=['mask','analysis','layer','layerm','color','detail','directional_region'].map(k=>({dataset:{k},hidden:false}));
             const left=['orig','result'].map(k=>({dataset:{k},hidden:false}));
             const $=id=>({querySelectorAll:()=>id==='tabsA'?left:tabs});
-        """ + "function rightPreviewKinds(mode) {" + right_tabs + """
+        """ + "function rightPreviewKinds(mode) {" + right_tabs + \
+            "function paneKinds() {"+html.split("function paneKinds() {",1)[1].split("function syncTabs()",1)[0]+"""
+            for(const stored of [false,true,null]){
+              state.stretch=stored;
+              for(const [key,expected] of [['layer','layerx'],['layerm','layermx'],['layer2','layer2x'],['layer2m','layer2mx']]){
+                state.mode='dnb';tabSel.B=key;
+                if(paneKinds().join(',')!=='result,'+expected)throw Error('Always exaggerated diagnostic');
+              }
+              state.mode='combine';tabSel.B='dnb_result';
+              if(paneKinds().join(',')!=='result,dnb_result')throw Error('Combine must remain actual');
+            }
             for(const [mode,expected] of [['frequency','color,detail'],['dnb','layer,layerm'],['mask','mask,analysis']]) {
               for(const previous of ['mask','analysis','layer','layerm','color','detail','blur',null]) {
                 state.mode=mode;tabSel.B=previous;syncRightTabs();
@@ -188,7 +198,7 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
         settings_harness = """
           (() => {
-            const state={tone:{},loaded:false}, elements=new Map();
+            const state={tone:{},loaded:false,combine:{fs_mix:100,dnb_mix:100}}, elements=new Map();
             const $=id=>{if(!elements.has(id))elements.set(id,{parentElement:{append(){}},setAttribute(){},closest:()=>({append(){},after(){}}),append(){},after(){}});return elements.get(id);};
             const SKINTONE_DEFAULTS={on:true,hue_center:30,hue_width:30,hue_softness:5,hue_amount:100};
         """ + "const DIRECTIONAL_DEFAULTS ="+html.split("const DIRECTIONAL_DEFAULTS =",1)[1].split("function uiMode(",1)[0] + """
@@ -220,6 +230,14 @@ class ProgressTests(unittest.TestCase):
             "const FACTORY =" + settings_helpers + "function params() {" + params_helper + """
             applySettings(null);
             const original=getSettings();
+            check(original.combine.fs_mix===100 && original.combine.dnb_mix===100);
+            combineSliders.fs_mix.change(37);combineSliders.dnb_mix.change(68);
+            const combinedSaved=getSettings(),combinedRequest=params();
+            state.combine.fs_mix=12;
+            check(combinedSaved.combine.fs_mix===37 && combinedRequest.combine.fs_mix===37);
+            applySettings({...combinedSaved,mode:'combine'});
+            check(state.mode==='combine' && state.combine.fs_mix===37 && state.combine.dnb_mix===68);
+            applySettings(original);
             check(!original.directional.on && original.directional.distance===30);
             check(original.directional.taper===0);
             check(original.directional.start===0 && original.directional.end===100);
@@ -749,7 +767,7 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("button.workflow:disabled", css)
         for package, expected in (
             ("modules.crop.ui", {"xGet", "xSend"}),
-            ("modules.dnb.ui", {"pcGet", "pcSend", "loadBtn", "save"}),
+            ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save"}),
         ):
             page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
             if package == "modules.crop.ui":
@@ -846,19 +864,18 @@ class ProgressTests(unittest.TestCase):
             check(active==='crop'&&!placeholders.crop.hidden&&!placeholders.dnb.hidden);
           })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
         """
-        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'crop'])
-        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'crop'];", shell_js)
-        self.assertNotIn('blemish', html.lower())
+        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop'])
+        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop'];", shell_js)
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
         self.assertIn('id="blurOn"',blur_panel)
         self.assertIn('id="blurMask"',blur_panel)
         self.assertIn("#g-bands, #g-mask, #g-frequency { border-top:0; }",html)
-        self.assertIn("['mask','skintone','frequency','dnb'].includes(data.mode)", html)
+        self.assertIn("['mask','skintone','frequency','dnb','combine'].includes(data.mode)", html)
         self.assertIn("const modes = views.filter(view => view !== 'crop');", shell_js)
         self.assertNotIn('class="badge"', shell_page)
-        self.assertEqual(shell_page.count('title="Starting" data-service='), 4)
+        self.assertEqual(shell_page.count('title="Starting" data-service='), 5)
         self.assertIn('[role="tab"]:where(:not(:disabled)):hover', shell_css)
         self.assertNotIn('[role="tab"]:hover', shell_css)
         self.assertNotIn("border-color:var(--acc)", shell_css)

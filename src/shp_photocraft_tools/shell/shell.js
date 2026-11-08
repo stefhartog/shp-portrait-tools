@@ -15,7 +15,7 @@
     tab.setAttribute('aria-busy', String(busy));
   }
   const names = {crop: 'Crop', dnb: 'D&B'};
-  const views = ['mask', 'frequency', 'dnb', 'crop'];
+  const views = ['mask', 'frequency', 'dnb', 'combine', 'crop'];
   const modes = views.filter(view => view !== 'crop');
   const $ = id => document.getElementById(id);
   const frames = new Map();
@@ -97,7 +97,7 @@
       placeholder.textContent = state.phase === 'stopped'
         ? `${names[name]} is unloaded. Use Start in the Tools tray menu to load it again. Other modules remain available.`
           + (state.startup_enabled === false ? ' Load on startup is disabled; manual Start does not change it.' : '')
-          + (name === 'dnb' ? ' Skin Mask, FS + Skintone and D&B share this service.' : '')
+          + (name === 'dnb' ? ' Skin Mask, FS + Skintone, D&B and Combine share this service.' : '')
         : `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
       const frame = frames.get(name);
       if (frame) frame.hidden = state.phase !== 'running';

@@ -69,7 +69,10 @@ class DnbTests(unittest.TestCase):
             return response.read(), response.headers
 
     def post(self, route, body):
-        request = Request(self.base + route, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        headers={"Content-Type":"application/json"}
+        if route=="/api/pc/send_layers":
+            headers["Origin"]=self.base
+        request = Request(self.base + route, json.dumps(body).encode(), headers)
         with urlopen(request, timeout=10) as response:
             return json.load(response)
 
@@ -166,14 +169,19 @@ class DnbTests(unittest.TestCase):
 
     def test_fetch_and_send_routes_use_separate_dnb_semantics(self):
         sent = []
+        flattened=[]
 
         class FakeBridge:
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": "synthetic.png"}
 
-            def send(inner, layer, mask, doc, *, source_icc=None):
-                sent.append((layer, mask, doc))
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
+                sent.append((layers[0][1], mask, doc))
                 return {"layer": 9, "document": doc["name"]}
+
+            def send_result(inner,pixels,doc,*,source_icc):
+                flattened.append((pixels,source_icc))
+                return {"layer":10,"document":doc["name"]}
 
             def status(inner):
                 return {"connected": True, "doc": {"index": 1}, "headless": True}
@@ -182,6 +190,10 @@ class DnbTests(unittest.TestCase):
         self.assertTrue(self.post("/api/pc/status", {})["connected"])
         self.assertIn("pc_doc", self.post("/api/pc/fetch", {}))
         self.assertTrue(self.post("/api/pc/send", PARAMS)["sent"])
+        result,icc=S.skin_result(S.parse_params(PARAMS))
+        np.testing.assert_array_equal(flattened[0][0],S.FS.rgb16(result))
+        self.assertEqual(flattened[0][1],icc)
+        self.assertTrue(self.post("/api/pc/send_layers", PARAMS)["sent"])
         self.assertEqual(sent[0][0].dtype, np.uint16)
         self.assertEqual(sent[0][1].dtype, np.uint8)
         self.assertEqual(sent[0][0].shape, (96, 128, 3))
@@ -194,19 +206,19 @@ class DnbTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send(inner, layer, mask, doc, *, source_icc=None):
-                sent.append((layer.copy(), mask.copy()))
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
+                sent.append((layers[0][1].copy(), mask.copy()))
                 return {"layer": 9, "document": doc["name"]}
 
         S.BRIDGE["b"] = FakeBridge()
         self.post("/api/pc/fetch", {})
         self.post("/api/run", PARAMS)
         legacy = {key: self.get("/img/" + key)[0] for key in ("layer", "layerm", "result", "mask")}
-        self.post("/api/pc/send", PARAMS)
+        self.post("/api/pc/send_layers", PARAMS)
         self.post("/api/run", dict(PARAMS, layer_blur_at_s181=0))
         for key, data in legacy.items():
             self.assertEqual(self.get("/img/" + key)[0], data)
-        self.post("/api/pc/send", dict(PARAMS, layer_blur_at_s181=0))
+        self.post("/api/pc/send_layers", dict(PARAMS, layer_blur_at_s181=0))
         for old, new in zip(sent[0], sent[1]):
             np.testing.assert_array_equal(old, new)
         p = dict(PARAMS, S=196.08333334, layer_blur_at_s181=2.3)
@@ -224,7 +236,7 @@ class DnbTests(unittest.TestCase):
         np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(self.get("/img/layerm")[0], np.uint8), 0), S.u8(expected_masked))
         expected_result = source + (np.clip(D.softlight(source, expected[..., None]), 0, 1) - source) * mask[..., None]
         self.assertEqual(self.get("/img/result")[0], S.encode(S.u8(expected_result), ".jpg", 92, S.STATE["icc"]))
-        self.post("/api/pc/send", p)
+        self.post("/api/pc/send_layers", p)
         np.testing.assert_array_equal(sent[-1][0][..., 0], np.round(expected * 65535).astype(np.uint16))
         np.testing.assert_array_equal(sent[-1][1], S.u8(mask))
         saved = self.post("/api/save", p)

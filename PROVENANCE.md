@@ -23,3 +23,16 @@ were selected. Git history, environments, personal photos, presets/settings, cre
 runtime caches/results/logs, model binaries and locally unpacked tools were not copied.
 No source root had a tracked project LICENSE file to transfer; no new license grant is
 asserted here. Model/dependency licensing and model-source notices remain in MODELS.md.
+
+## Subsequent Tools development
+
+The consolidated service now exposes Skin Mask, FS + Skintone, D&B and Combine beside
+the independent Crop module. Shared masks/settings/transport are local package resources;
+Combine calls the existing FS and D&B engines rather than importing an external project.
+The original repositories and frozen notes describe migration inputs, not current UI,
+output topology, activation or deployment. Root README/HANDOFF are the current references.
+
+Release checkpoints intentionally exclude unrelated local Blemish/ClearFrame experiments,
+datasets, generated artifacts and credentials. Those experiments are not shipped runtime
+dependencies or implemented release features. Updating documentation or publishing Git
+does not update installed launchers or restart live PhotoCraft/Tools/ComfyUI processes.

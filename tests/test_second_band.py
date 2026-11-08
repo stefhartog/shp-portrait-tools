@@ -64,6 +64,10 @@ class LocalTests(unittest.TestCase):
         p=U.parse_params(req)
         layers,result,total=U.dnb_full_result(p,layered=True)
         self.assertEqual([i for i,_ in layers],[2])
+        for key,pixels in (("layer2",layers[0][1]),("layer2m",.5+(layers[0][1]-.5)*total)):
+            actual=cv2.imdecode(np.frombuffer(self.get("/img/"+key+"x")[0],np.uint8),0)
+            np.testing.assert_array_equal(actual,U.u8(.5+(pixels-.5)*8))
+            np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(self.get("/img/"+key)[0],np.uint8),0),U.u8(pixels))
         saved=self.post("/api/save",req)
         folder=Path(saved["dir"])
         layerfile=next(folder.glob("*_4_softlight_band2.png"))

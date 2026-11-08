@@ -107,10 +107,13 @@
 </head>
 <body>
 <div id="app">
-<div id="bar"><div id="barActions"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Add the correction with its mask to that document in PhotoCraft." disabled>Send Result</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<div id="bar"><div id="barActions"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Send the corrected photograph to PhotoCraft." disabled>Send Result</button><button class="workflow" id="pcSendLayers" disabled hidden>Send Layers</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
+  <details class="grp" id="g-combine" open hidden>
+    <summary>Combine</summary><div class="gbody"><div id="combineSliders"></div></div>
+  </details>
   <div class="row" id="toolModeRow"><label for="toolMode">skin tool</label><select id="toolMode" style="flex:1">
-    <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option>
+    <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option><option value="combine">combine</option>
   </select></div>
   <details class="grp" id="g-frequency" open hidden>
     <summary>Frequency separation</summary>
@@ -137,7 +140,7 @@
         <div class="row" id="directionalTorsoRow"><label class="limb-side"><input type="checkbox" id="directionalTorso" aria-label="Enable torso Directional Blur"></label><span class="limb-name">torso</span><span></span></div>
       </div>
       <div id="directionalSliders"></div>
-      <p class="hint" id="directionalStatus" role="status">Get Image to check limb pose. Region preview shows actual masked coverage.</p>
+      <p class="hint" id="directionalStatus" role="status" hidden>Get Image to check limb pose. Region preview shows actual masked coverage.</p>
     </div>
   </details>
   <details class="grp mask-group" id="g-skintone" open hidden>
@@ -149,7 +152,7 @@
     </div>
   </details>
   <details class="grp mask-group" id="g-bands" open>
-    <summary><span>Detail level</span><label><input type="checkbox" id="band1On" checked aria-label="Enable D&B band 1"></label></summary>
+    <summary><span>Band 1</span><label><input type="checkbox" id="band1On" checked aria-label="Enable D&B band 1"></label></summary>
     <div class="gbody">
     <div id="bands"></div>
     <div id="band1Strength"></div>
@@ -157,14 +160,14 @@
     </div>
   </details>
   <details class="grp mask-group" id="g-band2" hidden>
-    <summary><span>Detail level 2</span><label><input type="checkbox" id="band2On" aria-label="Enable D&B band 2"></label></summary>
+    <summary><span>Band 2</span><label><input type="checkbox" id="band2On" aria-label="Enable D&B band 2"></label></summary>
     <div class="gbody"><div id="band2Sliders"></div>
       <div class="row"><label><input type="checkbox" id="band2Invert"> invert</label></div>
       <canvas id="profile2" width="680" height="140" style="margin-top:6px" aria-label="Band 2 gain by feature size in millimetres"></canvas>
     </div>
   </details>
   <details class="grp" id="g-dnb-shared" open>
-    <summary>Shared D&amp;B controls</summary><div class="gbody"><div id="globals"></div></div>
+    <summary>shared controls</summary><div class="gbody"><div id="globals"></div></div>
   </details>
   <details class="grp mask-group" id="g-mask" open>
     <summary><span>Skin mask</span><label><input type="checkbox" id="maskOn" aria-label="Enable skin mask" title="Only correct skin: pixels outside the skin mask are left unchanged. Eyes, brows, lips, nostrils and off-colour pixels such as tattoos are always left out." checked></label></summary>
@@ -244,10 +247,12 @@
       <button class="tab on" data-k="result" title="The picture with the soft light layer applied through the mask.">Result</button></div></div>
       <div class="pan" id="p0" tabindex="0"><div class="empty">no result yet</div></div></div>
     <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsB">
+      <button class="tab" data-k="fs_result" hidden title="Configured FS + Skintone result before Combine mix.">FS result</button>
+      <button class="tab" data-k="dnb_result" hidden title="Configured D&amp;B result before Combine mix.">D&amp;B result</button>
       <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
       <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
-      <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Layer</button>
-      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button>
+      <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Band 1</button>
+      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Band 1 + mask</button>
       <button class="tab" data-k="layer2" hidden>Band 2</button>
       <button class="tab" data-k="layer2m" hidden>Band 2 + mask</button>
       <button class="tab" data-k="color" hidden title="Full-image low frequencies, no skin mask.">Color</button>
@@ -278,10 +283,11 @@ function directionalSettings(raw={}) {
   return p;
 }
 function uiMode(mode) {
-  return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency'].includes(mode) ? mode : 'dnb';
+  return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency','combine'].includes(mode) ? mode : 'dnb';
 }
 const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:true, parallel:true};
 const state = {
+  combine:{fs_mix:100,dnb_mix:100},
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
   directional: directionalSettings(),
@@ -434,6 +440,11 @@ $('blurOn').onchange = () => {
   state.frequency.on = $('blurOn').checked; syncFrequencyControls(); markDirty();
 };
 $('blurMask').onchange = () => { state.frequency.blur_mask = $('blurMask').checked; markDirty(); };
+const combineSliders={};
+for(const [key,label] of [['fs_mix','FS mix'],['dnb_mix','D&B mix']]){
+  combineSliders[key]=slider($('combineSliders'),label,0,100,1,state.combine[key],
+    value=>{state.combine[key]=value;markDirty();});
+}
 const directionalSegments = [
   ['directionalLeft','left','left upper leg','hip to knee'],
   ['directionalRight','right','right upper leg','hip to knee'],
@@ -549,7 +560,12 @@ function syncDirectionalControls() {
   $('directionalTorso').parentElement.title=$('directionalTorso').title;
   Object.values(directionalTorsoSliders).forEach(s=>{s.rng.disabled=s.num.disabled=!p.on||!p.torso||torsoAvailable!=='Available';});
   $('directionalTorsoControls').hidden=!p.on||!p.torso||torsoAvailable!=='Available';
-  $('directionalStatus').textContent=p.on ? 'Region preview shows masked coverage. Hover a switch for geometry details.' : 'Off: no directional calculations.';
+  const requested=[...directionalSegments.map(([,key])=>key),'torso'].filter(key=>p[key]);
+  const usable=requested.filter(key=>state.imageInfo?.directional_pose?.[key]==='Available');
+  $('directionalStatus').textContent=!p.on ? 'Off: no directional calculations.' :
+    !usable.length ? 'No selected region has usable geometry: Directional Blur skipped. Preset selections retained.' :
+    usable.length<requested.length ? 'Unavailable selected regions skipped; preset selections retained. Hover a switch for details.' :
+    'Region preview shows masked coverage. Hover a switch for geometry details.';
 }
 $('directionalOn').onclick=event=>event.stopPropagation();
 [['directionalOn','on'],...directionalSegments,['directionalTorso','torso']].forEach(([id,key]) => {
@@ -662,7 +678,7 @@ window.addEventListener('message', event => {
   } else if (data.type === 'shp-tools-connect') {
     shellConnected = true; $('toolModeRow').hidden = true; announceMode();
   } else if (shellConnected && data.type === 'shp-tools-mode' &&
-             ['mask','skintone','frequency','dnb'].includes(data.mode) && Number.isSafeInteger(data.request)) {
+             ['mask','skintone','frequency','dnb','combine'].includes(data.mode) && Number.isSafeInteger(data.request)) {
     if (state.busy) pendingShellMode = data;
     else switchMode(data.mode, data.request);
   }
@@ -1018,6 +1034,7 @@ function setBusy(b, operation=true) {
   ['transferFormat','transferCompression','transferAlpha','transferParallel'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
+  $('pcSendLayers').disabled=b||!state.loaded||state.sourceKind!=='photocraft';
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -1060,7 +1077,7 @@ function analysisFlags() { return {detect: $('anDetect').getAttribute('aria-pres
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).setAttribute('aria-pressed', String(v === '1')); });
 function params() {
-  return { mode: uiMode(state.mode), band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: uiMode(state.mode), combine:{...state.combine}, band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -1235,16 +1252,17 @@ async function pcGet() {
   }
   if (loaded) apply();
 }
-async function pcSend() {
+async function pcSend(layers=false) {
   if (state.busy || !state.loaded) return;
+  if(layers && (state.sourceKind!=='photocraft'||!['frequency','dnb','combine'].includes(state.mode))) return;
   const started = performance.now();
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
-  setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : 'Sending ' + (state.mode === 'frequency' ? 'FS + Skintone folder' : state.mode === 'mask' ? 'skin mask layer' : 'D&B layer and mask') + ' to PhotoCraft...');
+  setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : layers ? 'Sending editable SkinTools layers to PhotoCraft...' : 'Sending result to PhotoCraft...');
   if (temporaryLog.send) logNote(temporaryLog.send);
   temporaryLog.send = 'Preparing Send...';
   renderTemporaryLog();
   try {
-    const r = await operationApi('/api/send-result', {...p, generation:state.imageGeneration}, true);
+    const r = await operationApi(layers?'/api/pc/send_layers':'/api/send-result', {...p, generation:state.imageGeneration}, true);
     watchMaskPrecache(r.mask_precache, state.loadEpoch);
     logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
@@ -1253,13 +1271,13 @@ async function pcSend() {
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
 }
-$('pcGet').onclick = pcGet; $('pcSend').onclick = pcSend;
+$('pcGet').onclick = pcGet; $('pcSend').onclick = ()=>pcSend(); $('pcSendLayers').onclick=()=>pcSend(true);
 $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
 if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
 function rightPreviewKinds(mode) {
-  return mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', ...(state.secondBand?.on ? ['layer2','layer2m'] : [])] : ['mask', 'analysis'];
+  return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', ...(state.secondBand?.on ? ['layer2','layer2m'] : [])] : ['mask', 'analysis'];
 }
 function syncRightTabs() {
   const allowed = rightPreviewKinds(state.mode);
@@ -1272,7 +1290,8 @@ function syncLeftTabs() {
   if (mask && tabSel.A === 'result') tabSel.A = 'orig';
 }
 function paneKinds() {
-  return [tabSel.A, tabSel.B];
+  const diagnostic={layer:'layerx',layerm:'layermx',layer2:'layer2x',layer2m:'layer2mx'};
+  return [tabSel.A, state.mode==='dnb' ? diagnostic[tabSel.B] || tabSel.B : tabSel.B];
 }
 function syncTabs() {
   syncLeftTabs();
@@ -1282,7 +1301,10 @@ function syncTabs() {
 }
 function syncMode() {
   state.mode = uiMode(state.mode);
-  const dnb = state.mode === 'dnb', frequency = state.mode === 'frequency';
+  const dnb = state.mode==='dnb', frequency = state.mode==='frequency';
+  $('g-combine').hidden=state.mode!=='combine';
+  $('pcSendLayers').hidden=state.sourceKind!=='photocraft'||!['dnb','frequency','combine'].includes(state.mode);
+  $('pcSendLayers').disabled=state.busy||!state.loaded||state.sourceKind!=='photocraft';
   syncFrequencyControls();
   $('maskOperations').hidden = state.mode !== 'mask';
   $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
@@ -1299,8 +1321,8 @@ function syncMode() {
   if (frequency) drawSkintone(null);
   ['g-mask', 'g-structure', 'g-range', 'g-color'].forEach(id => { $(id).hidden = state.mode !== 'mask'; });
   const result = $('tabsA').querySelector('[data-k="result"]');
-  result.textContent = state.mode === 'mask' ? 'Skin mask' : 'Result';
-  result.title = dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skintone correction between Color and Detail, with optional added skin-aware Blur.' : 'The reusable combined grayscale skin mask.';
+  result.textContent = state.mode === 'combine' ? 'Combined' : state.mode === 'mask' ? 'Skin mask' : 'Result';
+  result.title = state.mode==='combine' ? 'FS mix against Original, followed by masked D&B effects at D&B mix.' : dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skintone correction between Color and Detail, with optional added skin-aware Blur.' : 'The reusable combined grayscale skin mask.';
   $('pcSend').textContent = 'Send Result';
   $('tabsA').querySelector('[data-k="orig"]').title = 'Original image.';
   syncTransferTitles();
@@ -1308,7 +1330,9 @@ function syncMode() {
 }
 function syncTransferTitles() {
   $('pcGet').title = state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
-  $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'dnb' ? 'Add Soft Light with its mask.' : state.mode === 'frequency' ? 'Add an unmasked Normal folder: Detail / optional Hue / optional Directional Blur / optional Blur / Color, with separate editable masks and layer opacities.' : 'Add a grayscale layer; do not change any existing layer mask.';
+  $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'mask' ? 'Add a grayscale skin mask layer.' : 'Add the flattened corrected photograph as an RGB16 Normal layer.';
+  $('pcSendLayers').hidden=state.sourceKind!=='photocraft'||!['dnb','frequency','combine'].includes(state.mode);
+  $('pcSendLayers').title='Add one editable SkinTools folder: D&B above Detail, Hue, Directional Blur, Blur and Color; enabled effects only.';
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();
@@ -1671,6 +1695,7 @@ document.querySelectorAll('details.grp').forEach(d => {
 
 /* ---------- presets ---------- */
 const FACTORY = {
+  combine:{fs_mix:100,dnb_mix:100},
   band1_on:true, second_band:{...SECOND_BAND_DEFAULTS},
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true},
   skintone: {...SKINTONE_DEFAULTS},
@@ -1686,6 +1711,7 @@ const FACTORY = {
 };
 function getSettings() {
   return {
+    combine:{...state.combine},
     band1_on:state.band1On,second_band:{...state.secondBand},
     mode: uiMode(state.mode), directional:JSON.parse(JSON.stringify(state.directional)), frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
@@ -1699,6 +1725,12 @@ function getSettings() {
   };
 }
 function applySettings(o) {
+  state.combine={...FACTORY.combine,...(o?.combine||{})};
+  for(const key of ['fs_mix','dnb_mix']){
+    const value=Number(state.combine[key]);
+    state.combine[key]=Number.isFinite(value)?Math.min(100,Math.max(0,value)):100;
+    combineSliders[key].set(state.combine[key]);
+  }
   state.band1On=o?.band1_on??true;
   state.secondBand={...SECOND_BAND_DEFAULTS,...(o?.second_band||{})};
   renderSecondBand();

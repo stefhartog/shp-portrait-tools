@@ -135,7 +135,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.wait_ready()["dnb"]["instance"], before["dnb"]["instance"])
         self.assertFalse(restarted["loaded"])
         self.assertEqual(self.control("crop", "stop")["phase"], "stopped")
-        self.assert_error(503, "/crop/")
+        error = self.assert_error(409, "/crop/")
+        self.assertEqual(error["code"], "module_stopped")
         self.assertEqual(self.control("crop", "start")["phase"], "running")
 
     def test_hue_center_real_proxy_and_direct_child_route(self):

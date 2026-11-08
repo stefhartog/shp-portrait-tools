@@ -118,15 +118,15 @@ def list_images():
 
 def parse_params(p):
     mode = p.get("mode", "dnb")
-    if mode not in ("dnb", "mask", "frequency", "skintone"):
-        raise ValueError("mode must be dnb, mask or frequency")
+    if mode not in ("dnb", "mask", "frequency", "skintone", "combine"):
+        raise ValueError("mode must be dnb, mask, frequency or skintone")
     if mode == "skintone":
         mode = "frequency"
-    layer_blur = float(p.get("layer_blur_at_s181", 0)) if mode == "dnb" else 0
+    layer_blur = float(p.get("layer_blur_at_s181", 0)) if mode in ("dnb", "combine") else 0
     if not math.isfinite(layer_blur) or not 0 <= layer_blur <= 20:
         raise ValueError("Layer blur at S181 must be 0-20 pixels")
     bands = [(float(b[0]), float(b[1]), float(b[2]), max(float(b[3]), 1e-3)) for b in p.get("bands", []) if float(b[1]) > float(b[0])]
-    if not bands and mode == "dnb":
+    if not bands and mode in ("dnb", "combine"):
         raise ValueError("no valid band (HI must be larger than LO)")
     S = float(p["S"])
     if not math.isfinite(S) or S <= 0:
@@ -155,12 +155,25 @@ def parse_params(p):
                     "hue_range": min(180.0, max(1.0, color_hue_range)),
                     "saturation_range": min(1.0, max(0.01, color_saturation_range)),
                     "blur_mm": color_blur_mm, "smooth_mm": color_smooth_mm, "strength": color_strength}
+    combine=p.get("combine", {})
+    if not isinstance(combine, dict):
+        raise ValueError("Combine settings must be an object")
+    mixes={}
+    for key in ("fs_mix", "dnb_mix"):
+        value=combine.get(key,100)
+        if isinstance(value,bool):
+            raise ValueError(f"Combine {key} must be 0-100")
+        value=float(value)
+        if not math.isfinite(value) or not 0<=value<=100:
+            raise ValueError(f"Combine {key} must be 0-100")
+        mixes[key]=value
     return dict(
-        band1_on=p.get("band1_on", True), second_band=D.second_band_settings(p.get("second_band")) if mode == "dnb" else D.second_band_settings(),
-        mode=mode, layer_blur_at_s181=layer_blur, frequency=FS.settings(p) if mode == "frequency" else None,
-        skintone=ST.settings(p) if mode == "frequency" else None,
-        directional=DB.settings(p) if mode == "frequency" else None,
-        frequency_transfer=PCB.transfer_settings(p.get("frequency_transfer")) if mode == "frequency" else None,
+        combine=mixes,
+        band1_on=p.get("band1_on", True), second_band=D.second_band_settings(p.get("second_band")) if mode in ("dnb", "combine") else D.second_band_settings(),
+        mode=mode, layer_blur_at_s181=layer_blur, frequency=FS.settings(p) if mode in ("frequency", "combine") else None,
+        skintone=ST.settings(p) if mode in ("frequency", "combine") else None,
+        directional=DB.settings(p) if mode in ("frequency", "combine") else None,
+        frequency_transfer=PCB.transfer_settings(p.get("frequency_transfer")) if mode in ("frequency", "combine") else None,
         protect=min(1.0, max(0.0, float(st.get("protect", 0.0)))), protect_mm=max(0.5, float(st.get("mm", 4.0))),
         protect_thr=max(0.005, float(st.get("thr", 0.1))),
         tone_strength=min(1.0, max(0.0, float(tone.get("strength", 1.0)))), color_filter=color_filter, analysis=p.get("analysis", {}),
@@ -322,7 +335,7 @@ def mask_cache_status():
 
 
 def queue_mask_precache(p):
-    if p["mode"] not in ("mask", "dnb", "frequency"):
+    if p["mode"] not in ("mask", "dnb", "frequency", "combine"):
         return
     STATE["mask_status_key"] = mask_request_key(p)
     count = STATE["img"].shape[0] * STATE["img"].shape[1] * 4 * (2 if p["protect"] else 1)
@@ -469,7 +482,7 @@ def directional_availability():
         try:
             DB.segments(p, STATE.get("pose"), STATE["img"].shape)
             status[side] = "Available"
-        except ValueError as error:
+        except DB.GeometryUnavailable as error:
             status[side] = str(error)
     return status
 
@@ -735,7 +748,7 @@ def api_run(req):
     if "generation" in req and req["generation"] != STATE.get("landmark_generation"):
         raise ValueError("the loaded image changed; preview discarded")
     p = parse_params(req)
-    if p["mode"] == "frequency":
+    if p["mode"] in ("frequency", "combine"):
         validate_skintone_source()
     view = req.get("view", "crop")
     reg, k, mreg = get_region(view, p["S"])
@@ -794,8 +807,10 @@ def api_run(req):
     for index, pixels in layers:
         if index == 2:
             STATE["imgs"]["layer2"] = encode(u8(pixels), ".png")
+            STATE["imgs"]["layer2x"] = encode(u8(.5+(pixels-.5)*8), ".png")
             masked = pixels if total is None else .5 + (pixels - .5) * total
             STATE["imgs"]["layer2m"] = encode(u8(masked), ".png")
+            STATE["imgs"]["layer2mx"] = encode(u8(.5+(masked-.5)*8), ".png")
     render_analysis(p["analysis"])
     result = {"version": STATE["version"], "avers": STATE["avers"], "stats": stats}
     remember_preview(p, key, result)
@@ -815,10 +830,10 @@ def preview_key(p, view):
         shared["color_filter"] = {"on": False}
     if shared["shadows"] is None and shared["highlights"] is None:
         shared["tone_strength"] = None
-    if p["mode"] == "dnb":
+    if p["mode"] in ("dnb", "combine"):
         shared.update({k: p[k] for k in ("bands", "strength", "edge", "tau", "max_ev", "layer_blur_at_s181", "band1_on")})
         shared["second_band"] = p["second_band"] if p["second_band"]["on"] else {"on": False}
-    elif p["mode"] == "frequency":
+    if p["mode"] in ("frequency", "combine"):
         shared.update(frequency={k: p["frequency"][k] for k in
                                  (("on", "method", "radius", "blur_radius", "blur_strength", "blur_mask") if p["frequency"]["on"]
                                   else ("on", "method", "radius"))}, skintone=p["skintone"])
@@ -831,6 +846,8 @@ def preview_key(p, view):
             else:
                 coordinates=np.asarray(pose["kp"])
                 shared["pose"]=np.where(np.isfinite(coordinates),coordinates,None).tolist()
+    if p["mode"] == "combine":
+        shared["combine"]=p["combine"]
     return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
             json.dumps(shared, sort_keys=True, allow_nan=False))
 
@@ -903,6 +920,8 @@ def skintone_layers(img, mask, p, scale=1, *, native=False):
     validate_skintone_source()
     directional = p.get("directional", DB.DEFAULTS)
     if directional["on"]:
+        directional, _ = DB.effective_settings(directional, STATE.get("pose"), STATE["img"].shape)
+    if directional["on"]:
         if STATE["masks"] is None:
             raise ValueError("Directional Blur unavailable: no shared skin mask. Get Image with usable skin detection.")
         DB.segments(directional, STATE.get("pose"), STATE["img"].shape)
@@ -942,6 +961,33 @@ def skintone_layers(img, mask, p, scale=1, *, native=False):
     return layers
 
 
+def combined_result(source, mask, p, scale=1, *, previews=None):
+    """FS mix against original, followed by original-derived masked Soft Light bands."""
+    fs_mix=p["combine"]["fs_mix"]/100
+    dnb_mix=p["combine"]["dnb_mix"]/100
+    fs_layers={}
+    base=source.copy()
+    if fs_mix>0 or previews is not None:
+        fs_layers=skintone_layers(source,mask,p,scale)
+        _,fs_result=ST.composite(fs_layers,mask,p["skintone"],p["frequency"])
+        if previews is not None:
+            previews["fs_result"]=fs_result
+        base=np.clip(source+(fs_result-source)*fs_mix,0,1).astype(np.float32)
+    bands=[]
+    if (dnb_mix>0 or previews is not None) and (p["band1_on"] or p["second_band"]["on"]):
+        bands,dnb_result,_,_=D.band_stack(source,p["S"]*scale,p["bands"],p["strength"],p["second_band"],
+            first_on=p["band1_on"],sigma=p["layer_blur_at_s181"]*p["S"]*scale/181,
+            edge=p["edge"],tau=p["tau"],max_ev=p["max_ev"],mask_result=(mask,None))
+    else:
+        dnb_result=source
+    if previews is not None:
+        previews["dnb_result"]=dnb_result
+    for _,gray in bands:
+        blended=D.softlight(base,gray[...,None])
+        base=np.clip(base+(blended-base)*mask[...,None]*dnb_mix,0,1).astype(np.float32)
+    return fs_layers,bands,base
+
+
 def run_skin_preview(p, reg, k, mreg):
     t = time.time()
     mask, total, structure = progress.call("Calculating preview skin mask", tool_mask, reg, mreg, p, p["S"] * k)
@@ -955,8 +1001,15 @@ def run_skin_preview(p, reg, k, mreg):
         imgs["result"] = encode(u8(show), ".jpg", 92)
     else:
         src = source_region(reg.shape, normalized=True)
-        layers = skintone_layers(src, show, p, k)
-        corrected, result = ST.composite(layers, show, p["skintone"], p["frequency"])
+        if p["mode"]=="combine":
+            previews={}
+            layers,_,result=combined_result(src,show,p,k,previews=previews)
+            imgs.update({key:encode(u8(value),".png",icc=STATE["source_icc"])
+                         for key,value in previews.items()})
+            corrected=None
+        else:
+            layers = skintone_layers(src, show, p, k)
+            corrected, result = ST.composite(layers, show, p["skintone"], p["frequency"])
         imgs["orig"] = encode(u8(src), ".jpg", 92, STATE["source_icc"])
         imgs["result"] = encode(u8(result), ".png", icc=STATE["source_icc"])
         imgs.update({key: encode(u8(layers[key]), ".png", icc=STATE["source_icc"])
@@ -966,14 +1019,15 @@ def run_skin_preview(p, reg, k, mreg):
             overlay = src * (1 - .45 * coverage) + np.array([.78, .46, .2], np.float32) * .45 * coverage
             imgs["directional_region"] = encode(u8(overlay), ".png", icc=STATE["source_icc"])
             imgs["directional_mask"] = encode(u8(layers["directional_mask"]), ".png")
-        if p["frequency"]["on"]:
+        if p["frequency"]["on"] and layers:
             blur_layers = {key: layers[key] for key in ("color", "blur")}
             imgs["blur"] = encode(u8(ST.base(blur_layers, show, p["frequency"])), ".png", icc=STATE["source_icc"])
-        distribution = ST.distribution(layers["color"], corrected, show, p["skintone"])
-        if "directional" in layers and not p["skintone"]["on"]:
+        if p["mode"]!="combine":
+            distribution = ST.distribution(layers["color"], corrected, show, p["skintone"])
+        if distribution is not None and "directional" in layers and not p["skintone"]["on"]:
             distribution["effect"]["note"] = (f"Skintone correction is off; Directional Blur uses "
                                                f"{layers['directional_strength']}% layer opacity. Color/Detail remain active.")
-        elif not p["frequency"]["on"] and not p["skintone"]["on"]:
+        elif distribution is not None and not p["frequency"]["on"] and not p["skintone"]["on"]:
             distribution["effect"]["note"] = "Skintone correction and added Blur are off; Color/Detail reconstruct the source."
     STATE["imgs"] = imgs
     STATE["version"] += 1
@@ -1006,6 +1060,8 @@ def api_save(req):
     if STATE["img"] is None:
         raise ValueError("load an image first")
     p = parse_params(req)
+    if p["mode"]=="combine":
+        return save_combined(req,p)
     if p["mode"] != "dnb":
         return save_skin(req, p)
     t = time.time()
@@ -1042,6 +1098,18 @@ def api_save(req):
     return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
 
 
+def save_combined(req,p):
+    validate_skintone_source()
+    mask=full_skin_mask(p)
+    _,_,result=combined_result(STATE["source_img"],mask,p)
+    stem=Path(STATE["path"]).stem
+    out=ROOT/"results"/f"{stem}_combine_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
+    out.mkdir(parents=True,exist_ok=False)
+    (out/"result.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(result),STATE["source_icc"] or SRGB_ICC))
+    (out/"settings.json").write_text(json.dumps({**req,"image":STATE["path"]},indent=2))
+    return {"dir":str(out),"files":["result.png","settings.json"]}
+
+
 def save_skin(req, p):
     if p["mode"] == "frequency":
         validate_skintone_source()
@@ -1074,12 +1142,12 @@ def save_skin(req, p):
     recipe = ("SHP FS + Skintone: Normal unmasked outer group. Top-down: Detail (Linear Light, unmasked), "
                          + (f"Hue (opacity {p['skintone']['hue_amount']}%; with skinmask.png; Hue.cube, native Color Lookup, Normal, "
                             "trilinear, dither off), " if p["skintone"]["on"] else "")
-                         + (f"Directional Blur (Normal, opacity {DB.output_strength(p['directional'])}%, with directional_mask.png), "
-                            if p.get("directional", DB.DEFAULTS)["on"] else "")
+                         + (f"Directional Blur (Normal, opacity {layers['directional_strength']}%, with directional_mask.png), "
+                            if "directional" in layers else "")
                          + (f"Blur (Normal, opacity {p['frequency']['blur_strength']}%, "
                             + ("with skinmask.png" if p["frequency"]["blur_mask"] else "unmasked") + "), " if p["frequency"]["on"] else "")
                          + "Color (Normal, unmasked)."
-                         if result is not None else mask_name + ": reusable grayscale layer in Normal mode.")
+                         if result is not None else mask_name + ": reusable grayscale layer in Normal mode; no healing.")
     (out / "settings.json").write_text(json.dumps({**req, "image": STATE["path"],
         "layer_recipe": recipe,
         "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "
@@ -1087,6 +1155,7 @@ def save_skin(req, p):
                    "skin-aware Gaussian Blur use full-image radii. RGB16, source numeric space. Hue LUT is "
                    "embedded by Send only while Skintone correction is on; off bypasses hue calculations."
                    if result is not None else
+                   "Advisory signed luminance-anomaly candidates, grayscale8; no correction or healing."
                    "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
                    "Median uses equal votes among positive-mask samples. RGB16, source numeric space.")}, indent=2))
     return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
@@ -1122,11 +1191,15 @@ def api_pc_fetch(req):
     return res
 
 
-def api_pc_send(req):
+def api_pc_send_layers(req):
     if STATE["img"] is None or BRIDGE["doc"] is None:
         raise ValueError("get a picture from PhotoCraft first")
+    if "generation" in req and req["generation"]!=STATE.get("landmark_generation"):
+        raise ValueError("the loaded image changed; Get Image again before Send Layers")
     p = parse_params(req)
     img = STATE["img"]
+    if p["mode"]=="combine":
+        return {"sent":True,**send_combined_layers(p)}
     if p["mode"] != "dnb":
         if p["mode"] == "frequency":
             return {"sent": True, **send_skintone_parallel(p)}
@@ -1145,10 +1218,61 @@ def api_pc_send(req):
                for index, pixels in layers]
     mask8 = u8(mask_out)
     del mask_out, total
-    r = (bridge().send(payload[0][1], mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
-         if len(payload) == 1 and payload[0][0] == 1 else
-         bridge().send_bands(payload, mask8, BRIDGE["doc"], source_icc=STATE["source_icc"]))
+    r = bridge().send_skin_bands(payload,mask8,BRIDGE["doc"],source_icc=STATE["source_icc"])
     return {"sent": True, **r}
+
+
+def skin_result(p):
+    if p["mode"]=="dnb":
+        _,result,_=dnb_full_result(p)
+        return result,STATE["icc"] or SRGB_ICC
+    validate_skintone_source()
+    mask=full_skin_mask(p)
+    if p["mode"]=="combine":
+        _,_,result=combined_result(STATE["source_img"],mask,p)
+    else:
+        layers=skintone_layers(STATE["source_img"],mask,p)
+        _,result=ST.composite(layers,mask,p["skintone"],p["frequency"])
+    return result,STATE["source_icc"] or SRGB_ICC
+
+
+def api_pc_send(req):
+    if STATE["img"] is None or BRIDGE["doc"] is None:
+        raise ValueError("get a picture from PhotoCraft first")
+    p=parse_params(req)
+    if p["mode"] == "mask":
+        return api_pc_send_layers(req)
+    result,icc=skin_result(p)
+    return {"sent":True,**bridge().send_result(FS.rgb16(result),BRIDGE["doc"],source_icc=icc)}
+
+
+def send_combined_layers(p):
+    validate_skintone_source()
+    source=STATE["source_img"]
+    mask=full_skin_mask(p)
+    fs_layers,bands,_=combined_result(source,mask,p)
+    payload=[(index,np.repeat(np.round(gray*65535).astype(np.uint16)[...,None],3,axis=2))
+             for index,gray in bands]
+    if not fs_layers:
+        if not payload:
+            raise ValueError("enable an FS or D&B contribution before Send Layers")
+        return bridge().send_skin_bands(payload,u8(mask),BRIDGE["doc"],source_icc=STATE["source_icc"],
+                                        band_mix=p["combine"]["dnb_mix"])
+    mix=p["combine"]["fs_mix"]/100
+    for key in ("color","blur","directional"):
+        if key in fs_layers:
+            fs_layers[key]=source+(fs_layers[key]-source)*mix
+    fs_layers["detail"]=.5+(fs_layers["detail"]-.5)*mix
+    directional=None
+    if "directional" in fs_layers:
+        directional=(FS.rgb16(fs_layers.pop("directional")),u8(fs_layers.pop("directional_mask")),
+                     fs_layers.pop("directional_strength"))
+    rgb={key:FS.rgb16(value) for key,value in fs_layers.items()}
+    settings={**p["skintone"],"hue_amount":p["skintone"]["hue_amount"]*mix}
+    return bridge().send_skintone(rgb,settings,u8(mask),BRIDGE["doc"],STATE["source_icc"],
+        transfer=p["frequency_transfer"],include_blur=p["frequency"]["on"],
+        blur_strength=p["frequency"]["blur_strength"],blur_masked=p["frequency"]["blur_mask"],
+        directional=directional,bands=payload,band_mask8=u8(mask) if payload else None,band_mix=p["combine"]["dnb_mix"])
 
 
 def send_skintone_parallel(p):
@@ -1159,7 +1283,8 @@ def send_skintone_parallel(p):
     if error:
         raise ValueError(error)
     f = p["frequency"]
-    if p.get("directional", DB.DEFAULTS)["on"]:
+    effective, _ = DB.effective_settings(p.get("directional", DB.DEFAULTS), STATE.get("pose"), source.shape)
+    if effective["on"]:
         # Bounded serial region work avoids nesting another executor into the existing Send workers.
         mask = full_skin_mask(p)
         layers = skintone_layers(source, mask, p, native=True)
@@ -1233,11 +1358,14 @@ def api_send_result(req):
                 raise ValueError("could not encode the skin mask")
             data = encoded.tobytes()
         else:
-            layers = progress.call("Calculating FS + Skintone result", skintone_layers, STATE["source_img"], mask, p)
-            _, result = ST.composite(layers, mask, p["skintone"], p["frequency"])
+            if p["mode"]=="combine":
+                _,_,result=combined_result(STATE["source_img"],mask,p)
+            else:
+                layers = progress.call("Calculating FS + Skintone result", skintone_layers, STATE["source_img"], mask, p)
+                _, result = ST.composite(layers, mask, p["skintone"], p["frequency"])
             data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
                                  FS.rgb16(result), STATE["source_icc"] or SRGB_ICC)
-    suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs"}[p["mode"]]
+    suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs", "combine":"shpcombine"}[p["mode"]]
     path = progress.call("Saving result beside source", write_local_result, STATE["path"], suffix, data,
                          STATE.get("source_directory"))
     return {"saved": True, "path": path}
@@ -1351,7 +1479,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def do_api_POST(self):
         token = None
         try:
-            if self.path == "/api/send-result" and (
+            if self.path in ("/api/send-result","/api/pc/send_layers") and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
@@ -1359,7 +1487,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
                   "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
-                  "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/launch": api_pc_launch,
+                  "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/send_layers":api_pc_send_layers, "/api/pc/launch": api_pc_launch,
                   "/api/send-result": api_send_result,
                   "/api/presets/save": api_preset_save, "/api/presets/default": api_preset_default, "/api/presets/delete": api_preset_delete}.get(self.path)
             if fn is None:
@@ -1368,7 +1496,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             with progress.operation(token):
                 with LOCK:
                     mask_params = None
-                    if self.path in ("/api/run", "/api/pc/send", "/api/send-result", "/api/save") and STATE["img"] is not None:
+                    if self.path in ("/api/run", "/api/pc/send", "/api/pc/send_layers", "/api/send-result", "/api/save") and STATE["img"] is not None:
                         if self.path == "/api/run" and type(req.get("precache_mask", True)) is not bool:
                             raise ValueError("precache_mask must be a boolean")
                         if self.path == "/api/run":

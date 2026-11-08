@@ -442,6 +442,20 @@ class Bridge(BaseBridge):
         return self._send_skin_layers([(name, rgb, "Normal", False)], doc,
                                       source_icc=source_icc)
 
+    def send_result(self, pixels, doc, source_icc):
+        """Insert a flattened corrected RGB16 photograph as one normal layer."""
+        if (not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint16
+                or pixels.ndim != 3 or pixels.shape[2] != 3):
+            raise ControlError("Send Result needs a full RGB16 corrected photograph")
+        if not isinstance(source_icc, (bytes, bytearray)) or not source_icc:
+            raise ControlError("no ICC profile captured: fetch the picture again before Send Result")
+        h, w = pixels.shape[:2]
+        target = self._find(doc["index"], doc["name"])
+        if (target.get("width"), target.get("height")) != (w, h):
+            raise ControlError("the document size changed: fetch the picture again")
+        return self._send_skin_layers(
+            [("Corrected Result", pixels, "Normal", False)], doc, source_icc=source_icc)
+
     def send_frequency(self, layers, mask8, doc, source_icc):
         return self._send_skin_layers(
             [("Color", layers["color"], "Normal", False),
@@ -449,17 +463,74 @@ class Bridge(BaseBridge):
              ("Detail", layers["detail"], "Linear Light", False)],
             doc, mask8, source_icc)
 
+    def send_skin_bands(self, layers, mask8, doc, *, source_icc=None, band_mix=100):
+        """Insert enabled D&B bands together in one SkinTools folder."""
+        if not isinstance(layers, (list, tuple)) or not layers:
+            raise ControlError("at least one enabled D&B band is required")
+        if (isinstance(band_mix, bool) or not isinstance(band_mix, (float, int))
+                or not math.isfinite(band_mix) or not 0 <= band_mix <= 100):
+            raise ControlError("D&B mix opacity must be 0-100 percent")
+        if not isinstance(source_icc, (bytes, bytearray)) or not source_icc:
+            raise ControlError("no ICC profile captured: fetch the picture again before sending D&B bands")
+        normalized = []
+        seen = set()
+        for item in layers:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ControlError("D&B bands must be (index, RGB16 pixels) pairs")
+            index, pixels = item
+            if (not isinstance(index, (int, np.integer)) or isinstance(index, bool)
+                    or index not in (1, 2) or index in seen):
+                raise ControlError("D&B band indices must be unique band 1 or band 2")
+            if (not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint16
+                    or pixels.ndim != 3 or pixels.shape[2] != 3):
+                raise ControlError("D&B bands must be RGB16 images")
+            seen.add(index)
+            normalized.append((index, pixels))
+        normalized.sort(key=lambda item: item[0])
+        return self._send_skin_layers(
+            [(f"D&B band {index}", pixels, "Soft Light", True, band_mix)
+             for index, pixels in normalized],
+            doc, mask8, source_icc, group_name="SkinTools", group_mode="Pass Through")
+
     def send_skintone(self, layers, settings, mask8, doc, source_icc, *, blur_future=None, transfer=None, include_blur=True,
-                      blur_strength=100, blur_masked=True, directional=None):
-        """Assemble Color / optional Blur / Directional Blur / Hue / Detail as one group."""
+                      blur_strength=100, blur_masked=True, directional=None, bands=None,
+                      band_mask8=None, band_mix=100):
+        """Assemble enabled FS, skintone, directional and D&B layers together."""
         options = transfer_settings(transfer)
         if (not isinstance(blur_strength, (float, int)) or isinstance(blur_strength, bool)
                 or not math.isfinite(blur_strength) or not 0 <= blur_strength <= 100
-                or type(blur_masked) is not bool):
-            raise ControlError("Blur needs 0-100 percent strength and a boolean skin-mask setting")
+                or type(blur_masked) is not bool
+                or isinstance(band_mix, bool) or not isinstance(band_mix, (float, int))
+                or not math.isfinite(band_mix) or not 0 <= band_mix <= 100):
+            raise ControlError("Blur and D&B mix opacities must be 0-100 percent with a boolean skin-mask setting")
         if mask8.ndim != 2 or mask8.dtype != np.uint8:
             raise ControlError("Skintone mask must be grayscale 8-bit")
         h, w = mask8.shape
+        if bands is None:
+            bands = []
+        if not isinstance(bands, (list, tuple)):
+            raise ControlError("D&B bands must be a list of (index, RGB16 pixels) pairs")
+        normalized_bands = []
+        band_indices = set()
+        for item in bands:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ControlError("D&B bands must be (index, RGB16 pixels) pairs")
+            index, pixels = item
+            if (not isinstance(index, (int, np.integer)) or isinstance(index, bool)
+                    or index not in (1, 2) or index in band_indices):
+                raise ControlError("D&B band indices must be unique band 1 or band 2")
+            if (not isinstance(pixels, np.ndarray) or pixels.shape != (h, w, 3)
+                    or pixels.dtype != np.uint16):
+                raise ControlError("D&B bands must be matching RGB16 images")
+            band_indices.add(index)
+            normalized_bands.append((index, pixels))
+        normalized_bands.sort(key=lambda item: item[0])
+        if normalized_bands:
+            if (band_mask8 is None or band_mask8.shape != (h, w)
+                    or band_mask8.dtype != np.uint8):
+                raise ControlError("D&B bands need a matching grayscale8 mask")
+        elif band_mask8 is not None:
+            raise ControlError("a D&B mask requires at least one enabled band")
         if directional is not None:
             pixels, region, strength = directional
             if (pixels.shape != (h, w, 3) or pixels.dtype != np.uint16
@@ -476,16 +547,27 @@ class Bridge(BaseBridge):
         target = self._find(doc["index"], doc["name"])
         if (target.get("width"), target.get("height")) != (w, h):
             raise ControlError("the document size changed: fetch the picture again")
-        if not source_icc:
+        if not isinstance(source_icc, (bytes, bytearray)) or not source_icc:
             raise ControlError("no ICC profile captured: fetch the picture again before Skintone")
         scratch_docs = []
         files = [self._file("Skintone Color"), self._file("Skintone mask"),
                  self._file("Skintone Detail"), self._file("Skintone Blur")]
         if directional is not None:
             files.extend((self._file("Directional Blur"), self._file("Directional region mask")))
+        band_files = []
+        band_mask_file = None
+        for index, _ in normalized_bands:
+            band_files.append((index, self._file(f"D&B band {index}")))
+        if normalized_bands:
+            band_mask_file = self._file("D&B band mask")
+            files.extend(path for _, path in band_files)
+            files.append(band_mask_file)
         if options["format"] == "tiff":
             for i in ((0, 2, 3, 4) if directional is not None else (0, 2, 3)):
                 files[i] = str(Path(files[i]).with_suffix(".tiff"))
+            band_files = [(index, str(Path(path).with_suffix(".tiff")))
+                          for index, path in band_files]
+            files.extend(path for _,path in band_files)
         primary = None
         insertion_attempted = False
         inserted = False
@@ -524,7 +606,8 @@ class Bridge(BaseBridge):
                 self.client.run("layer.select", layer=color_id)
                 blur_id = int(self._copy_layers(document=scratch, source=blur_doc,
                                              layers=[blur_id])["layers"][0])
-                self.client.run("layer.setProps", layer=blur_id, name="Blur", blend="Normal", opacity=blur_strength/100)
+                self.client.run("layer.setProps", layer=blur_id, name="Blur", blend="Normal",
+                                opacity=blur_strength / 100)
                 self._release_source(blur_doc, scratch_docs)
                 self._activate(scratch)
             directional_id = None
@@ -568,7 +651,8 @@ class Bridge(BaseBridge):
                                          interpolation="trilinear", dither=False)
                 correction = int(result["layer"])
                 self.client.run("layer.layerMask.delete", layer=correction)
-                self.client.run("layer.setProps", layer=correction, name="Hue", blend="Normal", opacity=settings["hue_amount"]/100)
+                self.client.run("layer.setProps", layer=correction, name="Hue", blend="Normal",
+                                opacity=settings["hue_amount"] / 100)
             masked_layers = tuple(lid for lid in (blur_id if blur_masked else None, correction) if lid is not None)
             if not mask8.any():
                 for lid in masked_layers:
@@ -604,17 +688,62 @@ class Bridge(BaseBridge):
                                            layers=[detail_id])["layers"][0])
             self._release_source(detail_doc, scratch_docs)
             self._activate(scratch)
-            ordered_layers = tuple(lid for lid in (color_id, blur_id, directional_id, correction, detail_id) if lid is not None)
+            band_ids = []
+            rel_by_band = dict(band_files)
+            for index, pixels in reversed(normalized_bands):
+                rel = rel_by_band[index]
+                self._write_rgb(rel, pixels, icc, options)
+                band_doc = self._open(rel)
+                scratch_docs.append(band_doc)
+                band_source = int(self.client.run("layer.list")["layers"][0]["id"])
+                self.client.run("layer.setProps", layer=band_source,
+                                name=f"D&B band {index}", blend="Soft Light")
+                self._activate(scratch)
+                self.client.run("layer.select", layer=detail_id)
+                band_id = int(self._copy_layers(document=scratch, source=band_doc,
+                                                layers=[band_source])["layers"][0])
+                self.client.run("layer.setProps", layer=band_id,
+                                name=f"D&B band {index}", blend="Soft Light",
+                                opacity=band_mix / 100)
+                self._release_source(band_doc, scratch_docs)
+                self._activate(scratch)
+                band_ids.append(band_id)
+            if normalized_bands:
+                if not band_mask8.any():
+                    for band_id in band_ids:
+                        progress.call("Attaching empty D&B mask", self.client.run,
+                                      "layer.layerMask.hideAll", layer=band_id)
+                else:
+                    if not cv2.imwrite(str(self.exchange / band_mask_file), band_mask8):
+                        raise ControlError("could not write the D&B band mask")
+                    band_mask_doc = self._open(band_mask_file)
+                    scratch_docs.append(band_mask_doc)
+                    for band_id in band_ids:
+                        for attempt in range(MASK_ATTEMPTS):
+                            try:
+                                self._attach_mask(scratch, band_mask_doc, band_id,
+                                                  "Attaching D&B band mask")
+                                break
+                            except ControlError:
+                                if attempt == MASK_ATTEMPTS - 1:
+                                    raise
+                                time.sleep(0.2)
+                    self._release_source(band_mask_doc, scratch_docs)
+                    self._activate(scratch)
+            ordered_layers = tuple(lid for lid in
+                                   (color_id, blur_id, directional_id, correction, detail_id, *band_ids)
+                                   if lid is not None)
             for i, lid in enumerate(ordered_layers):
                 self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
-            group = int(progress.call("Assembling FS + Skintone folder", self.client.run, "layer.groupLayers", name="SHP FS + Skintone", mode="Normal")["layer"])
+            group = int(progress.call("Assembling SkinTools folder", self.client.run,
+                                      "layer.groupLayers", name="SkinTools", mode="Normal")["layer"])
             target = self._find(doc["index"], doc["name"])
             self._activate(target["index"])
             tops = self.client.run("layer.list").get("layers") or []
             if tops:
                 self.client.run("layer.select", layer=int(tops[0]["id"]))
             insertion_attempted = True
-            copied = progress.call("Inserting final FS + Skintone folder",
+            copied = progress.call("Inserting final SkinTools folder",
                                      getattr(self.client, "run_once", self.client.run),
                                      "layer.copyToDocument", document=int(target["index"]),
                                      source=scratch, layers=[group])
@@ -653,13 +782,16 @@ class Bridge(BaseBridge):
                 except OSError as error:
                     cleanup_errors.append("could not remove FS transfer file: " + str(error))
             if cleanup_errors:
-                prefix = str(primary) if primary else "FS + Skintone folder inserted" if inserted else "FS + Skintone send failed"
+                prefix = str(primary) if primary else "SkinTools folder inserted" if inserted else "SkinTools send failed"
                 raise ControlError(prefix + "; " + "; ".join(cleanup_errors)) from primary
 
-    def _send_skin_layers(self, layers, doc, blur_mask=None, source_icc=None):
+    def _send_skin_layers(self, layers, doc, blur_mask=None, source_icc=None, *, group_name="SkinTools", group_mode="Normal"):
         """Assemble off-document, then copy one layer/group in one target history step."""
+        if not layers:
+            raise ControlError("at least one skin layer is required")
         h, w = layers[0][1].shape[:2]
-        if any(a.dtype != np.uint16 or a.shape != (h, w, 3) for _, a, _, _ in layers):
+        if any(len(layer) not in (4, 5) or layer[1].dtype != np.uint16
+               or layer[1].shape != (h, w, 3) for layer in layers):
             raise ControlError("skin layers must be matching RGB16 images")
         if blur_mask is not None and (blur_mask.shape != (h, w) or blur_mask.dtype != np.uint8):
             raise ControlError("layer and mask sizes differ")
@@ -669,19 +801,28 @@ class Bridge(BaseBridge):
         if blur_mask is not None and not source_icc:
             raise ControlError("no ICC profile captured: fetch the picture again before separating")
         scratch_docs, files = [], []
+        primary = None
+        insertion_attempted = False
+        inserted = False
         try:
             icc = source_icc or self._target_profile(target)
             assembly = None
             ids = []
-            blur_id = None
-            for name, pixels, blend, masked in layers:
+            masked_ids = []
+            for layer in layers:
+                name, pixels, blend, masked = layer[:4]
+                opacity = layer[4] if len(layer) == 5 else 100
+                if (isinstance(opacity, bool) or not isinstance(opacity, (int, float))
+                        or not math.isfinite(opacity) or not 0 <= opacity <= 100):
+                    raise ControlError("skin layer opacity must be 0-100 percent")
                 rel = self._file(name)
                 files.append(rel)
                 self._write_rgb(rel, pixels, icc)
                 scratch = self._open(rel)
                 scratch_docs.append(scratch)
                 lid = int(self.client.run("layer.list")["layers"][0]["id"])
-                self.client.run("layer.setProps", layer=lid, name=name, blend=blend)
+                self.client.run("layer.setProps", layer=lid, name=name, blend=blend,
+                                opacity=opacity / 100)
                 if assembly is None:
                     assembly = scratch
                 else:
@@ -693,28 +834,32 @@ class Bridge(BaseBridge):
                     self._activate(assembly)
                 ids.append(lid)
                 if masked:
-                    blur_id = lid
+                    masked_ids.append(lid)
             self._activate(assembly)
             if blur_mask is not None:
                 for i, lid in enumerate(ids):
                     self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
-                lid = int(self.client.run("layer.groupLayers", name="SHP Frequency Separation", mode="Normal")["layer"])
+                lid = int(self.client.run("layer.groupLayers", name=group_name, mode=group_mode)["layer"])
                 rel = self._file("skin mask")
                 files.append(rel)
                 if not cv2.imwrite(str(self.exchange / rel), blur_mask):
                     raise ControlError("could not write the skin mask")
                 mask_doc = self._open(rel)
                 scratch_docs.append(mask_doc)
-                for attempt in range(MASK_ATTEMPTS):
-                    try:
-                        self._activate(assembly)
-                        self.client.run("select.loadSelection", channel="composite", document=mask_doc)
-                        self.client.run("layer.layerMask.revealSelection", layer=blur_id)
-                        break
-                    except ControlError:
-                        if attempt == MASK_ATTEMPTS - 1:
-                            raise
-                        time.sleep(0.2)
+                if not blur_mask.any():
+                    for masked_id in masked_ids:
+                        self.client.run("layer.layerMask.hideAll", layer=masked_id)
+                else:
+                    for masked_id in masked_ids:
+                        for attempt in range(MASK_ATTEMPTS):
+                            try:
+                                self._attach_mask(assembly, mask_doc, masked_id,
+                                                  "Attaching skin mask")
+                                break
+                            except ControlError:
+                                if attempt == MASK_ATTEMPTS - 1:
+                                    raise
+                                time.sleep(0.2)
                 self._release_source(mask_doc, scratch_docs)
                 self._activate(assembly)
             else:
@@ -724,14 +869,35 @@ class Bridge(BaseBridge):
             tops = self.client.run("layer.list").get("layers") or []
             if tops:
                 self.client.run("layer.select", layer=int(tops[0]["id"]))
-            copied = progress.call("Inserting final skin layers", self.client.run, "layer.copyToDocument", document=int(target["index"]),
+            insertion_attempted = True
+            copied = progress.call("Inserting final skin layers", getattr(self.client,"run_once",self.client.run), "layer.copyToDocument", document=int(target["index"]),
                                      source=assembly, layers=[lid])
+            if not isinstance(copied,dict) or len(copied.get("layers") or [])!=1:
+                raise ControlError("PhotoCraft did not return the inserted skin layer ID; inspect the destination")
+            inserted = True
             return {"layer": copied["layers"][0], "document": target["name"]}
+        except Exception as error:
+            primary=error
+            if insertion_attempted and not inserted:
+                primary=ControlError("SkinTools insertion failed or lost its reply; inspect the destination before retrying: "+str(error))
+                raise primary from error
+            raise
         finally:
-            self._cleanup_docs(scratch_docs)
+            cleanup_errors=[]
+            for index in sorted(scratch_docs,reverse=True):
+                try:
+                    self.client.run("file.close",document=index)
+                except ControlError as error:
+                    cleanup_errors.append("could not close skin scratch document: "+str(error))
             try:
                 self._activate(self._find(doc["index"], doc["name"])["index"])
-            except ControlError:
-                pass
+            except ControlError as error:
+                cleanup_errors.append("could not restore skin destination: "+str(error))
             for rel in files:
-                (self.exchange / rel).unlink(missing_ok=True)
+                try:
+                    (self.exchange / rel).unlink(missing_ok=True)
+                except OSError as error:
+                    cleanup_errors.append("could not remove skin transfer file: "+str(error))
+            if cleanup_errors:
+                prefix=str(primary) if primary else "SkinTools inserted" if inserted else "SkinTools send failed"
+                raise ControlError(prefix+"; "+"; ".join(cleanup_errors)) from primary
