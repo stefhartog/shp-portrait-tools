@@ -134,7 +134,8 @@ function xButtons() {
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => b.classList.toggle('on', !X.free && b.dataset.i === String(BASE_RATIOS.findIndex(r => r[0]===X.ratio[0] && r[1]===X.ratio[1])))); $('xFree').classList.toggle('on', X.free);
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => { const [a,c] = BASE_RATIOS[+b.dataset.i]; b.textContent = X.land || a === c ? `${a}:${c}` : `${c}:${a}`; });
   $('xSend').disabled = !(X.hasResult && X.sourceKind) || X.running || busy;
-  $('xGet').disabled = X.running || busy; $('xFiles').disabled = X.running || busy; document.querySelectorAll('#xVariations button').forEach(e => e.disabled = X.running || busy); document.querySelectorAll('#xAdv input,#xAdv select').forEach(e => e.disabled = X.running || busy || X.settingsSaving);
+  $('xGet').disabled = X.running || busy; $('xFiles').disabled = X.running || busy; document.querySelectorAll('#xVariations button').forEach(e => e.disabled = X.running || busy); document.querySelectorAll('#xAdv input:not([type=checkbox]),#xAdv select').forEach(e => e.disabled = X.running || busy || X.settingsSaving);
+  document.querySelectorAll('#xRatios button,#xPrompt').forEach(e=>e.disabled=X.running || busy);
   $('xFreeMemory').disabled = X.running || busy || X.settingsSaving;
 }
 BASE_RATIOS.forEach((r, i) => { const b = document.createElement('button'); b.dataset.i = i; b.title = 'Click again to flip it (landscape / portrait).';
@@ -475,11 +476,34 @@ async function loadStatus() {
   }
   xInfo();
 }
+let cropSliderDrag = null;
+document.addEventListener('pointerdown',event=>{
+  if(event.target.matches?.('#xAdv input[type=range]:not(:disabled)')) cropSliderDrag=event.pointerId;
+},true);
+function finishCropSliderDrag(event) {
+  if(cropSliderDrag===null || (event?.pointerId!==undefined && event.pointerId!==cropSliderDrag)) return;
+  cropSliderDrag=null;
+  if(Object.keys(queuedSettings).length) {
+    const pending=queuedSettings;queuedSettings={};clearTimeout(queuedSettingsTimer);saveSettings(pending);
+  }
+}
+['pointerup','pointercancel','lostpointercapture'].forEach(type=>document.addEventListener(type,finishCropSliderDrag,true));
+window.addEventListener('blur',()=>finishCropSliderDrag());
+let queuedSettings = {}, queuedSettingsTimer = null;
 async function saveSettings(values) {
-  ++statusRequest; X.settingsSaving = true; X.ready = false; xInfo();
-  try { await api('/api/settings', {values}); setStatus('Settings saved', false, true); }
+  if(cropSliderDrag!==null) {Object.assign(queuedSettings,values);return;}
+  if(X.running || busy || X.settingsSaving) {
+    Object.assign(queuedSettings,values);
+    clearTimeout(queuedSettingsTimer);
+    queuedSettingsTimer=setTimeout(()=>{
+      const pending=queuedSettings;queuedSettings={};saveSettings(pending);
+    },100);
+    return;
+  }
+  ++statusRequest; X.settingsSaving = true; X.ready = false; xButtons(); xInfo();
+  try { await api('/api/settings', {values}); await loadStatus(); setStatus('Settings saved', false, true); }
   catch (e) { setStatus(e.message, true); }
-  await loadStatus(); X.settingsSaving = false; xInfo(); updateStar();
+  finally { X.settingsSaving = false; xButtons(); xInfo(); updateStar(); }
 }
 SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[settingKey(k)]: e.type === 'checkbox' ? e.checked : e.value}); });
 $('smethod').onchange = () => saveSettings({method: $('smethod').value});

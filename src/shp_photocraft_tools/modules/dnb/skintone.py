@@ -1,4 +1,4 @@
-"""One hue LUT on Color plus skin-masked Blur, then unmasked Detail restoration."""
+"""Hue on Color plus optional ordinary/directional Blur, then unmasked Detail restoration."""
 
 from functools import lru_cache
 import math
@@ -142,13 +142,17 @@ def separate(img, mask, method, radius, blur_radius, *, native=False):
 
 
 def base(layers, mask, frequency=None):
-    if "blur" not in layers:
-        return layers["color"]
     frequency = frequency or {}
-    opacity = (np.round(np.clip(mask, 0, 1) * 255) / 255
-               if frequency.get("blur_mask", True) else np.ones(mask.shape, np.float32))
-    opacity = opacity * frequency.get("blur_strength", 100) / 100
-    return layers["color"] + (layers["blur"] - layers["color"]) * opacity[..., None]
+    result = layers["color"]
+    if "blur" in layers:
+        opacity = (np.round(np.clip(mask, 0, 1) * 255) / 255
+                   if frequency.get("blur_mask", True) else np.ones(mask.shape, np.float32))
+        opacity = opacity * frequency.get("blur_strength", 100) / 100
+        result = result + (layers["blur"] - result) * opacity[..., None]
+    if "directional" in layers:
+        opacity = layers["directional_mask"] * layers["directional_strength"] / 100
+        result = result + (layers["directional"] - result) * opacity[..., None]
+    return result
 
 
 def composite(layers, mask, p, frequency=None):

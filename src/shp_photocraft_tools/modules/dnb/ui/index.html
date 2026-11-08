@@ -24,7 +24,7 @@
   #info { white-space:pre-line; }
   #temporaryLog { margin-top:8px; }
   #temporaryLogText { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; color:var(--dim); font-size:12px; }
-  #profile { width:100%; height:120px; background:var(--input); border:1px solid var(--line); border-radius:4px; display:block; }
+  #profile, #profile2 { width:100%; height:70px; background:var(--input); border:1px solid var(--line); border-radius:4px; display:block; transform:translateX(-2px); }
   main { display:grid; grid-template-rows: 1fr; min-width:0; min-height:0; }
   #bar b { color:var(--text); }
   #presetBar { margin-left:auto; display:flex; gap:6px; align-items:center; }
@@ -32,7 +32,36 @@
   .ptitle label { font-weight:400; margin-left:10px; cursor:pointer; }
   .ptitle input { vertical-align:middle; margin:0 3px 0 0; }
   .opts { display:flex; align-items:center; flex-wrap:wrap; }
+  .tabs { flex-wrap:wrap; }
   .opts[hidden] { display:none; }
+  #optsAn { gap:6px; margin-left:6px; }
+  #optsAn button { background:transparent; border:0; border-radius:3px; padding:4px; min-height:24px; font-size:11px; font-weight:400; color:color-mix(in srgb, var(--dim) 85%, var(--workspace)); }
+  #optsAn button[aria-pressed="true"] { color:var(--text); }
+  #optsAn button:where(:not(:disabled)):hover { background:transparent; filter:brightness(1.12); }
+  #optsAn button:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  .directional-range { position:relative; flex:1; height:18px; min-width:0; }
+  #directionalSegments > .row { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); width:100%; gap:8px; padding-top:6px; }
+  #directionalSegments > [id^="directionalPair-"], #directionalTorsoControls { padding-bottom:8px; border-bottom:1px solid var(--line); }
+  #directionalSliders { margin-top:10px; }
+  #directionalSegments .limb-side { width:auto; min-width:0; display:flex; flex-direction:column; align-items:center; gap:2px; }
+  #directionalSegments .limb-name { text-align:center; color:var(--dim); }
+  #g-directional:has(#directionalSliders .panel-disabled) .limb-name { color:color-mix(in srgb, var(--dim) 60%, var(--panel)); }
+  #directionalSegments .hint { max-width:100%; overflow-wrap:anywhere; text-align:center; font-size:10px; }
+  #directionalSegments input[type=checkbox]:disabled { background-color:var(--line); }
+  #directionalSegments > .row:has(input:disabled) .limb-side { cursor:help; }
+  .directional-range input { position:absolute; inset:0; width:100%; margin:0; background:transparent; pointer-events:none; appearance:none; transform:translateY(1px); cursor:pointer; }
+  .directional-range::before { content:""; position:absolute; top:8px; left:0; right:0; height:3px; background:var(--line); }
+  .directional-range input[type=range]::-moz-range-track { background:transparent; }
+  .directional-range input[type=range]::-webkit-slider-runnable-track { background:transparent; }
+  .directional-range input[type=range]::-moz-range-progress { background:transparent; }
+  .directional-range input[type=range]::-moz-range-thumb { pointer-events:auto; width:18px; height:18px; background:var(--text); background-clip:padding-box; border:3px solid transparent; border-radius:50%; }
+  .directional-range input[type=range]::-webkit-slider-thumb { appearance:none; pointer-events:auto; width:18px; height:18px; margin-top:-7px; background:var(--text); background-clip:padding-box; border:3px solid transparent; border-radius:50%; }
+  .directional-range input:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  .directional-range input:active:not(:disabled) { cursor:grabbing; }
+  .directional-range input:disabled { cursor:default; }
+  .directional-range:has(input:disabled)::before,
+  .row:has(.directional-range input:disabled) > #directionalRangeValue { opacity:.5; }
+  #directionalRangeValue { width:42px; text-align:right; font-size:11px; color:var(--dim); }
   .pwrap { display:flex; flex-direction:column; min-width:0; min-height:0; }
   .pan { position:relative; flex:1; overflow:hidden; background:var(--workspace); border:1px solid var(--line); border-top:0; cursor:grab; min-height:0; touch-action:none; }
   .pan.drag { cursor:grabbing; }
@@ -73,20 +102,20 @@
   #landmarkSegments { max-height:105px; overflow:auto; font-size:11px; }
   #landmarkSegments label { display:inline-block; margin-right:8px; }
   #landmarkSummary { font-size:11px; color:var(--dim); margin:6px 0; white-space:pre-line; }
-  .distribution { display:block; width:100%; height:100px; background:var(--input); border:1px solid var(--line); border-radius:4px; }
+  .distribution { display:block; width:100%; height:110px; background:var(--input); border:1px solid var(--line); border-radius:4px; transform:translateX(-2px); }
 </style>
 </head>
 <body>
 <div id="app">
 <div id="bar"><div id="barActions"><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Add the correction with its mask to that document in PhotoCraft." disabled>Send Result</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
-  <div class="row" id="toolModeRow"><label for="toolMode">Skin tool</label><select id="toolMode" style="flex:1">
-    <option value="dnb">D&amp;B layers</option><option value="mask">Skin mask</option><option value="frequency">FS + Skintone</option>
+  <div class="row" id="toolModeRow"><label for="toolMode">skin tool</label><select id="toolMode" style="flex:1">
+    <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option>
   </select></div>
   <details class="grp" id="g-frequency" open hidden>
     <summary>Frequency separation</summary>
     <div class="gbody">
-      <div class="row"><label for="frequencyMethod" title="Gaussian: sigma. Median: square radius. Median Fast: same radius, faster 8-bit intermediate; quantization and outer borders differ. RGB16 output." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">Gaussian</option><option value="median">Median</option><option value="median_fast">Median Fast</option></select></div>
+      <div class="row"><label for="frequencyMethod" title="Gaussian: sigma. Median: square radius. Median Fast: same radius, faster 8-bit intermediate; quantization and outer borders differ. RGB16 output." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">gaussian</option><option value="median">median</option><option value="median_fast">median fast</option></select></div>
       <div id="frequencySliders"></div>
     </div>
   </details>
@@ -94,24 +123,48 @@
     <summary><span>Blur</span><label><input type="checkbox" id="blurOn" aria-label="Enable added Blur" title="Calculate and send the additional Blur layer. Color/Detail stay active when off." checked></label></summary>
     <div class="gbody">
       <div id="blurSliders"></div>
-      <div class="row"><label style="width:auto" title="On: skin-aware filtering and the shared Blur layer mask. Off: filter the whole image and send Blur unmasked for manual inpainting. Hue still uses the shared mask."><input type="checkbox" id="blurMask" checked> Skin mask</label></div>
+      <div class="row"><label style="width:auto" title="On: skin-aware filtering and the shared Blur layer mask. Off: filter the whole image and send Blur unmasked for manual inpainting. Hue still uses the shared mask."><input type="checkbox" id="blurMask" checked> skin mask</label></div>
+    </div>
+  </details>
+  <details class="grp mask-group" id="g-directional" hidden>
+    <summary><span>Directional Blur</span><label><input type="checkbox" id="directionalOn" aria-label="Enable Directional Blur" title="Skin-weighted motion sampling along selected limb pose segments, between Color and Detail. Excluded non-skin pixels do not contribute to the directional filter."></label></summary>
+    <div class="gbody">
+      <div id="directionalSegments">
+        <div class="row"><label class="limb-side"><input type="checkbox" id="directionalRightUpperArm"></label><span class="limb-name">upper arm</span><label class="limb-side"><input type="checkbox" id="directionalLeftUpperArm"></label></div>
+        <div class="row"><label class="limb-side"><input type="checkbox" id="directionalRightForearm"></label><span class="limb-name">lower arm</span><label class="limb-side"><input type="checkbox" id="directionalLeftForearm"></label></div>
+        <div class="row"><label class="limb-side"><input type="checkbox" id="directionalRight" checked></label><span class="limb-name">upper leg</span><label class="limb-side"><input type="checkbox" id="directionalLeft" checked></label></div>
+        <div class="row"><label class="limb-side"><input type="checkbox" id="directionalRightLowerLeg"></label><span class="limb-name">lower leg</span><label class="limb-side"><input type="checkbox" id="directionalLeftLowerLeg"></label></div>
+        <div class="row" id="directionalTorsoRow"><label class="limb-side"><input type="checkbox" id="directionalTorso" aria-label="Enable torso Directional Blur"></label><span class="limb-name">torso</span><span></span></div>
+      </div>
+      <div id="directionalSliders"></div>
+      <p class="hint" id="directionalStatus" role="status">Get Image to check limb pose. Region preview shows actual masked coverage.</p>
     </div>
   </details>
   <details class="grp mask-group" id="g-skintone" open hidden>
     <summary><span>Skintone Correction</span><label><input type="checkbox" id="skintoneOn" aria-label="Enable skintone correction" title="When off, skip hue correction calculations and the Hue adjustment on Send. Color, skin-masked Blur and Detail remain active." checked></label></summary>
     <div class="gbody">
       <p class="hint">Hue correction acts between Color and Detail, with optional skin-masked Blur. Off skips hue calculations and sends no Hue LUT.</p>
-      <div class="sub">Hue</div><div id="skintoneHue"></div>
-      <canvas class="distribution" id="hueDistribution" width="680" height="180" aria-label="Skin hue distribution before and after correction by brightness"></canvas>
+      <div class="sub">hue</div><div id="skintoneHue"></div>
+      <canvas class="distribution" id="hueDistribution" width="680" height="198" aria-label="Skin hue distribution before and after correction by brightness"></canvas>
     </div>
   </details>
-  <details class="grp" id="g-bands" open>
-    <summary>Detail level</summary>
+  <details class="grp mask-group" id="g-bands" open>
+    <summary><span>Detail level</span><label><input type="checkbox" id="band1On" checked aria-label="Enable D&B band 1"></label></summary>
     <div class="gbody">
     <div id="bands"></div>
-    <div id="globals"></div>
-    <canvas id="profile" title="Total gain by feature size (mm) for the detail level settings." width="680" height="120" style="width:100%;height:60px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+    <div id="band1Strength"></div>
+    <canvas id="profile" title="Total gain by feature size (mm) for the detail level settings." width="680" height="140" style="width:100%;height:70px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
     </div>
+  </details>
+  <details class="grp mask-group" id="g-band2" hidden>
+    <summary><span>Detail level 2</span><label><input type="checkbox" id="band2On" aria-label="Enable D&B band 2"></label></summary>
+    <div class="gbody"><div id="band2Sliders"></div>
+      <div class="row"><label><input type="checkbox" id="band2Invert"> invert</label></div>
+      <canvas id="profile2" width="680" height="140" style="margin-top:6px" aria-label="Band 2 gain by feature size in millimetres"></canvas>
+    </div>
+  </details>
+  <details class="grp" id="g-dnb-shared" open>
+    <summary>Shared D&amp;B controls</summary><div class="gbody"><div id="globals"></div></div>
   </details>
   <details class="grp mask-group" id="g-mask" open>
     <summary><span>Skin mask</span><label><input type="checkbox" id="maskOn" aria-label="Enable skin mask" title="Only correct skin: pixels outside the skin mask are left unchanged. Eyes, brows, lips, nostrils and off-colour pixels such as tattoos are always left out." checked></label></summary>
@@ -129,7 +182,7 @@
     <summary><span class="sub-title">Light range<button type="button" class="color-swatch" id="toneSwatch" aria-label="Pick light range" title="Click, then click a point in the Original preview to center the light range on its brightness"></button></span><label><input type="checkbox" id="toneOn" aria-label="Enable light range" title="Only correct midtones: the light range below is multiplied into the mask." checked></label></summary>
     <div class="gbody">
       <div id="tone"></div>
-      <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="120" style="width:100%;height:60px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px"></canvas>
+      <canvas id="toneplot" title="How much of the correction each brightness gets (dark on the left, light on the right)." width="680" height="140" style="width:100%;height:70px;background:var(--input);border:1px solid var(--line);border-radius:4px;display:block;margin-top:6px;transform:translateX(-2px)"></canvas>
     </div>
   </details>
   <details class="grp mask-group" id="g-color" open>
@@ -142,13 +195,13 @@
     <summary>Image analysis</summary>
     <div class="gbody">
       <div id="maskOperations">
-        <div class="row" id="maskPrecacheRow"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> Precache skin mask <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></label></div>
+        <div class="row" id="maskPrecacheRow"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></label></div>
         <details id="g-transfer">
           <summary>PhotoCraft layer transfer (FS + Skintone only)</summary>
-          <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">PNG</option><option value="tiff">TIFF</option></select></div>
-          <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">Lossless compressed</option><option value="none">Uncompressed</option></select></div>
-          <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> Include opaque alpha</label></div>
-          <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> Parallel encoding (two encoders)</label></div>
+          <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
+          <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">lossless compressed</option><option value="none">uncompressed</option></select></div>
+          <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> include opaque alpha</label></div>
+          <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> parallel encoding (two encoders)</label></div>
           <p class="hint" id="transferHint"></p>
           <p class="hint">RGB16 with the captured ICC. Color / Detail stay active; switching FS off omits only added Blur. Shared masks remain grayscale PNG8. Does not change preview or local exports. PhotoCraft calls stay serialized; source must remain opaque.</p>
         </details>
@@ -157,8 +210,8 @@
       <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
       <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
       <div id="landmarkEditor" hidden>
-        <div class="row"><label for="landmarkSubject">Subject</label><select id="landmarkSubject"></select></div>
-        <div class="row"><label for="landmarkName">Point</label><select id="landmarkName"></select></div>
+        <div class="row"><label for="landmarkSubject">subject</label><select id="landmarkSubject"></select></div>
+        <div class="row"><label for="landmarkName">point</label><select id="landmarkName"></select></div>
         <div class="hint">Click to place; drag a point or use arrow keys to nudge it. Alt-drag pans; wheel zooms. Eye centres are the centres of the visible pupils.</div>
         <div class="row"><button id="landmarkMissing">Mark missing</button><button id="landmarkUndo">Undo</button><button id="landmarkReset">Reset</button></div>
         <div class="sub">Exclude unreliable / foreshortened segments</div><div id="landmarkSegments"></div>
@@ -172,7 +225,7 @@
     </div>
   </details>
   <div id="manual" hidden>
-    <select id="view"><option value="detail">Face crop</option><option value="crop" selected>Portrait crop</option><option value="whole">Whole image</option></select>
+    <select id="view"><option value="detail">face crop</option><option value="crop" selected>portrait crop</option><option value="whole">whole image</option></select>
     <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
     <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
     <div class="row"><button class="primary" id="apply" disabled>Apply</button><button class="workflow" id="save" disabled>Save</button></div>
@@ -195,14 +248,16 @@
       <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
       <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Layer</button>
       <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Layer + mask</button>
+      <button class="tab" data-k="layer2" hidden>Band 2</button>
+      <button class="tab" data-k="layer2m" hidden>Band 2 + mask</button>
       <button class="tab" data-k="color" hidden title="Full-image low frequencies, no skin mask.">Color</button>
-      <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button></div>
+      <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button>
+      <button class="tab" data-k="directional_region" hidden title="Blue overlay of Directional Blur's feathered region union intersected with the shared skin mask.">Region</button></div>
       <span class="opts" id="optsAn" hidden>
-      <label title="Detected faces (box, eyes/nose/mouth points, face mesh features) and bodies (skeleton). Yellow = AF/target subject, gray = others, orange box = region used for the skin mask."><input type="checkbox" id="anDetect" checked>faces &amp; bodies</label>
-      <label title="Skin mask in green; magenta = eyes, brows, lips, nostrils left out; orange = off-colour skin (e.g. tattoos) left out."><input type="checkbox" id="anSkin" checked>skin</label>
-      <label title="Narrow structure (folds, creases, contours) in red, as set by the structure protection sliders. Shown whether or not protection is on."><input type="checkbox" id="anStruct" checked>structure</label></span>
-      <span class="opts" id="optsLayer" hidden>
-      <label title="Stretch the layer around 50% gray by 8 so small changes are visible. Display only."><input type="checkbox" id="layerX" checked>stretch x8</label></span></div>
+      <button type="button" id="anDetect" aria-pressed="true" title="Detected faces (box, eyes/nose/mouth points, face mesh features) and bodies (skeleton). Yellow = AF/target subject, gray = others, orange box = region used for the skin mask.">faces &amp; bodies</button>
+      <button type="button" id="anSkin" aria-pressed="true" title="Skin mask in green; magenta = eyes, brows, lips, nostrils left out; orange = off-colour skin (e.g. tattoos) left out.">skin</button>
+      <button type="button" id="anStruct" aria-pressed="true" title="Narrow structure (folds, creases, contours) in red, as set by the structure protection sliders. Shown whether or not protection is on.">structure</button></span>
+      </div>
       <div class="pan" id="p1"><div class="empty">no result yet</div></div></div>
   </div>
 </main>
@@ -211,6 +266,17 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
+const DIRECTIONAL_DEFAULTS = {on:false, left:true, right:true, distance:30, strength:100, width:100, start:0, end:100, taper:0, feather:3,
+  left_lower_leg:false,right_lower_leg:false,left_upper_arm:false,right_upper_arm:false,left_forearm:false,right_forearm:false,torso:false};
+function directionalSettings(raw={}) {
+  const p={...DIRECTIONAL_DEFAULTS,...raw,pairs:{}};
+  if(raw.length!==undefined&&raw.end===undefined)p.end=raw.length;
+  for(const pair of ['upper_arm','forearm','upper_leg','lower_leg']){
+    p.pairs[pair]={distance:p.distance,width:p.width,taper:p.taper,strength:p.strength,feather:p.feather,start:p.start,end:p.end,...raw.pairs?.[pair]};
+  }
+  p.torso_controls={distance:p.distance,width:100,taper:0,strength:p.strength,feather:p.feather,start:p.start,end:p.end,...raw.torso_controls};
+  return p;
+}
 function uiMode(mode) {
   return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency'].includes(mode) ? mode : 'dnb';
 }
@@ -218,6 +284,7 @@ const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:true, par
 const state = {
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
+  directional: directionalSettings(),
   frequencyTransfer: {...TRANSFER_DEFAULTS},
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
   strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0, layerBlur: 0,
@@ -286,14 +353,14 @@ function renderAnalysisSummary() {
     `Detected mask: ${image.has_mask ? 'available' : 'unavailable'}${Number.isFinite(image.mask_pct) ? ' ('+image.mask_pct+'%)' : ''}`,
     `Hue midpoint: ${value(state.skintone.hue_center,'°')}`,
     `Light midpoint: ${value(state.tone.mid*100,'%')}${$('toneOn').checked ? '' : ' (disabled)'}`,
-    `Color midpoint: hue ${value(state.color.hue,'°')}, saturation ${value(Number.isFinite(state.color.saturation) ? state.color.saturation*100 : null,'%')}${$('colorOn').checked ? '' : ' (disabled)'}`,
+    `Color midpoint: hue ${value(state.color.hue,'°')}, sat ${value(Number.isFinite(state.color.saturation) ? state.color.saturation*100 : null,'%')}${$('colorOn').checked ? '' : ' (disabled)'}`,
     state.hueCenterNote || '',
     state.skintoneError || ''
   ].filter(Boolean).join('\n');
 }
 function slider(parent, label, min, max, step, value, onInput, opts={}) {
   const row = document.createElement('div'); row.className = 'row';
-  const lab = document.createElement('label'); lab.textContent = label;
+  const lab = document.createElement('label'); lab.textContent = label.toLowerCase();
   if (opts.tip) { lab.title = opts.tip; lab.style.cursor = 'help'; }
   const rng = document.createElement('input'); rng.type = 'range';
   const num = document.createElement('input'); num.type = 'text'; num.readOnly = true; num.tabIndex = -1; num.className = 'val';
@@ -314,14 +381,31 @@ function slider(parent, label, min, max, step, value, onInput, opts={}) {
   row.append(lab, rng, num); parent.append(row);
   return { set, row, rng, num, lab };
 }
+let sliderDrag = null;
+function finishSliderDrag(event) {
+  if (!sliderDrag || (event?.pointerId !== undefined && event.pointerId !== sliderDrag.pointer)) return;
+  const changed=settingsRevision!==sliderDrag.revision;
+  sliderDrag=null;
+  if(changed && state.loaded && !state.busy) {
+    clearTimeout(markDirty.t);markDirty.t=setTimeout(apply,0);
+  }
+}
+document.addEventListener('pointerdown',event=>{
+  if(!event.target.matches?.('aside input[type=range]:not(:disabled)')) return;
+  sliderDrag={pointer:event.pointerId,revision:settingsRevision};
+  clearTimeout(markDirty.t);
+},true);
+['pointerup','pointercancel','lostpointercapture'].forEach(type=>document.addEventListener(type,finishSliderDrag,true));
+window.addEventListener('blur',()=>finishSliderDrag());
 function markDirty() {
+  syncPanelAvailability();
   invalidateMaskCacheStatus();
   renderAnalysisSummary();
   settingsRevision++;
   if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
   state.dirty = true; $('apply').classList.add('dirty');
   drawProfile();
-  if (state.loaded && !state.busy) { clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350); }
+  if (state.loaded && !state.busy && !sliderDrag) { clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350); }
 }
 
 const sliders = {};
@@ -350,6 +434,131 @@ $('blurOn').onchange = () => {
   state.frequency.on = $('blurOn').checked; syncFrequencyControls(); markDirty();
 };
 $('blurMask').onchange = () => { state.frequency.blur_mask = $('blurMask').checked; markDirty(); };
+const directionalSegments = [
+  ['directionalLeft','left','left upper leg','hip to knee'],
+  ['directionalRight','right','right upper leg','hip to knee'],
+  ['directionalLeftLowerLeg','left_lower_leg','left lower leg','knee to ankle'],
+  ['directionalRightLowerLeg','right_lower_leg','right lower leg','knee to ankle'],
+  ['directionalLeftUpperArm','left_upper_arm','left upper arm','shoulder to elbow'],
+  ['directionalRightUpperArm','right_upper_arm','right upper arm','shoulder to elbow'],
+  ['directionalLeftForearm','left_forearm','left forearm','elbow to wrist'],
+  ['directionalRightForearm','right_forearm','right forearm','elbow to wrist']
+];
+directionalSegments.forEach(([id,key,label,axis])=>{
+  $(id).setAttribute('aria-label',`Subject's anatomical ${label.replace('forearm','lower arm')}`);
+  $(id).parentElement.title=`Subject's anatomical ${label.split(' ')[0]}, not image side; ${axis}.`;
+  $(id).title=$(id).parentElement.title;
+});
+const directionalSliders = {};
+[
+  ['strength','Strength',0,100,1,'Preview blend and native layer opacity. Full-strength raster is sent.'],
+  ['feather','Feather',0,50,.5,'Gaussian sigma on the combined region mask, pixels at S181. Intersected with the shared skin mask.'],
+].forEach(([key,label,min,max,step,tip]) => {
+  directionalSliders[key] = slider($('directionalSliders'), label, min, max, step, state.directional[key],
+    value => {state.directional[key]=value;markDirty();}, {tip});
+});
+const directionalPairSliders={};
+const directionalPairs=[
+  ['upper_arm','directionalLeftUpperArm','left_upper_arm','right_upper_arm'],
+  ['forearm','directionalLeftForearm','left_forearm','right_forearm'],
+  ['upper_leg','directionalLeft','left','right'],
+  ['lower_leg','directionalLeftLowerLeg','left_lower_leg','right_lower_leg']
+];
+for(const [pair,id] of directionalPairs){
+  const parent=document.createElement('div');parent.id='directionalPair-'+pair;
+  $(id).closest('.row').after(parent);
+  directionalPairSliders[pair]={};
+  for(const [key,label,min,max,step,tip] of [
+    ['distance','Distance',0,300,1,'Centred motion span in pixels at S181, shared by this pair. Zero skips motion filtering.'],
+    ['width','Width',1,1000,1,'Proximal region width in pixels at S181, shared by this pair.'],
+    ['taper','Taper',0,90,1,'Percent narrowing toward the distal end, shared by this pair.']
+    ,['strength','Strength',0,100,1,'Strength of this pair in the combined editable layer.']
+    ,['feather','Feather',0,50,.5,'Region feather sigma at S181 for this pair.']
+    ,['start','Start %',0,99,1,'Proximal endpoint of this pair region.']
+    ,['end','End %',1,100,1,'Distal endpoint of this pair region.']
+  ]){
+    directionalPairSliders[pair][key]=slider(parent,label,min,max,step,state.directional.pairs[pair][key],
+      value=>{
+        const p=state.directional.pairs[pair];
+        p[key]=key==='start'?Math.min(value,p.end-1):key==='end'?Math.max(value,p.start+1):value;
+        directionalPairSliders[pair][key].set(p[key],false);markDirty();
+      },{tip});
+  }
+}
+const directionalTorsoSliders={};
+  const torsoContainer=document.createElement('div');torsoContainer.id='directionalTorsoControls';
+  $('directionalTorsoRow').after(torsoContainer);
+  for(const [key,label,min,max,tip] of [
+    ['distance','Distance',0,300,'Centred motion along shoulder midpoint to hip midpoint; pixels at S181.'],
+    ['width','Width %',1,200,'100% covers the full shoulder/hip box; smaller values narrow around the torso centreline.'],
+    ['taper','Taper',0,90,'Percent narrowing toward the hips. Zero retains the full detected torso shape.']
+    ,['strength','Strength',0,100,'Torso strength in the combined editable layer.']
+    ,['feather','Feather',0,50,'Torso region feather sigma at S181.']
+    ,['start','Start %',0,99,'Shoulder-side torso endpoint.']
+    ,['end','End %',1,100,'Hip-side torso endpoint.']
+  ]){
+    directionalTorsoSliders[key]=slider(torsoContainer,label,min,max,1,state.directional.torso_controls[key],
+      value=>{
+        const p=state.directional.torso_controls;
+        p[key]=key==='start'?Math.min(value,p.end-1):key==='end'?Math.max(value,p.start+1):value;
+        directionalTorsoSliders[key].set(p[key],false);markDirty();
+      },{tip});
+  }
+const directionalRange = document.createElement('div');
+directionalRange.className='row';
+directionalRange.innerHTML='<label title="Two endpoints on each original proximal-to-distal limb axis: 0% is hip/shoulder/elbow/knee, 100% is knee/elbow/wrist/ankle. At least 1% apart. Rounded caps/feather extend beyond endpoints; motion Distance is independent.">region %</label><div class="directional-range"><input id="directionalStart" type="range" min="0" max="100" step="1" aria-label="Proximal region endpoint percent"><input id="directionalEnd" type="range" min="0" max="100" step="1" aria-label="Distal region endpoint percent"></div><output id="directionalRangeValue"></output>';
+$('directionalSliders').append(directionalRange);
+$('directionalSliders').hidden=true;
+function syncDirectionalRange() {
+  $('directionalStart').value=state.directional.start;
+  $('directionalEnd').value=state.directional.end;
+  $('directionalStart').disabled=$('directionalEnd').disabled=!state.directional.on;
+  $('directionalRangeValue').textContent=`${state.directional.start}–${state.directional.end}`;
+}
+[['directionalStart','start'],['directionalEnd','end']].forEach(([id,key])=>{
+  $(id).oninput=()=>{
+    const value=Number($(id).value);
+    state.directional[key]=key==='start' ? Math.min(value,state.directional.end-1) : Math.max(value,state.directional.start+1);
+    syncDirectionalRange();markDirty();
+  };
+});
+function syncDirectionalControls() {
+  const p=state.directional;
+  [['directionalOn','on'],...directionalSegments].forEach(([id,key]) => {
+    const availability=state.imageInfo?.directional_pose?.[key];
+    $(id).checked=p[key];
+    $(id).disabled=key!=='on' && (!p.on || availability!=='Available');
+    if(key!=='on'){
+      const segment=directionalSegments.find(([control])=>control===id);
+      $(id).title=`Subject's anatomical ${segment[2]}, not image side; ${segment[3]}. ${availability || 'Get Image to check geometry.'}`;
+      $(id).parentElement.title=$(id).title;
+    }
+  });
+  Object.values(directionalSliders).forEach(s => {s.rng.disabled=s.num.disabled=!p.on;});
+  syncDirectionalRange();
+  for(const [pair,id,left,right] of directionalPairs){
+    const geometry=state.imageInfo?.directional_pose;
+    const selected=p.on&&((p[left]&&geometry?.[left]==='Available')||(p[right]&&geometry?.[right]==='Available'));
+    $('directionalPair-'+pair).hidden=!selected;
+    Object.values(directionalPairSliders[pair]).forEach(s=>{s.rng.disabled=s.num.disabled=!selected;});
+  }
+  const torsoAvailable=state.imageInfo?.directional_pose?.torso;
+  $('directionalTorso').checked=p.torso;
+  $('directionalTorso').disabled=!p.on || torsoAvailable!=='Available';
+  $('directionalTorso').title='Shoulder midpoint to hip midpoint, whole shoulder/hip box. '+(torsoAvailable || 'Get Image to check torso geometry.');
+  $('directionalTorso').parentElement.title=$('directionalTorso').title;
+  Object.values(directionalTorsoSliders).forEach(s=>{s.rng.disabled=s.num.disabled=!p.on||!p.torso||torsoAvailable!=='Available';});
+  $('directionalTorsoControls').hidden=!p.on||!p.torso||torsoAvailable!=='Available';
+  $('directionalStatus').textContent=p.on ? 'Region preview shows masked coverage. Hover a switch for geometry details.' : 'Off: no directional calculations.';
+}
+$('directionalOn').onclick=event=>event.stopPropagation();
+[['directionalOn','on'],...directionalSegments,['directionalTorso','torso']].forEach(([id,key]) => {
+  $(id).onchange=()=>{
+    state.directional[key]=$(id).checked;
+    if(key==='on' && state.directional.on && state.mode==='frequency') tabSel.B='directional_region';
+    syncDirectionalControls();syncTabs();markDirty();
+  };
+});
 function syncTransfer() {
   const t = state.frequencyTransfer;
   $('transferFormat').value = t.format;
@@ -382,7 +591,7 @@ const skintoneSliders = {};
     }, {tip, preserveValue:true});
   skintoneSliders[key].rng.id = 'skintone-'+key;
   skintoneSliders[key].lab.htmlFor = 'skintone-'+key;
-  skintoneSliders[key].rng.setAttribute('aria-label', 'Skintone '+key.replaceAll('_',' '));
+  skintoneSliders[key].rng.setAttribute('aria-label', 'skintone '+key.replaceAll('_',' '));
 });
 function drawSkintone(data) {
   const rows = data?.bins || [], populated = rows.some(Boolean);
@@ -476,6 +685,26 @@ $('S').onchange = () => { scaleFrequencyRadius(); markDirty(); };
 
 /* ---------- bands ---------- */
 const bandSliders = [];
+const SECOND_BAND_DEFAULTS={on:false,invert:false,lo:1.5,hi:50,taper:.5,strength:1};
+state.band1On=true;state.secondBand={...SECOND_BAND_DEFAULTS};
+function renderSecondBand() {
+  const root=$('band2Sliders');root.innerHTML='';
+  const b=state.secondBand,st={mid:Math.sqrt(b.lo*b.hi),range:Math.log2(b.hi/b.lo)};
+  const update=()=>{b.lo=Math.max(.3,st.mid/2**(st.range/2));b.hi=Math.min(300,st.mid*2**(st.range/2));markDirty();};
+  slider(root,'midpoint',.3,300,.01,st.mid,v=>{st.mid=v;update();},{log:true,tip:'Band 2 feature size in mm at the subject.'});
+  slider(root,'range',.2,10,.05,Math.min(10,Math.max(.2,st.range)),v=>{st.range=v;update();});
+  slider(root,'taper',.1,2,.05,b.taper,v=>{b.taper=v;markDirty();});
+  slider(root,'strength',0,4,.01,b.strength,v=>{b.strength=v;markDirty();});
+  $('band1On').checked=state.band1On;$('band2On').checked=b.on;$('band2Invert').checked=b.invert;
+  syncPanelAvailability();
+}
+['band1On','band2On','band2Invert'].forEach(id=>{
+  $(id).onclick=e=>e.stopPropagation();
+  $(id).onchange=()=>{
+    state.band1On=$('band1On').checked;state.secondBand.on=$('band2On').checked;state.secondBand.invert=$('band2Invert').checked;
+    syncTabs();markDirty();
+  };
+});
 function renderBands() {
   const root = $('bands'); root.innerHTML = ''; bandSliders.length = 0;
   const b = state.bands[0];
@@ -490,7 +719,7 @@ function renderBands() {
   slider(root, 'taper', 0.1, 2, 0.05, b.taper, v => { b.taper = v; markDirty(); }, {tip:'How softly the two ends of the size range fade out.'});
 }
 /* ---------- global + tone sliders ---------- */
-sliders.strength = slider($('globals'), 'strength', 0, 4, 0.01, state.strength, v => { state.strength = v; markDirty(); }, {tip:'Multiplies the gain of the band.'});
+sliders.strength = slider($('band1Strength'), 'strength', 0, 4, 0.01, state.strength, v => { state.strength = v; markDirty(); }, {tip:'Multiplies the gain of band 1 only.'});
 const LAYER_BLUR_TIP = 'Gaussian blur of the unmasked Soft Light layer, in px at S181. Full-image sigma = value × S / 181; preview scales with resolution. Mask is unchanged. 0 = no blur. Independent of FS Radius.';
 function updateLayerBlurTip() {
   const S = Number($('S').value);
@@ -510,9 +739,9 @@ sliders.toneRange = slider($('tone'), 'range', 0.05, 1.2, 0.01, state.tone.range
 sliders.toneTaper = slider($('tone'), 'taper', 0.01, 0.5, 0.01, state.tone.taper, v => { state.tone.taper = v; drawTone(); markDirty(); }, {tip:'How softly both edges of the range fade out.'});
 sliders.colorStrength = slider($('colorSliders'), 'strength', 0, 1, 0.01, state.color.strength, v => { state.color.strength = v; markDirty(); }, {tip:'How strongly the color range limits the correction (1 = fully, 0 = not at all).'});
 sliders.colorHue = slider($('colorSliders'), 'hue range °', 1, 180, 1, state.color.hueRange, v => { state.color.hueRange = v; markDirty(); }, {tip:'How far the selected hue can vary in either direction. Hue wraps around red.'});
-sliders.colorSaturation = slider($('colorSliders'), 'saturation range', 0.01, 1, 0.01, state.color.saturationRange, v => { state.color.saturationRange = v; markDirty(); }, {tip:'How far saturation can vary above or below the picked color.'});
-sliders.colorBlur = slider($('colorSliders'), 'feather mm', 0, 10, 0.1, state.color.blurMm, v => { state.color.blurMm = v; markDirty(); }, {tip:'Blurs the color mask to remove pixelated edges.'});
-sliders.colorSmooth = slider($('colorSliders'), 'smoothing mm', 0, 5, 0.1, state.color.smoothMm, v => { state.color.smoothMm = v; markDirty(); }, {tip:'Blurs the image before the color test, so skin texture and noise do not break up the mask.'});
+sliders.colorSaturation = slider($('colorSliders'), 'sat range', 0.01, 1, 0.01, state.color.saturationRange, v => { state.color.saturationRange = v; markDirty(); }, {tip:'How far saturation can vary above or below the picked color.'});
+sliders.colorBlur = slider($('colorSliders'), 'feather', 0, 10, 0.1, state.color.blurMm, v => { state.color.blurMm = v; markDirty(); }, {tip:'Blurs the color mask to remove pixelated edges, in mm on the face.'});
+sliders.colorSmooth = slider($('colorSliders'), 'smoothing', 0, 5, 0.1, state.color.smoothMm, v => { state.color.smoothMm = v; markDirty(); }, {tip:'Blurs the image before the color test, in mm on the face, so skin texture and noise do not break up the mask.'});
 sliders.feather = slider($('maskSliders'), 'feather mm', 0, 10, 0.1, state.maskFeather, v => { state.maskFeather = v; markDirty(); }, {tip:'Softens the mask edge, in mm on the face. It fades inward only, so the correction does not spill onto hair or background.'});
 sliders.protect = slider($('structSliders'), 'strength', 0, 1, 0.01, state.structure.protect, v => { state.structure.protect = v; markDirty(); }, {tip:'How much the correction is reduced on detected folds, creases and contours. 0 = off.'});
 sliders.protectMm = slider($('structSliders'), 'feature mm', 1, 15, 0.1, state.structure.mm, v => { state.structure.mm = v; markDirty(); }, {tip:'Width of the structures to protect, in mm on the subject. Small = fine creases, large = broader contours and muscle definition.'});
@@ -560,10 +789,20 @@ async function drawTone() {
 /* ---------- gain profile plot ---------- */
 async function drawProfile() {
   clearTimeout(drawProfile.t);
+  const revision=drawProfile.revision=(drawProfile.revision||0)+1;
+  const second=state.secondBand;
+  const profiles=[
+    {id:'profile',bands:bandsPayload(),strength:state.strength},
+    {id:'profile2',bands:[[second.lo,second.hi,1,second.taper]],strength:second.strength}
+  ];
   drawProfile.t = setTimeout(async () => {
+    for(const profile of profiles) {
     try {
-      const p = await api('/api/profile', {bands: bandsPayload(), strength: state.strength});
-      const c = $('profile'), x = c.getContext('2d'), W = c.width, H = c.height, padL = 34, padB = 22, padT = 8, padR = 8;
+      const p = await api('/api/profile', {bands:profile.bands,strength:profile.strength});
+      if(revision!==drawProfile.revision) return;
+      const c = $(profile.id);
+      if(!c) continue;
+      const x = c.getContext('2d'), W = c.width, H = c.height, padL = 34, padB = 22, padT = 8, padR = 8;
       x.clearRect(0, 0, W, H);
       const gmax = 4.1;
       const X = s => padL + (Math.log(s/0.5) / Math.log(400)) * (W - padL - padR);
@@ -577,7 +816,8 @@ async function drawProfile() {
       x.fillStyle = 'rgba(76,141,255,.30)'; x.fill();
       x.strokeStyle = '#4c8dff'; x.lineWidth = 2; x.beginPath();
       p.sizes.forEach((s, i) => i ? x.lineTo(X(s), Y(p.gains[i])) : x.moveTo(X(s), Y(p.gains[i]))); x.stroke();
-    } catch (e) { /* ignore */ }
+    } catch (e) { if(revision===drawProfile.revision) setStatus('Detail graph unavailable: '+e.message,true); }
+    }
   }, 60);
 }
 function bandsPayload() { return state.bands.map(b => [b.lo, b.hi, b.gain, b.taper]); }
@@ -676,6 +916,7 @@ function applyLoaded(r) {
     ['maskOn'].forEach(id => { $(id).disabled = !r.has_mask; });
     if (!r.has_mask) { $('maskOn').checked = false; }
     else { $('maskOn').checked = true; }
+    syncDirectionalControls();
     if (loadProgress && r.timings && !loadProgress.streamed) {
       loadProgress.steps = [
         `Image loaded in ${r.timings.loaded.toFixed(2)}s`,
@@ -741,18 +982,44 @@ async function loadImage() {
   setBusy(false);
   if (loaded) apply();
 }
-function setBusy(b) {
+let panelOperationBusy = false, previewMaskBusy = false;
+const panelIntrinsicDisabled = new WeakMap();
+function syncPanelAvailability() {
+  if (typeof document.querySelectorAll !== 'function') return;
+  document.querySelectorAll('aside button,aside input,aside select').forEach(control => {
+    if (!panelIntrinsicDisabled.has(control)) {
+      const descriptor=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(control),'disabled');
+      if (!descriptor) return;
+      const entry={value:control.disabled,descriptor};
+      panelIntrinsicDisabled.set(control,entry);
+      // Preserve each control's own availability when operation/panel gating changes.
+      Object.defineProperty(control,'disabled',{get(){return descriptor.get.call(this);},
+        set(value){entry.value=!!value;syncPanelAvailability();}});
+    }
+    const entry=panelIntrinsicDisabled.get(control);
+    const panel=control.closest('details.grp');
+    const toggle=panel?.querySelector(':scope > summary input[type=checkbox]');
+    const isToggle=control===toggle;
+    const blocked=!isToggle && (panelOperationBusy || previewMaskBusy || (toggle && !toggle.checked));
+    entry.descriptor.set.call(control,entry.value || !!blocked);
+    control.classList.toggle('panel-disabled',control.disabled);
+  });
+}
+function setBusy(b, operation=true) {
+  panelOperationBusy=b && operation;
+  if(!b) previewMaskBusy=false;
+  syncPanelAvailability();
   state.busy = b;
   const st = $('status');
   st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
-  $('toolMode').disabled = b;
-  ['transferFormat','transferCompression','transferAlpha','transferParallel','skintoneOn','blurOn'].forEach(id => { $(id).disabled = b; });
-  $('landmarkOpen').disabled = b || !state.loaded;
+  $('toolMode').disabled = panelOperationBusy;
+  ['transferFormat','transferCompression','transferAlpha','transferParallel'].forEach(id => { $(id).disabled = panelOperationBusy; });
+  $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
-    $(id).disabled = b || !state.loaded;
+    $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
   });
   if (!b && pendingShellMode) {
@@ -763,12 +1030,16 @@ function setBusy(b) {
 function previewFeedback(quiet) {
   let visible = !quiet, message = 'Computing...';
   const events = ['pointerdown', 'click', 'keydown', 'beforeinput', 'input', 'change'];
-  const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
+  const block = event => {
+    if(event.target?.matches?.('aside details.grp > summary input[type=checkbox]') ||
+       event.target?.closest?.('aside details.grp > summary label')) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+  };
   state.busy = true;
   if (quiet) events.forEach(type => document.addEventListener(type, block, true));
-  else { setBusy(true); setStatus(message); }
+  else { setBusy(true,false); setStatus(message); }
   const timer = quiet ? setTimeout(() => {
-    visible = true; setBusy(true); setStatus(message);
+    visible = true; setBusy(true,false); setStatus(message);
   }, 150) : null;
   return {
     stage(text) { message = text; if (visible) setStatus(text); },
@@ -779,15 +1050,17 @@ function previewFeedback(quiet) {
     }
   };
 }
-function analysisFlags() { return {detect: $('anDetect').checked, skin: $('anSkin').checked, structure: $('anStruct').checked}; }
-['anDetect', 'anSkin', 'anStruct'].forEach(id => $(id).onchange = async () => {
-  localStorage.setItem('dnb-' + id, $(id).checked ? '1' : '0');
+function analysisFlags() { return {detect: $('anDetect').getAttribute('aria-pressed') === 'true', skin: $('anSkin').getAttribute('aria-pressed') === 'true', structure: $('anStruct').getAttribute('aria-pressed') === 'true'}; }
+['anDetect', 'anSkin', 'anStruct'].forEach(id => $(id).onclick = async () => {
+  const pressed = $(id).getAttribute('aria-pressed') !== 'true';
+  $(id).setAttribute('aria-pressed', String(pressed));
+  localStorage.setItem('dnb-' + id, pressed ? '1' : '0');
   if (!state.version || state.busy) return;
   try { const r = await api('/api/analysis', {analysis: analysisFlags()}); state.avers = r.avers; showImages(); } catch (e) { setStatus(e.message, true); }
 });
-['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).checked = v === '1'; });
+['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).setAttribute('aria-pressed', String(v === '1')); });
 function params() {
-  return { mode: uiMode(state.mode), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: uiMode(state.mode), band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -797,7 +1070,7 @@ function params() {
            view: $('view').value };
 }
 async function apply({quiet=false}={}) {
-  if (state.busy || !state.loaded) return;
+  if (state.busy || !state.loaded || sliderDrag) return;
   const p = params(); if (!(p.S > 0)) {
     if (loadProgress && !loadProgress.finished) {
       recordLoadStage('Preview not generated: enter S first.'); loadProgress.finished = true;
@@ -810,7 +1083,25 @@ async function apply({quiet=false}={}) {
   const processingStarted = loadingPreview ? progress.started : started;
   const feedback = previewFeedback(quiet);
   try {
-    const r = await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked});
+    const token=crypto.randomUUID();
+    let maskPoll=null,maskPolling=true;
+    const pollMask=async()=>{
+      try {
+        const snapshot=await api('/api/progress?token='+token);
+        if(maskPolling) {
+          previewMaskBusy=snapshot.active==='Calculating preview skin mask';
+          syncPanelAvailability();
+        }
+      } catch(e) { if(maskPolling) logNote('Preview progress unavailable: '+e.message); }
+      if(maskPolling) maskPoll=setTimeout(pollMask,100);
+    };
+    maskPoll=setTimeout(pollMask,100);
+    let r;
+    try {
+      r=await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked,_progress:token});
+    } finally {
+      maskPolling=false;clearTimeout(maskPoll);previewMaskBusy=false;syncPanelAvailability();
+    }
     if (epoch === state.loadEpoch && revision === settingsRevision) {
       state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
       if (loadingPreview && progress === loadProgress) recordLoadStage('Preview computed', (performance.now()-started)/1000);
@@ -844,7 +1135,7 @@ async function apply({quiet=false}={}) {
   } finally {
     feedback.finish();
   }
-  if (state.dirty && revision !== settingsRevision) {
+  if (state.dirty && revision !== settingsRevision && !sliderDrag) {
     clearTimeout(markDirty.t); markDirty.t = setTimeout(apply, 350);
   }
 }
@@ -968,7 +1259,7 @@ $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
 if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
 function rightPreviewKinds(mode) {
-  return mode === 'frequency' ? ['color', 'detail'] : mode === 'dnb' ? ['layer', 'layerm'] : ['mask', 'analysis'];
+  return mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', ...(state.secondBand?.on ? ['layer2','layer2m'] : [])] : ['mask', 'analysis'];
 }
 function syncRightTabs() {
   const allowed = rightPreviewKinds(state.mode);
@@ -981,16 +1272,13 @@ function syncLeftTabs() {
   if (mask && tabSel.A === 'result') tabSel.A = 'orig';
 }
 function paneKinds() {
-  const x = $('layerX').checked;
-  const b = tabSel.B === 'layer' ? (x ? 'layerx' : 'layer') : tabSel.B === 'layerm' ? (x ? 'layermx' : 'layerm') : tabSel.B;
-  return [tabSel.A, b];
+  return [tabSel.A, tabSel.B];
 }
 function syncTabs() {
   syncLeftTabs();
   syncRightTabs();
   [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === tabSel[k])));
   $('optsAn').hidden = tabSel.B !== 'analysis';
-  $('optsLayer').hidden = tabSel.B !== 'layer' && tabSel.B !== 'layerm';
 }
 function syncMode() {
   state.mode = uiMode(state.mode);
@@ -999,7 +1287,11 @@ function syncMode() {
   $('maskOperations').hidden = state.mode !== 'mask';
   $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
   $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
+  $('g-band2').hidden = !dnb;
+  $('g-dnb-shared').hidden = !dnb;
   $('g-blur').hidden = !frequency;
+  $('g-directional').hidden = !frequency;
+  syncDirectionalControls();
   syncTransfer();
   $('g-skintone').hidden = !frequency;
   $('g-file').hidden = state.mode !== 'mask';
@@ -1016,13 +1308,11 @@ function syncMode() {
 }
 function syncTransferTitles() {
   $('pcGet').title = state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
-  $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'dnb' ? 'Add Soft Light with its mask.' : state.mode === 'frequency' ? 'Add an unmasked Normal folder: Detail / directly masked Hue adjustment / masked Blur / Color. Hue LUT is included even at zero Amount.' : 'Add a grayscale layer; do not change any existing layer mask.';
+  $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'dnb' ? 'Add Soft Light with its mask.' : state.mode === 'frequency' ? 'Add an unmasked Normal folder: Detail / optional Hue / optional Directional Blur / optional Blur / Color, with separate editable masks and layer opacities.' : 'Add a grayscale layer; do not change any existing layer mask.';
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();
 }));
-$('layerX').checked = localStorage.getItem('dnb-layerX') !== '0';
-$('layerX').onchange = () => { localStorage.setItem('dnb-layerX', $('layerX').checked ? '1' : '0'); if (state.version) showImages(); };
 syncTabs();
 
 /* ---------- panels: synchronised zoom / pan ---------- */
@@ -1171,10 +1461,10 @@ $('landmarkOpen').onclick = async () => {
     landmarkEdit = {...data, subject:null, request:0, view:{...view}, tab:tabSel.A,
       drafts:data.subjects.map(s => ({points:copyLandmarks(s.overrides?.points || {}), excluded:[...(s.overrides?.excluded || [])], undo:[]}))};
     $('landmarkEditor').hidden = false; $('app').classList.add('landmark-editor');
-    $('landmarkSubject').replaceChildren(new Option('Select subject', ''));
-    data.subjects.forEach((s,i) => $('landmarkSubject').add(new Option(s.label, i)));
+    $('landmarkSubject').replaceChildren(new Option('select subject', ''));
+    data.subjects.forEach((s,i) => $('landmarkSubject').add(new Option(s.label.toLowerCase(), i)));
     $('landmarkName').replaceChildren();
-    Object.entries(landmarkLabels).forEach(([n,label]) => $('landmarkName').add(new Option(label, n)));
+    Object.entries(landmarkLabels).forEach(([n,label]) => $('landmarkName').add(new Option(label.toLowerCase(), n)));
     landmarkSelectSubject();
     tabSel.A = 'orig'; syncTabs(); Object.assign(view, {z:1,tx:0,ty:0});
     const p = $('p0'); p.replaceChildren();
@@ -1230,11 +1520,16 @@ function showImages() {
       p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img);
     }
     if (img.finishDisplay) img.finishDisplay(false);
+    img.hidden = true;
+    const sequence = img.displaySequence = (img.displaySequence || 0) + 1;
+    const current = () => img.displaySequence === sequence && p.querySelector('img') === img;
     img.finishDisplay = resolve;
     img.onload = () => {
+      if (!current()) return resolve(false);
       p.querySelector('.empty')?.remove(); img.hidden = false; layout(); resolve(true);
     };
     img.onerror = () => {
+        if (!current()) return resolve(false);
         img.hidden = true;
         if (!p.querySelector('.empty')) {
           const note = document.createElement('div'); note.className = 'empty';
@@ -1376,8 +1671,10 @@ document.querySelectorAll('details.grp').forEach(d => {
 
 /* ---------- presets ---------- */
 const FACTORY = {
+  band1_on:true, second_band:{...SECOND_BAND_DEFAULTS},
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true},
   skintone: {...SKINTONE_DEFAULTS},
+  directional: directionalSettings(),
   frequency_transfer: {...TRANSFER_DEFAULTS},
   bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
   strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12, layer_blur_at_s181: 0,
@@ -1389,7 +1686,8 @@ const FACTORY = {
 };
 function getSettings() {
   return {
-    mode: uiMode(state.mode), frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone},
+    band1_on:state.band1On,second_band:{...state.secondBand},
+    mode: uiMode(state.mode), directional:JSON.parse(JSON.stringify(state.directional)), frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
     strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge, layer_blur_at_s181:state.layerBlur,
     tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
@@ -1401,9 +1699,25 @@ function getSettings() {
   };
 }
 function applySettings(o) {
+  state.band1On=o?.band1_on??true;
+  state.secondBand={...SECOND_BAND_DEFAULTS,...(o?.second_band||{})};
+  renderSecondBand();
   const f = JSON.parse(JSON.stringify(FACTORY));
   const v = Object.assign({}, f, o || {}, {frequency: Object.assign({}, f.frequency, (o || {}).frequency), tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
   state.mode = uiMode(v.mode);
+  state.directional = directionalSettings(o?.directional || {});
+  if(o?.directional?.length!==undefined && o.directional.end===undefined) state.directional.end=o.directional.length;
+  delete state.directional.length;
+  if(!Number.isFinite(state.directional.start) || !Number.isFinite(state.directional.end) ||
+     state.directional.start<0 || state.directional.end>100 || state.directional.end-state.directional.start<1) {
+    setStatus('Directional region must be within 0–100% with at least 1% between endpoints. Legacy extensions beyond the knee are unsupported; select new endpoints.',true);
+  }
+  Object.entries(directionalSliders).forEach(([key,s])=>s.set(state.directional[key],false));
+  Object.entries(directionalPairSliders).forEach(([pair,controls])=>{
+    Object.entries(controls).forEach(([key,s])=>s.set(state.directional.pairs[pair][key],false));
+  });
+  Object.entries(directionalTorsoSliders).forEach(([key,s])=>s.set(state.directional.torso_controls[key],false));
+  syncDirectionalControls();
   state.skintone = {...SKINTONE_DEFAULTS, ...(o?.skintone || {})};
   $('skintoneOn').checked = state.skintone.on;
   state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...(o?.frequency_transfer || {})};

@@ -487,5 +487,58 @@ def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows
     return cs, after, change, diag, total
 
 
+def second_band_settings(raw=None):
+    raw = {} if raw is None else raw
+    if not isinstance(raw, dict):
+        raise ValueError("second_band must be an object")
+    result = {"on": raw.get("on", False), "invert": raw.get("invert", False)}
+    if any(type(value) is not bool for value in result.values()):
+        raise ValueError("second band on/invert must be booleans")
+    for key, default, lo, hi in (("lo", 1.5, .3, 300), ("hi", 50, .3, 300),
+                                 ("taper", .5, .1, 2), ("strength", 1, 0, 4)):
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not np.isfinite(float(value)) or not lo <= float(value) <= hi:
+            raise ValueError(f"second band {key} must be {lo}-{hi}")
+        result[key] = float(value)
+    if result["hi"] <= result["lo"]:
+        raise ValueError("second band upper scale must exceed lower scale")
+    return result
+
+
+def band_stack(img, S, bands, strength, second, *, first_on=True, sigma=0, **kwargs):
+    """Generate independent original-based layers; preserve the legacy single-band path."""
+    mask_result = kwargs.pop("mask_result", None)
+    if mask_result is None:
+        mask_result = combined_mask(img, S, kwargs.get("mask"), kwargs.get("shadows"),
+                                    kwargs.get("highlights"), kwargs.get("tone_strength", 1),
+                                    kwargs.get("protect", 0), kwargs.get("protect_mm", 4),
+                                    kwargs.get("protect_thr", .03))
+    total, structure = mask_result
+    layers, after = [], img.copy()
+    diag = {"levels": [], "structure": structure}
+    for index, enabled, selected, amount, invert in (
+            (1, first_on, bands, strength, False),
+            (2, second["on"], [(second["lo"], second["hi"], 1, second["taper"])],
+             second["strength"], second["invert"])):
+        if not enabled:
+            continue
+        cs, legacy, _, diagnostics, _ = process(img, S, selected, amount,
+                                               mask_result=mask_result, **kwargs)
+        cs, legacy = blur_softlight_layer(img, cs, legacy, total, sigma)
+        diag["levels"].extend(diagnostics["levels"])
+        if invert:
+            cs = 1 - cs
+        layers.append((index, cs))
+        if first_on and not second["on"]:
+            after = legacy
+        else:
+            # Quantized blend data matches separate native RGB16 layers and PNG8 masks.
+            gray = np.round(cs * 65535).astype(np.float32) / 65535
+            blended = softlight(after, gray[..., None])
+            weight = 1 if total is None else (np.round(np.clip(total, 0, 1) * 255) / 255)[..., None]
+            after = np.clip(after + (blended - after) * weight, 0, 1).astype(np.float32)
+    return layers, after, diag, total
+
+
 if __name__ == "__main__":
     main()

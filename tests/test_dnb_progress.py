@@ -62,11 +62,35 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("if (data?.effect) logNote(data.effect.note);", html)
         self.assertIn("if (data && state.skintone.on && !populated) logNote(", html)
         self.assertNotIn('data-k="blur"', html)
+        display_helper = "function showImages() {" + html.split("function showImages() {", 1)[1].split("function layout()", 1)[0]
+        display_harness = """
+          (() => {
+            const state={version:1,avers:0},landmarkEdit=null;
+            let selection=['result','directional_region'];
+            const paneKinds=()=>selection,layout=()=>{},setStatus=()=>{};
+            const images=selection.map(kind=>({hidden:false,src:'img/'+kind+'?old',
+              displayed:kind,finishDisplay:null}));
+            const pans=images.map(img=>({querySelector:q=>q==='img'?img:null}));
+            function check(ok){if(!ok)throw Error('Stale preview is visible under the newly selected tab');}
+        """ + display_helper + """
+            selection=['orig','mask'];
+            showImages();
+            // Requests are still pending: old Result/Region pixels must not remain visible.
+            check(images.every(img=>img.hidden));
+            check(images[0].src.startsWith('img/orig?') && images[1].src.startsWith('img/mask?'));
+            const staleLoad=images[1].onload,staleError=images[1].onerror;
+            selection=['orig','directional_region'];showImages();
+            staleLoad();staleError();
+            check(images[1].hidden);
+            images.forEach(img=>img.onload());
+            check(images.every(img=>!img.hidden));
+          })();
+        """
         right_tabs = html.split("function rightPreviewKinds(mode) {", 1)[1].split("function paneKinds()", 1)[0]
         preview_harness = """
           (() => {
             const state={mode:'dnb',frequency:{on:true}},tabSel={A:'result',B:'mask'};
-            const tabs=['mask','analysis','layer','layerm','color','detail'].map(k=>({dataset:{k},hidden:false}));
+            const tabs=['mask','analysis','layer','layerm','color','detail','directional_region'].map(k=>({dataset:{k},hidden:false}));
             const left=['orig','result'].map(k=>({dataset:{k},hidden:false}));
             const $=id=>({querySelectorAll:()=>id==='tabsA'?left:tabs});
         """ + "function rightPreviewKinds(mode) {" + right_tabs + """
@@ -77,6 +101,11 @@ class ProgressTests(unittest.TestCase):
                 const allowed=expected.split(',');
                 if(tabSel.B!==(allowed.includes(previous)?previous:allowed[0]))throw Error('Invalid fallback');
               }
+              state.mode='frequency';state.directional={on:true};tabSel.B='directional_region';syncRightTabs();
+              if(tabs.filter(t=>!t.hidden).map(t=>t.dataset.k).join(',')!=='color,detail,directional_region')throw Error('Directional region tab');
+              if(tabSel.B!=='directional_region')throw Error('Directional tab selection');
+              state.directional.on=false;syncRightTabs();
+              if(tabSel.B!=='color' || tabs.at(-1).hidden!==true)throw Error('Disabled region fallback');
               for(const previous of ['orig','result']) {
                 state.mode=mode;tabSel.A=previous;syncLeftTabs();
                 if(left.filter(t=>!t.hidden).map(t=>t.dataset.k).join(',')!==(mode==='mask'?'orig':'orig,result'))throw Error('Left previews');
@@ -160,8 +189,16 @@ class ProgressTests(unittest.TestCase):
         settings_harness = """
           (() => {
             const state={tone:{},loaded:false}, elements=new Map();
-            const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
+            const $=id=>{if(!elements.has(id))elements.set(id,{parentElement:{append(){}},setAttribute(){},closest:()=>({append(){},after(){}}),append(){},after(){}});return elements.get(id);};
             const SKINTONE_DEFAULTS={on:true,hue_center:30,hue_width:30,hue_softness:5,hue_amount:100};
+        """ + "const DIRECTIONAL_DEFAULTS ="+html.split("const DIRECTIONAL_DEFAULTS =",1)[1].split("function uiMode(",1)[0] + """
+            const syncPanelAvailability=()=>{};
+            state.directional=directionalSettings();
+            const syncRightTabs=()=>{};
+            const setStatus=()=>{};
+            const tabSel={B:'color'};
+            const document={createElement:()=>({append(){}})};
+            $('directionalSliders').append=()=>{};
             let transferStars=0;
             const updateStar=()=>{transferStars++;};
             let dirty=0;
@@ -172,26 +209,117 @@ class ProgressTests(unittest.TestCase):
               renderBands=noop, drawTone=noop, announceMode=noop;
             const closeLandmarks=noop,setPickingColor=noop,clearTimeout=noop,apply=noop;
             function slider(parent,label,min,max,step,value,change) {
-              return {set:noop,change,rng:{min,max}};
+              return {set:noop,change,rng:{min,max},num:{}};
             }
             const sliders=new Proxy({}, {get:()=>({set:noop,rng:{},num:{}})}), skintoneSliders={};
             const syncTabs=noop;
             const bandsPayload=()=>state.bands, analysisFlags=()=>({});
-            function check(ok){if(!ok)throw Error('FS settings / controls');}
+            function check(ok){if(!ok)throw Error('Independent settings / controls');}
         """ + ui_mode_helper + switch_mode_helper + frequency_controls + "const TRANSFER_DEFAULTS =" + transfer_defaults + transfer_helpers + skintone_switch + \
+            "const SECOND_BAND_DEFAULTS="+html.split("const SECOND_BAND_DEFAULTS=",1)[1].split("function renderBands()",1)[0]+ \
             "const FACTORY =" + settings_helpers + "function params() {" + params_helper + """
             applySettings(null);
             const original=getSettings();
-            applySettings({...original,mode:'blemish'});
-            check(state.mode==='dnb');
+            check(!original.directional.on && original.directional.distance===30);
+            check(original.directional.taper===0);
+            check(original.directional.start===0 && original.directional.end===100);
+            check(original.band1_on && !original.second_band.on);
+            $('band2On').checked=true;$('band2On').onchange();
+            $('band2Invert').checked=true;$('band2Invert').onchange();
+            const secondSaved=getSettings();
+            check(params().second_band.on && params().second_band.invert);
+            applySettings(secondSaved);
+            check(state.secondBand.on && state.secondBand.invert);
+            applySettings(original);
+            check(!state.secondBand.on && state.band1On);
+            check(directionalPairSliders.upper_leg.width.rng.max===1000 && directionalSliders.feather.rng.max===50);
+            state.imageInfo={directional_pose:Object.fromEntries(directionalSegments.map(([,key])=>[key,'Available']))};
+            state.imageInfo.directional_pose.torso='Available';
+            syncDirectionalControls();
+            check($('directionalLeft').title.includes('Available'));
+            check(directionalSegments.length===8);
+            check(directionalSegments.slice(2).every(([id,key])=>!state.directional[key] && $(id).disabled));
+            state.mode='frequency';
+            $('directionalOn').checked=true;$('directionalOn').onchange();
+            directionalSliders.strength.change(45);
+            directionalPairSliders.upper_leg.taper.change(55);
+            $('directionalTorso').checked=true;$('directionalTorso').onchange();
+            directionalTorsoSliders.width.change(75);
+            $('directionalEnd').value=80;$('directionalEnd').oninput();
+            check(tabSel.B==='directional_region');
+            $('directionalOn').checked=false;$('directionalOn').onchange();
+            tabSel.B='color';$('directionalOn').checked=true;$('directionalOn').onchange();
+            check(tabSel.B==='directional_region');
+            $('directionalRight').checked=false;$('directionalRight').onchange();
+            directionalSegments.slice(2).forEach(([id])=>{$(id).checked=true;$(id).onchange();});
+            const directionalSaved=getSettings();
+            check(directionalSaved.directional.torso && directionalSaved.directional.torso_controls.width===75);
+            check(directionalSegments.slice(2).every(([id,key])=>directionalSaved.directional[key] && params().directional[key]));
+            check(directionalSaved.directional.on && directionalSaved.directional.strength===45 && !directionalSaved.directional.right);
+            check(params().directional.strength===45);
+            check(params().directional.pairs.upper_leg.taper===55 && directionalSaved.directional.pairs.upper_leg.taper===55);
+            check(params().directional.end===80 && directionalSaved.directional.end===80);
+            applySettings(directionalSaved);
+            check(state.directional.torso&&state.directional.torso_controls.width===75);
+            check(directionalSegments.slice(2).every(([id,key])=>state.directional[key] && $(id).checked));
+            check(state.directional.pairs.upper_leg.taper===55);
+            const captured=params();
+            directionalPairSliders.upper_leg.distance.change(77);
+            check(captured.directional.pairs.upper_leg.distance===30);
+            check(state.directional.end===80);
+            for(const [pair,controls] of Object.entries(directionalPairSliders)){
+              controls.strength.change(35);
+              controls.feather.change(7);
+              controls.start.change(25);
+              controls.end.change(65);
+            }
+            directionalTorsoSliders.strength.change(55);
+            directionalTorsoSliders.feather.change(9);
+            directionalTorsoSliders.start.change(15);
+            directionalTorsoSliders.end.change(75);
+            const independent=getSettings();
+            const snapshot=params();
+            directionalPairSliders.forearm.strength.change(80);
+            check(snapshot.directional.pairs.forearm.strength===35);
+            applySettings(independent);
+            check(Object.values(state.directional.pairs).every(p=>p.strength===35&&p.feather===7&&p.start===25&&p.end===65));
+            check(state.directional.torso_controls.strength===55&&state.directional.torso_controls.feather===9);
+            check(state.directional.torso_controls.start===15&&state.directional.torso_controls.end===75);
+            applySettings({...original,directional:{on:false,strength:48,feather:6,start:12,end:88}});
+            check(Object.values(state.directional.pairs).every(p=>p.strength===48&&p.feather===6&&p.start===12&&p.end===88));
+            check(state.directional.torso_controls.strength===48&&state.directional.torso_controls.end===88);
+            directionalPairSliders.upper_leg.start.change(99);
+            check(state.directional.pairs.upper_leg.start===87);
+            applySettings(original);
+            check(directionalSegments.slice(2).every(([id,key])=>!state.directional[key] && !$(id).checked));
+            check(state.directional.taper===0);
+            check(state.directional.end===100);
+            applySettings({...original,directional:{...original.directional,length:60,end:undefined}});
+            check(state.directional.start===0 && state.directional.end===60 && !('length' in state.directional));
+            applySettings({directional:{length:60}});
+            check(Object.values(state.directional.pairs).every(p=>p.start===0&&p.end===60));
+            check(state.directional.torso_controls.end===60);
+            applySettings(original);
+            check(!state.directional.on && state.directional.right && !getSettings().directional.on);
+            const settingsBeforeChange=getSettings();
+            directionalPairSliders.upper_leg.distance.change(77);
+            $('band2On').checked=true;$('band2On').onchange();
+            const settingsAfterChange=getSettings();
+            check(settingsBeforeChange.directional.pairs.upper_leg.distance===30);
+            check(settingsAfterChange.second_band.on && settingsAfterChange.second_band.lo===SECOND_BAND_DEFAULTS.lo);
+            check(JSON.stringify(settingsAfterChange.mask)===JSON.stringify(settingsBeforeChange.mask));
+            check(JSON.stringify(settingsAfterChange.frequency)===JSON.stringify(settingsBeforeChange.frequency));
+            applySettings(settingsBeforeChange);
+            check(!state.secondBand.on && state.directional.pairs.upper_leg.distance===30);
+            const saved=getSettings();
+            for(const key of ['mask','tone','structure','color','frequency','skintone'])
+              check(JSON.stringify(saved[key])===JSON.stringify(original[key]));
             $('S').value='181';
             const payload=params();
-            check(payload.mode==='dnb' && payload.S===181 && !('blemish' in payload));
-            state.mode='blemish';
-            check(params().mode==='dnb' && getSettings().mode==='dnb');
+            check(payload.mode==='dnb' && payload.S===181);
             state.mode='dnb';
-            state.mode='frequency';switchMode('blemish');
-            check(state.mode==='dnb' && params().mode==='dnb');
+            state.mode='frequency';switchMode('mask');
+            check(state.mode==='mask' && params().mode==='mask');
             applySettings(original);
             applySettings({...original,mode:'frequency',frequency:{...original.frequency,method:'median_fast'},
               frequency_transfer:{format:'tiff',compressed:false,opaque_alpha:false,parallel:false}});
@@ -720,8 +848,7 @@ class ProgressTests(unittest.TestCase):
         """
         self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'crop'])
         self.assertIn("const views = ['mask', 'frequency', 'dnb', 'crop'];", shell_js)
-        self.assertNotIn('<option value="blemish">', html)
-        self.assertNotIn('id="g-blemish"', html)
+        self.assertNotIn('blemish', html.lower())
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
@@ -751,12 +878,12 @@ class ProgressTests(unittest.TestCase):
         context = js.JSGlobalContextCreate(None)
         try:
             routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, preview_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:
                     self.assertTrue(js.JSCheckScriptSyntax(context, source, None, 1, ctypes.byref(error)))
-                    if script in (harness, theme_harness, badge_harness, preview_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
+                    if script in (harness, theme_harness, badge_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
                         js.JSEvaluateScript(context, source, None, None, 1, ctypes.byref(error))
                         if error.value:
                             message = js.JSValueToStringCopy(context, error, None)

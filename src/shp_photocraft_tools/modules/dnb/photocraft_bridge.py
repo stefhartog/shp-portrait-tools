@@ -415,6 +415,26 @@ class Bridge(BaseBridge):
                 except OSError:
                     pass
 
+    def send_bands(self, layers, mask8, doc, *, source_icc=None):
+        """Insert bottom-to-top independent bands; remove completed inserts on failure."""
+        inserted = []
+        try:
+            for index, pixels in layers:
+                result = self.send(pixels, mask8, doc, name=f"SHP PhotoCraft D&B band {index}",
+                                   source_icc=source_icc)
+                if result["layer"] is None:
+                    raise ControlError("PhotoCraft did not return the inserted D&B band ID")
+                inserted.append(result["layer"])
+        except (ControlError, OSError) as error:
+            try:
+                self._activate(self._find(doc["index"], doc["name"])["index"])
+                for layer in reversed(inserted):
+                    self.client.run("layer.delete", layer=layer)
+            except ControlError as cleanup:
+                raise ControlError(f"{error}; D&B band rollback failed: {cleanup}") from error
+            raise
+        return {"layers": inserted, "document": doc["name"]}
+
     def send_mask(self, mask8, doc, *, source_icc=None, name="Skin mask"):
         gray16 = mask8.astype(np.uint16) * 257
         rgb = np.repeat(gray16[..., None], 3, axis=2)
@@ -430,8 +450,8 @@ class Bridge(BaseBridge):
             doc, mask8, source_icc)
 
     def send_skintone(self, layers, settings, mask8, doc, source_icc, *, blur_future=None, transfer=None, include_blur=True,
-                      blur_strength=100, blur_masked=True):
-        """Assemble Color / masked Blur / masked Hue / Detail, then copy one group."""
+                      blur_strength=100, blur_masked=True, directional=None):
+        """Assemble Color / optional Blur / Directional Blur / Hue / Detail as one group."""
         options = transfer_settings(transfer)
         if (not isinstance(blur_strength, (float, int)) or isinstance(blur_strength, bool)
                 or not math.isfinite(blur_strength) or not 0 <= blur_strength <= 100
@@ -440,6 +460,13 @@ class Bridge(BaseBridge):
         if mask8.ndim != 2 or mask8.dtype != np.uint8:
             raise ControlError("Skintone mask must be grayscale 8-bit")
         h, w = mask8.shape
+        if directional is not None:
+            pixels, region, strength = directional
+            if (pixels.shape != (h, w, 3) or pixels.dtype != np.uint16
+                    or region.shape != (h, w) or region.dtype != np.uint8
+                    or isinstance(strength, bool) or not isinstance(strength, (float, int))
+                    or not math.isfinite(strength) or not 0 <= strength <= 100):
+                raise ControlError("Directional Blur needs matching RGB16 pixels, grayscale8 mask and 0-100 strength")
         if not include_blur and blur_future is not None:
             raise ControlError("Disabled FS Blur must not have a Blur job")
         expected = {"color", "detail"} if blur_future is not None or not include_blur else {"color", "blur", "detail"}
@@ -454,8 +481,10 @@ class Bridge(BaseBridge):
         scratch_docs = []
         files = [self._file("Skintone Color"), self._file("Skintone mask"),
                  self._file("Skintone Detail"), self._file("Skintone Blur")]
+        if directional is not None:
+            files.extend((self._file("Directional Blur"), self._file("Directional region mask")))
         if options["format"] == "tiff":
-            for i in (0, 2, 3):
+            for i in ((0, 2, 3, 4) if directional is not None else (0, 2, 3)):
                 files[i] = str(Path(files[i]).with_suffix(".tiff"))
         primary = None
         insertion_attempted = False
@@ -498,6 +527,39 @@ class Bridge(BaseBridge):
                 self.client.run("layer.setProps", layer=blur_id, name="Blur", blend="Normal", opacity=blur_strength/100)
                 self._release_source(blur_doc, scratch_docs)
                 self._activate(scratch)
+            directional_id = None
+            if directional is not None:
+                pixels, region, strength = directional
+                self._write_rgb(files[4], pixels, icc, options)
+                direction_doc = self._open(files[4])
+                scratch_docs.append(direction_doc)
+                direction_source = int(self.client.run("layer.list")["layers"][0]["id"])
+                self._activate(scratch)
+                self.client.run("layer.select", layer=blur_id if blur_id is not None else color_id)
+                directional_id = int(self._copy_layers(document=scratch, source=direction_doc,
+                                                      layers=[direction_source])["layers"][0])
+                self.client.run("layer.setProps", layer=directional_id, name="Directional Blur",
+                                blend="Normal", opacity=strength / 100)
+                self._release_source(direction_doc, scratch_docs)
+                self._activate(scratch)
+                if not region.any():
+                    self.client.run("layer.layerMask.hideAll", layer=directional_id)
+                else:
+                    if not cv2.imwrite(str(self.exchange / files[5]), region):
+                        raise ControlError("could not write Directional Blur mask")
+                    region_doc = self._open(files[5])
+                    scratch_docs.append(region_doc)
+                    for attempt in range(MASK_ATTEMPTS):
+                        try:
+                            self._attach_mask(scratch, region_doc, directional_id, "Attaching Directional Blur mask")
+                            break
+                        except ControlError:
+                            if attempt == MASK_ATTEMPTS - 1:
+                                raise
+                            time.sleep(.2)
+                    self._release_source(region_doc, scratch_docs)
+                    self._activate(scratch)
+                self.client.run("layer.select", layer=directional_id)
             correction = None
             if settings.get("on", True):
                 hue, = ST.tables(dict(settings, hue_amount=100))
@@ -537,12 +599,12 @@ class Bridge(BaseBridge):
             detail_id = int(self.client.run("layer.list")["layers"][0]["id"])
             self.client.run("layer.setProps", layer=detail_id, name="Detail", blend="Linear Light")
             self._activate(scratch)
-            self.client.run("layer.select", layer=correction if correction is not None else blur_id if blur_id is not None else color_id)
+            self.client.run("layer.select", layer=correction if correction is not None else directional_id if directional_id is not None else blur_id if blur_id is not None else color_id)
             detail_id = int(self._copy_layers(document=scratch, source=detail_doc,
                                            layers=[detail_id])["layers"][0])
             self._release_source(detail_doc, scratch_docs)
             self._activate(scratch)
-            ordered_layers = tuple(lid for lid in (color_id, blur_id, correction, detail_id) if lid is not None)
+            ordered_layers = tuple(lid for lid in (color_id, blur_id, directional_id, correction, detail_id) if lid is not None)
             for i, lid in enumerate(ordered_layers):
                 self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
             group = int(progress.call("Assembling FS + Skintone folder", self.client.run, "layer.groupLayers", name="SHP FS + Skintone", mode="Normal")["layer"])
