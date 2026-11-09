@@ -112,6 +112,42 @@
   <details class="grp" id="g-combine" open hidden>
     <summary>Combine</summary><div class="gbody"><div id="combineSliders"></div></div>
   </details>
+  <details class="grp" id="g-batch" hidden>
+    <summary>BATCH PROCESSING</summary><div class="gbody">
+      <div id="batchControls">
+        <p class="hint">Local Combine only. Settings are captured at Start; each image is analyzed independently.</p>
+        <div class="workflow-actions">
+          <button class="workflow" id="batchChooseSource">Choose source</button>
+          <button class="workflow" id="batchStart" disabled>Start Batch</button>
+          <button class="cancel" id="batchCancel" hidden disabled>Cancel</button>
+        </div>
+        <p class="hint" id="batchSourceSummary">No source selected.</p>
+        <progress class="batch-progress" id="batchProgress" max="1" value="0" aria-label="Batch completion"></progress>
+        <div class="batch-summary" id="batchSummary" role="status" aria-live="polite"></div>
+        <ol class="batch-items" id="batchItems"></ol>
+      </div>
+    </div>
+  </details>
+  <details class="grp" id="generalSettings">
+    <summary>Settings / Info</summary>
+    <div class="gbody" id="generalSettingsContent">
+      <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
+      <details id="g-transfer" open>
+        <summary>Result file / PhotoCraft layer-transfer options</summary>
+        <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
+        <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">lossless compressed</option><option value="none">uncompressed</option></select></div>
+        <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> exclude opaque alpha</label></div>
+        <div class="row"><label for="maskPlacement">send layers mask</label><select id="maskPlacement"><option value="folder">Mask on top folder</option><option value="layers">Mask on every layer</option></select></div>
+        <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> parallel encoding (two encoders)</label></div>
+        <p class="hint" id="transferHint"></p>
+        <p class="hint">Global options for flattened standalone/batch results and supported PhotoCraft layer transfers. RGB16 retains the captured ICC; masks remain grayscale PNG8. Previews, standalone ingredient layers and Crop are unchanged. Parallel encoding applies to multi-layer transfers, not a single flattened image. PhotoCraft calls stay serialized; source must remain opaque.</p>
+      </details>
+      <details id="calculationLog" open>
+        <summary>Calculation timings</summary>
+        <pre id="calculationLogText">No calculations yet.</pre>
+      </details>
+    </div>
+  </details>
   <div class="row" id="toolModeRow"><label for="toolMode">skin tool</label><select id="toolMode" style="flex:1">
     <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option><option value="combine">combine</option>
   </select></div>
@@ -198,16 +234,7 @@
     <summary>Image analysis</summary>
     <div class="gbody">
       <div id="maskOperations">
-        <div class="row" id="maskPrecacheRow"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></label></div>
-        <details id="g-transfer">
-          <summary>PhotoCraft layer transfer (FS + Skintone only)</summary>
-          <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
-          <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">lossless compressed</option><option value="none">uncompressed</option></select></div>
-          <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> include opaque alpha</label></div>
-          <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> parallel encoding (two encoders)</label></div>
-          <p class="hint" id="transferHint"></p>
-          <p class="hint">RGB16 with the captured ICC. Color / Detail stay active; switching FS off omits only added Blur. Shared masks remain grayscale PNG8. Does not change preview or local exports. PhotoCraft calls stay serialized; source must remain opaque.</p>
-        </details>
+        <div class="row" id="maskPrecacheRow"><span>Full-resolution skin mask</span> <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></div>
       </div>
       <div id="info">No photo loaded.</div>
       <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
@@ -269,7 +296,10 @@
 </div>
 
 <script>
-const $ = (id) => document.getElementById(id);
+const generalSettingIds = new Set(['maskPrecache','transferFormat','transferCompression','transferAlpha',
+  'transferParallel','transferHint','maskPlacement','calculationLogText']);
+const $ = (id) => document.getElementById(id) ||
+  (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
 const DIRECTIONAL_DEFAULTS = {on:false, left:true, right:true, distance:30, strength:100, width:100, start:0, end:100, taper:0, feather:3,
   left_lower_leg:false,right_lower_leg:false,left_upper_arm:false,right_upper_arm:false,left_forearm:false,right_forearm:false,torso:false};
@@ -285,7 +315,7 @@ function directionalSettings(raw={}) {
 function uiMode(mode) {
   return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency','combine'].includes(mode) ? mode : 'dnb';
 }
-const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:true, parallel:true};
+const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:false, parallel:true};
 const state = {
   combine:{fs_mix:100,dnb_mix:100},
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
@@ -320,7 +350,7 @@ async function api(path, body) {
   return j;
 }
 let statusOk = false;
-const temporaryLog = {notes:[], lastMessage:null, load:'', send:''};
+const temporaryLog = {notes:[], lastMessage:null, load:'', send:'', calculations:[]};
 function logNote(message) {
   const log = temporaryLog;
   if (!message || log.lastMessage === message) return;
@@ -329,12 +359,20 @@ function logNote(message) {
   renderTemporaryLog();
 }
 function temporaryLogText() {
-  return ['SHP PhotoCraft Tools temporary log', ...temporaryLog.notes,
-    temporaryLog.load, temporaryLog.send].filter(Boolean).join('\n')+'\n';
+  return ['SHP PhotoCraft Tools temporary log', ...temporaryLog.notes].filter(Boolean).join('\n')+'\n';
 }
 function renderTemporaryLog() {
-  $('temporaryLogText').textContent = temporaryLog.notes.length || temporaryLog.load || temporaryLog.send
+  $('temporaryLogText').textContent = temporaryLog.notes.length
     ? temporaryLogText() : 'No activity yet.';
+  renderCalculationLog();
+}
+function renderCalculationLog() {
+  const entries = [...(temporaryLog.calculations || []), temporaryLog.load, temporaryLog.send].filter(Boolean);
+  $('calculationLogText').textContent = entries.length ? entries.join('\n') : 'No calculations yet.';
+}
+function recordCalculation(message) {
+  temporaryLog.calculations = [...(temporaryLog.calculations || []), message].slice(-100);
+  renderCalculationLog();
 }
 function setStatus(msg, err=false, ok=false) {
   const s=$('status'); s.textContent = msg; statusOk = ok && !err;
@@ -343,7 +381,9 @@ function setStatus(msg, err=false, ok=false) {
   if (err) logNote(msg);
 }
 function finishProcessing(started) {
-  setStatus(`Finished processing in ${((performance.now()-started)/1000).toFixed(1)} seconds.`, false, true);
+  const message = `Finished processing in ${((performance.now()-started)/1000).toFixed(1)} seconds.`;
+  recordCalculation(message);
+  setStatus(message, false, true);
 }
 function renderAnalysisSummary() {
   const image = state.imageInfo;
@@ -575,22 +615,36 @@ $('directionalOn').onclick=event=>event.stopPropagation();
     syncDirectionalControls();syncTabs();markDirty();
   };
 });
+let maskPlacement = 'folder';
 function syncTransfer() {
   const t = state.frequencyTransfer;
   $('transferFormat').value = t.format;
   $('transferCompression').value = t.compressed ? 'compressed' : 'none';
-  $('transferAlpha').checked = t.opaque_alpha;
+  $('transferAlpha').checked = !t.opaque_alpha;
   $('transferParallel').checked = t.parallel;
+  $('maskPlacement').value = maskPlacement;
   $('transferHint').textContent = t.format === 'tiff'
     ? 'TIFF uses lossless ZIP/Deflate or no compression; explicitly tagged unassociated alpha when enabled. Classic TIFF limit: 4 GiB per file.'
     : 'PNG uses lossless Deflate level 1 or level 0 (stored blocks, not raw pixels). Alpha off writes RGB, not RGBA.';
 }
-['transferFormat','transferCompression','transferAlpha','transferParallel'].forEach(id => {
-  $(id).onchange = () => {
+['transferFormat','transferCompression','transferAlpha','transferParallel','maskPlacement'].forEach(id => {
+  $(id).onchange = async () => {
+    if (state.busy) return;
+    const previous = state.frequencyTransfer;
+    const previousPlacement = maskPlacement;
+    maskPlacement = $('maskPlacement').value;
     state.frequencyTransfer = {format:$('transferFormat').value,
       compressed:$('transferCompression').value === 'compressed',
-      opaque_alpha:$('transferAlpha').checked, parallel:$('transferParallel').checked};
-    syncTransfer(); updateStar();
+      opaque_alpha:!$('transferAlpha').checked, parallel:$('transferParallel').checked};
+    syncTransfer();
+    setBusy(true);
+    try { await api('/api/global-settings', {layer_transfer:{...state.frequencyTransfer}, mask_placement:maskPlacement}); }
+    catch(e) {
+      state.frequencyTransfer = previous;
+      maskPlacement = previousPlacement;
+      syncTransfer();
+      setStatus('Global settings could not be saved: '+e.message, true);
+    } finally { setBusy(false); }
   };
 });
 const skintoneSliders = {};
@@ -653,7 +707,7 @@ function drawSkintone(data) {
     });
   });
 }
-let shellConnected = false, shellUiReady = false, pendingShellMode = null;
+let shellConnected = false, shellUiReady = false;
 function announceMode(request=null) {
   if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:uiMode(state.mode), request}, location.origin);
 }
@@ -677,10 +731,10 @@ window.addEventListener('message', event => {
     if (shellUiReady) parent.postMessage({type:'shp-skin-ready'}, location.origin);
   } else if (data.type === 'shp-tools-connect') {
     shellConnected = true; $('toolModeRow').hidden = true; announceMode();
+    parent.postMessage({type:'shp-skin-busy',busy:state.busy}, location.origin);
   } else if (shellConnected && data.type === 'shp-tools-mode' &&
              ['mask','skintone','frequency','dnb','combine'].includes(data.mode) && Number.isSafeInteger(data.request)) {
-    if (state.busy) pendingShellMode = data;
-    else switchMode(data.mode, data.request);
+    if (!state.busy) switchMode(data.mode, data.request);
   }
 });
 function scaleFrequencyRadius() {
@@ -842,11 +896,24 @@ function bandsPayload() { return state.bands.map(b => [b.lo, b.hi, b.gain, b.tap
 let loadProgress = null;
 let liveOperation = null;
 async function operationApi(path, body, sending=false) {
+  const batching = path === '/api/batch';
   const operation = {token:crypto.randomUUID(), timer:null};
   liveOperation = operation;
   const progress = loadProgress;
   const display = snapshot => {
     if (liveOperation !== operation || snapshot.token !== operation.token || snapshot.pending) return;
+    if (batching) {
+      if (snapshot.batch) renderBatch(snapshot.batch);
+      $('batchCancel').disabled = !snapshot.batch || snapshot.done || !!snapshot.cancel_requested;
+      if (!snapshot.done && snapshot.batch) {
+        const completed = snapshot.batch.items.filter(item => ['success','failed'].includes(item.status)).length;
+        setStatus(snapshot.cancel_requested ? 'Cancelling batch...'
+          : `Batch processing... (${completed}/${snapshot.batch.items.length})`);
+      }
+      if (snapshot.done) recordCalculation(snapshot.steps.map(step =>
+        `${step.label}: ${step.seconds.toFixed(2)}s${step.error ? ' — '+step.error : ''}`).join('\n'));
+      return;
+    }
     const completed = {'Loading image / preparing profile':'Image loaded',
       'Analyzing image / estimating S':'Image analyzed',
       'Generating shared skin mask':'Mask generated',
@@ -869,6 +936,7 @@ async function operationApi(path, body, sending=false) {
       if (liveOperation === operation) {
         operation.pollError = e.message;
         if (sending) temporaryLog.send += '\nLive progress unavailable: '+e.message;
+        else if (batching) $('batchSummary').textContent = 'Live batch progress unavailable: '+e.message;
         else recordLoadStage('Live progress unavailable: '+e.message);
         renderTemporaryLog();
       }
@@ -896,7 +964,7 @@ function renderLoadTimings() {
 }
 function beginLoadTimings(message) {
   invalidateMaskCacheStatus();
-  if (temporaryLog.load) logNote(temporaryLog.load);
+  if (temporaryLog.load) recordCalculation(temporaryLog.load);
   loadProgress = {started:performance.now(), steps:[message]};
   renderLoadTimings();
 }
@@ -1002,7 +1070,7 @@ let panelOperationBusy = false, previewMaskBusy = false;
 const panelIntrinsicDisabled = new WeakMap();
 function syncPanelAvailability() {
   if (typeof document.querySelectorAll !== 'function') return;
-  document.querySelectorAll('aside button,aside input,aside select').forEach(control => {
+  document.querySelectorAll('aside button,aside input,aside select,aside textarea').forEach(control => {
     if (!panelIntrinsicDisabled.has(control)) {
       const descriptor=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(control),'disabled');
       if (!descriptor) return;
@@ -1016,7 +1084,7 @@ function syncPanelAvailability() {
     const panel=control.closest('details.grp');
     const toggle=panel?.querySelector(':scope > summary input[type=checkbox]');
     const isToggle=control===toggle;
-    const blocked=!isToggle && (panelOperationBusy || previewMaskBusy || (toggle && !toggle.checked));
+    const blocked=control.id!=='batchCancel' && !isToggle && (panelOperationBusy || previewMaskBusy || (toggle && !toggle.checked));
     entry.descriptor.set.call(control,entry.value || !!blocked);
     control.classList.toggle('panel-disabled',control.disabled);
   });
@@ -1026,12 +1094,13 @@ function setBusy(b, operation=true) {
   if(!b) previewMaskBusy=false;
   syncPanelAvailability();
   state.busy = b;
+  if (shellConnected) parent.postMessage({type:'shp-skin-busy',busy:b}, location.origin);
   const st = $('status');
   st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = panelOperationBusy;
-  ['transferFormat','transferCompression','transferAlpha','transferParallel'].forEach(id => { $(id).disabled = panelOperationBusy; });
+  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||state.sourceKind!=='photocraft';
@@ -1039,10 +1108,6 @@ function setBusy(b, operation=true) {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
   });
-  if (!b && pendingShellMode) {
-    const requested = pendingShellMode; pendingShellMode = null;
-    switchMode(requested.mode, requested.request);
-  }
 }
 function previewFeedback(quiet) {
   let visible = !quiet, message = 'Computing...';
@@ -1200,7 +1265,8 @@ function watchMaskPrecache(info, epoch) {
       const message = `Background skin mask failed: ${value.error}. Send will recompute it.`;
       if (!state.busy) setStatus(message, true); else logNote(message);
     } else if (value.status === 'ready' && value.cached) {
-      logNote(`Full-resolution skin mask ready in background (${value.seconds.toFixed(2)} s).`);
+      const message = `Full-resolution skin mask ready in background (${value.seconds.toFixed(2)} s).`;
+      recordCalculation(message); logNote(message);
     } else if (value.message) logNote(value.message);
   };
   const poll = async () => {
@@ -1258,7 +1324,7 @@ async function pcSend(layers=false) {
   const started = performance.now();
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
   setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : layers ? 'Sending editable SkinTools layers to PhotoCraft...' : 'Sending result to PhotoCraft...');
-  if (temporaryLog.send) logNote(temporaryLog.send);
+  if (temporaryLog.send) recordCalculation(temporaryLog.send);
   temporaryLog.send = 'Preparing Send...';
   renderTemporaryLog();
   try {
@@ -1272,12 +1338,124 @@ async function pcSend(layers=false) {
   setBusy(false);
 }
 $('pcGet').onclick = pcGet; $('pcSend').onclick = ()=>pcSend(); $('pcSendLayers').onclick=()=>pcSend(true);
+let watchFolderErrors = '';
+let watchFolderLoadError = '';
+async function pollWatchFolder() {
+  try {
+    if (!shellUiReady || state.busy || document.hidden || (parent !== window && parent.__shpNavigationLocked)) return;
+    const inbox = await api('/api/watch-folder');
+    const errors = [inbox.error, ...(inbox.errors || [])].filter(Boolean).join('\n');
+    if (errors && errors !== watchFolderErrors) {
+      logNote('Watch folder: '+errors);
+      setStatus('Watch-folder import needs attention. See Log.', true);
+    }
+    watchFolderErrors = errors;
+    if (!inbox.ready || state.busy || (parent !== window && parent.__shpNavigationLocked)) return;
+    setBusy(true);
+    let loaded = false;
+    try {
+      const message = 'Loading watch-folder image...';
+      beginLoadTimings(message); setStatus(message);
+      const result = await operationApi('/api/watch-folder/load', {token:inbox.token});
+      if (result.skipped) return;
+      applyLoaded(result);
+      loaded = true;
+      switchMode('mask');
+      if (shellConnected) parent.postMessage({type:'shp-watch-loaded'}, location.origin);
+      watchFolderLoadError = '';
+      logNote(`Watch folder: loaded ${result.watch_name}. ${result.watch_cleanup ? 'Inbox file removed.' : result.watch_error}`);
+      await initializeHueCenter();
+      if (result.watch_error) setStatus(result.watch_error, true);
+    } catch (e) {
+      if (watchFolderLoadError !== e.message) logNote('Watch-folder load failed; input retained: '+e.message);
+      watchFolderLoadError = e.message;
+      setStatus('Watch-folder load failed. See Log.', true);
+    } finally { setBusy(false); }
+    if (loaded) {
+      await apply();
+      if (state.imageInfo?.watch_error) setStatus(state.imageInfo.watch_error, true);
+    }
+  } catch (e) {
+    const message = 'Watch-folder status unavailable: '+e.message;
+    if (message !== watchFolderErrors) logNote(message);
+    watchFolderErrors = message;
+  } finally { pollWatchFolder.timer = setTimeout(pollWatchFolder, 3000); }
+}
+function renderBatch(batch) {
+  const done = batch.items.filter(item => ['success','failed'].includes(item.status)).length;
+  const cancelled = batch.items.filter(item => item.status==='cancelled').length;
+  $('batchProgress').max = batch.items.length;
+  $('batchProgress').value = done + cancelled;
+  $('batchSummary').textContent = `${done}/${batch.items.length} processed${cancelled ? `; ${cancelled} cancelled` : ''}`;
+  $('batchItems').replaceChildren(...batch.items.map(item => {
+    const row = document.createElement('li');
+    row.textContent = `${item.name}: ${item.status}${item.error ? ' — '+item.error : ''}`;
+    return row;
+  }));
+}
+let batchSelection = null;
+$('batchChooseSource').onclick = async () => {
+  if (state.busy) return;
+  if (!window.__shpNativeFileDialog) { setStatus('Batch source selection needs the Tools desktop window.', true); return; }
+  try {
+    const selected = window.prompt('SHP_OPEN_BATCH_SOURCE_V1');
+    if (!selected) return;
+    const source = JSON.parse(selected);
+    const folder = typeof source?.folder === 'string' && source.folder.length > 0;
+    const paths = Array.isArray(source?.paths) && source.paths.length > 0 &&
+      source.paths.every(path => typeof path === 'string' && path.length > 0);
+    if (folder === !!paths) throw new Error('Choose one folder or image files.');
+    setBusy(true); setStatus('Finding images...');
+    const selection = folder ? {folder:source.folder} : {paths:source.paths};
+    const found = await api('/api/batch/images', selection);
+    batchSelection = {paths:found.items.map(item => item.path)};
+    $('batchSourceSummary').textContent = `${found.items.length} image(s) selected${folder ? ' from folder' : ''}.`;
+    logNote(`Batch source: ${found.folder}; ${found.items.length} image(s).`);
+    $('batchStart').disabled = false;
+    setStatus('Batch source selected.', false, true);
+  } catch(e) { logNote('Source selection failed: '+e.message); setStatus('Source selection failed.', true); }
+  finally { setBusy(false); }
+};
+async function cancelBatch() {
+  if (!liveOperation || $('batchCancel').disabled) return;
+  $('batchCancel').disabled = true;
+  setStatus('Cancelling batch...');
+  try { await api('/api/batch/cancel', {token:liveOperation.token}); }
+  catch(e) { logNote('Batch cancellation failed: '+e.message); setStatus('Cancellation failed.', true); $('batchCancel').disabled=false; }
+}
+$('batchCancel').onclick = cancelBatch;
+async function startBatch() {
+  if (state.busy || state.mode !== 'combine' || !batchSelection) return;
+  const settings = params();
+  const selection = JSON.parse(JSON.stringify(batchSelection));
+  clearTimeout(markDirty.t);
+  setBusy(true); setStatus('Preparing batch...');
+  $('batchCancel').hidden = false;
+  try {
+    const selected = await api('/api/batch/images', selection);
+    renderBatch({items:selected.items.map(item => ({...item,status:'pending'}))});
+    const result = await operationApi('/api/batch', {paths:selected.items.map(item => item.path),settings});
+    renderBatch(result);
+    const message = `Batch: ${result.succeeded} succeeded, ${result.failed} failed, ${result.cancelled || 0} cancelled in ${result.seconds.toFixed(1)}s. Output: ${result.dir}`;
+    $('batchSummary').textContent = `${result.succeeded} succeeded, ${result.failed} failed, ${result.cancelled || 0} cancelled.`;
+    const completion = result.cancelled ? 'Batch processing cancelled' : result.failed ? 'Batch completed with errors'
+      : 'Batch processing completed successfully';
+    setStatus(`${completion} (${result.seconds.toFixed(1)}s).`, result.failed > 0, !result.failed && !result.cancelled);
+    logNote(message);
+    result.items.filter(item=>item.error).forEach(item=>logNote(`${item.name}: ${item.error}`));
+  } catch(e) {
+    logNote('Batch failed: '+e.message);
+    $('batchSummary').textContent = 'Batch failed.';
+    setStatus('Batch failed.', true);
+  } finally { $('batchCancel').hidden=true; $('batchCancel').disabled=true; setBusy(false); }
+}
+$('batchStart').onclick = startBatch;
 $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
 if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
 function rightPreviewKinds(mode) {
-  return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', ...(state.secondBand?.on ? ['layer2','layer2m'] : [])] : ['mask', 'analysis'];
+  return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', 'layer2', 'layer2m'] : ['mask', 'analysis'];
 }
 function syncRightTabs() {
   const allowed = rightPreviewKinds(state.mode);
@@ -1303,6 +1481,7 @@ function syncMode() {
   state.mode = uiMode(state.mode);
   const dnb = state.mode==='dnb', frequency = state.mode==='frequency';
   $('g-combine').hidden=state.mode!=='combine';
+  $('g-batch').hidden=state.mode!=='combine';
   $('pcSendLayers').hidden=state.sourceKind!=='photocraft'||!['dnb','frequency','combine'].includes(state.mode);
   $('pcSendLayers').disabled=state.busy||!state.loaded||state.sourceKind!=='photocraft';
   syncFrequencyControls();
@@ -1700,7 +1879,6 @@ const FACTORY = {
   mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true},
   skintone: {...SKINTONE_DEFAULTS},
   directional: directionalSettings(),
-  frequency_transfer: {...TRANSFER_DEFAULTS},
   bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
   strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12, layer_blur_at_s181: 0,
   tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
@@ -1713,7 +1891,7 @@ function getSettings() {
   return {
     combine:{...state.combine},
     band1_on:state.band1On,second_band:{...state.secondBand},
-    mode: uiMode(state.mode), directional:JSON.parse(JSON.stringify(state.directional)), frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone},
+    mode: uiMode(state.mode), directional:JSON.parse(JSON.stringify(state.directional)), frequency: {...state.frequency}, skintone: {...state.skintone},
     bands: state.bands.map(b => ({lo:b.lo, hi:b.hi, gain:b.gain, taper:b.taper, linked:!!b.linked})),
     strength: state.strength, max_ev: state.maxEv, tau: state.tau, edge: state.edge, layer_blur_at_s181:state.layerBlur,
     tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
@@ -1752,7 +1930,6 @@ function applySettings(o) {
   syncDirectionalControls();
   state.skintone = {...SKINTONE_DEFAULTS, ...(o?.skintone || {})};
   $('skintoneOn').checked = state.skintone.on;
-  state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...(o?.frequency_transfer || {})};
   if (state.loaded) state.hueCenterNote = 'Hue Center restored from settings; next Load/Get will estimate it again.';
   Object.entries(skintoneSliders).forEach(([key,s]) => {
     const n=+state.skintone[key];
@@ -1830,6 +2007,12 @@ function fillPresetList(selected) {
 }
 function presetSettings(v) { return v === 'builtin' ? FACTORY : v === 'default' ? (presets.default || FACTORY) : presets.presets[v.slice(2)]; }
 async function loadPresets() {
+  try {
+    const global = await api('/api/global-settings');
+    state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...global.layer_transfer};
+    maskPlacement = global.mask_placement || 'folder';
+    syncTransfer();
+  } catch (e) { presetErr(e); }
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
   fillPresetList('default');
   applySettings(presetSettings('default')); snapNow();
@@ -1866,6 +2049,8 @@ $('presetRemove').onclick = async () => {
 if (window === window.top && (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible)) { try { resizeTo(1347, 994); } catch (e) {} }
 /* ---------- start ---------- */
 setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets(); loadList().catch(e => setStatus(e.message, true));
+pollWatchFolder.timer = setTimeout(pollWatchFolder, 1000);
+window.addEventListener('pagehide', () => clearTimeout(pollWatchFolder.timer));
 </script>
 </body>
 </html>

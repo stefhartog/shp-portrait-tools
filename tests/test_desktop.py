@@ -1,6 +1,8 @@
 """Packaged desktop launch, runtime diagnostics and actual isolated WebKit smoke."""
 
 import json
+import ast
+from types import SimpleNamespace
 import os
 import re
 import subprocess
@@ -14,6 +16,41 @@ from shp_photocraft_tools import launcher as L
 
 
 class DesktopCommandTests(unittest.TestCase):
+    def test_tray_monitor_detects_pending_png_without_webui_and_presents_once(self):
+        source = (Path(L.__file__).parent / "desktop/controller.py").read_text()
+        tree = ast.parse(source)
+        methods = {node.name:node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        namespace = {"GLib":SimpleNamespace(SOURCE_REMOVE=False)}
+        for name in ("monitor", "wake_watch_folder"):
+            exec(compile(ast.Module(body=[methods[name]], type_ignores=[]), "<controller-test>", "exec"), namespace)
+        stopped = SimpleNamespace(is_set=lambda:False, wait=Mock(side_effect=RuntimeError("end monitor")))
+        connection = SimpleNamespace(stopped=stopped, error=None, request=Mock(side_effect=[
+            {"modules":{"dnb":{"phase":"running","busy":False}}},
+            {"ready":True,"token":"incoming-version-1"}]))
+        app = SimpleNamespace(connection=connection,status_epoch=1,quitting=False,control_pending=False,
+                              window=object(),watch_wake_tokens={},show=Mock(),update_status=Mock())
+        app.wake_watch_folder = lambda inbox,epoch:namespace["wake_watch_folder"](app,inbox,epoch)
+        namespace["GLib"].idle_add = lambda fn,*args:fn(*args)
+        with self.assertRaisesRegex(RuntimeError, "end monitor"):
+            namespace["monitor"](app)
+        self.assertEqual(connection.request.call_args_list[1].args, ("/dnb/api/watch-folder",))
+        app.show.assert_called_once()
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-1"},1)
+        app.show.assert_called_once()
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-2"},0)
+        app.show.assert_called_once()
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-2"},1)
+        self.assertEqual(app.show.call_count,2)
+        app.quitting=True
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-3"},1)
+        self.assertEqual(app.show.call_count,2)
+        app.quitting=False
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-2","service":"crop"},1)
+        self.assertEqual(app.show.call_count,3)
+        app.wake_watch_folder({"ready":False,"service":"dnb"},1)
+        app.wake_watch_folder({"ready":True,"token":"incoming-version-2","service":"crop"},1)
+        self.assertEqual(app.show.call_count,3)
+
     def test_system_python_helper_and_runtime_check(self):
         with patch.object(L.subprocess, "run", return_value=Mock(returncode=0)) as run:
             command = L.desktop_command("http://127.0.0.1:18760/")

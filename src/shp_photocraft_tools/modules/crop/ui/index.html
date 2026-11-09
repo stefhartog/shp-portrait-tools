@@ -11,7 +11,6 @@
   #bar { grid-column: 1 / -1; }
   #bar b.brand { color:var(--text); font-size:14px; }
   select { max-width:260px; }
-  #xRun.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }
   .crop-section { border-top:1px solid var(--line); }
   .crop-section:first-child { border-top:0; }
   .crop-section h2, .crop-section > summary { margin:0; padding:12px 0 8px; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--heading); font-weight:600; }
@@ -329,6 +328,45 @@ async function xGet() {
   finally { xTransferBusy(false); }
 }
 function xTransferBusy(value) { X.transferring = value; setBusy(value); xButtons(); xInfo(); }
+let cropWatchError = '';
+let cropWatchPending;
+async function pollCropWatchFolder() {
+  try {
+    if (document.hidden) return;
+    const inbox = await api('/api/watch-folder');
+    if (!cropWatchPending) {
+      cropWatchPending = document.createElement('p');
+      cropWatchPending.className = 'hint';
+      $('bar').after(cropWatchPending);
+    }
+    const waiting = busy || X.running || (parent !== window && parent.__shpNavigationLocked);
+    cropWatchPending.hidden = !inbox.ready || !waiting;
+    cropWatchPending.textContent = 'Crop watch-folder image pending; waiting for processing to finish.';
+    const error = [inbox.error,...(inbox.errors || [])].filter(Boolean).join('\n');
+    if (error && error !== cropWatchError) setStatus('Crop watch folder: '+error, true);
+    cropWatchError = error;
+    if (!inbox.ready || waiting) return;
+    xTransferBusy(true);
+    if (parent !== window) parent.postMessage({type:'shp-crop-watch-busy',busy:true}, location.origin);
+    try {
+      const result = await api('/api/watch-folder/load', {token:inbox.token});
+      if (result.skipped) return;
+      xLoaded(result);
+      if (parent !== window) parent.postMessage({type:'shp-crop-watch-loaded'}, location.origin);
+      if (result.watch_error) setStatus(result.watch_error, true);
+      cropWatchError = '';
+    } catch (e) {
+      if (cropWatchError !== e.message) setStatus('Crop watch-folder load failed: '+e.message, true);
+      cropWatchError = e.message;
+    } finally {
+      xTransferBusy(false);
+      if (parent !== window) parent.postMessage({type:'shp-crop-watch-busy',busy:false}, location.origin);
+    }
+  } catch (e) {
+    if (cropWatchError !== e.message) setStatus('Crop watch-folder status unavailable: '+e.message, true);
+    cropWatchError = e.message;
+  } finally { pollCropWatchFolder.timer = setTimeout(pollCropWatchFolder, 3000); }
+}
 function xTransferTitles() {
   $('xGet').title = X.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
   $('xSend').title = X.sourceKind === 'local' ? 'Save the selected full-resolution result as a numbered PNG beside the source; never overwrite.' : 'Grow the PhotoCraft document canvas and add the selected generated area as a layer, as one undo step.';
@@ -558,6 +596,8 @@ window.addEventListener('focus', () => { if (!X.running && !X.settingsSaving) lo
 if (localStorage.getItem('shpx-land') === '0') X.land = false;
 xButtons(); xSyncSize(); xInfo(); xDraw();
 loadList().catch(e => setStatus(e.message, true)); loadPresets();
+pollCropWatchFolder.timer = setTimeout(pollCropWatchFolder, 1000);
+window.addEventListener('pagehide', () => clearTimeout(pollCropWatchFolder.timer));
 </script>
 </body>
 </html>

@@ -23,6 +23,8 @@ def snapshot(token, consume=False):
             return {"token": token, "pending": True}
         result = {key: value for key, value in record.items() if key not in ("updated", "_running")}
         result["steps"] = [dict(step) for step in record["steps"]]
+        if "batch" in record:
+            result["batch"] = {**record["batch"], "items": [dict(item) for item in record["batch"]["items"]]}
         if consume and record["done"]:
             del _records[token]
         return result
@@ -60,6 +62,34 @@ def operation(token):
             record.update(done=True, active=None, seconds=time.perf_counter() - started,
                           updated=time.monotonic())
         _current.reset(context)
+
+
+def batch_status(folder, items):
+    record = _current.get()
+    if record is not None:
+        with _lock:
+            record["batch"] = {"dir": str(folder), "items": [dict(item) for item in items]}
+            record["updated"] = time.monotonic()
+
+
+class BatchCancelled(Exception):
+    pass
+
+
+def cancel_batch(token):
+    with _lock:
+        record = _records.get(token)
+        if record is None or record["done"] or "batch" not in record:
+            raise ValueError("no active batch for this request")
+        record["cancel_requested"] = True
+    return {"cancelling": True}
+
+
+def check_batch_cancel():
+    record = _current.get()
+    with _lock:
+        if record is not None and record.get("cancel_requested"):
+            raise BatchCancelled("batch cancelled")
 
 
 def call(label, fn, *args, **kwargs):

@@ -20,6 +20,8 @@ Usage: uv run python -m shp_photocraft_tools.modules.dnb.dodge_burn IMAGE (--S P
 """
 import argparse
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import cv2
@@ -30,6 +32,17 @@ IPD_MM = 63.0
 
 COLOUR = {"mode": "srgb"}  # "srgb" or "adobe" (Adobe RGB 1998: gamma 2.2, its own luminance weights)
 ADOBE_GAMMA = 2.19921875
+_colour_mode = ContextVar("dnb_colour_mode", default=None)
+
+
+@contextmanager
+def colour_mode(mode):
+    """Keep batch colour analysis independent of the editor and its background mask work."""
+    token = _colour_mode.set(mode)
+    try:
+        yield
+    finally:
+        _colour_mode.reset(token)
 
 
 def set_colour_mode(mode):
@@ -37,7 +50,7 @@ def set_colour_mode(mode):
 
 
 def to_linear(c):
-    if COLOUR["mode"] == "adobe":
+    if (_colour_mode.get() or COLOUR["mode"]) == "adobe":
         return np.power(np.clip(c, 0, 1), ADOBE_GAMMA)
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
@@ -45,14 +58,14 @@ def to_linear(c):
 def to_srgb(c):
     """Encode linear light with the TRC of the current colour mode (the name is historical)."""
     c = np.clip(c, 0, 1)
-    if COLOUR["mode"] == "adobe":
+    if (_colour_mode.get() or COLOUR["mode"]) == "adobe":
         return np.power(c, 1.0 / ADOBE_GAMMA)
     return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1 / 2.4) - 0.055)
 
 
 def luminance_linear(bgr_srgb):
     lin = to_linear(bgr_srgb)
-    if COLOUR["mode"] == "adobe":
+    if (_colour_mode.get() or COLOUR["mode"]) == "adobe":
         return 0.0753 * lin[..., 0] + 0.6273 * lin[..., 1] + 0.2974 * lin[..., 2]
     return 0.0722 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.2126 * lin[..., 2]
 

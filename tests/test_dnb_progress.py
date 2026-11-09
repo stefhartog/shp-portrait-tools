@@ -90,7 +90,7 @@ class ProgressTests(unittest.TestCase):
         preview_harness = """
           (() => {
             const state={mode:'dnb',frequency:{on:true}},tabSel={A:'result',B:'mask'};
-            const tabs=['mask','analysis','layer','layerm','color','detail','directional_region'].map(k=>({dataset:{k},hidden:false}));
+            const tabs=['mask','analysis','layer','layerm','layer2','layer2m','color','detail','directional_region'].map(k=>({dataset:{k},hidden:false}));
             const left=['orig','result'].map(k=>({dataset:{k},hidden:false}));
             const $=id=>({querySelectorAll:()=>id==='tabsA'?left:tabs});
         """ + "function rightPreviewKinds(mode) {" + right_tabs + \
@@ -104,7 +104,13 @@ class ProgressTests(unittest.TestCase):
               state.mode='combine';tabSel.B='dnb_result';
               if(paneKinds().join(',')!=='result,dnb_result')throw Error('Combine must remain actual');
             }
-            for(const [mode,expected] of [['frequency','color,detail'],['dnb','layer,layerm'],['mask','mask,analysis']]) {
+            for(const key of ['layer2','layer2m']){
+              state.mode='dnb';state.secondBand={on:true};tabSel.B=key;syncRightTabs();
+              state.secondBand.on=false;syncRightTabs();
+              if(tabSel.B!==key || tabs.filter(t=>['layer2','layer2m'].includes(t.dataset.k)).some(t=>t.hidden))
+                throw Error('Disabling Band 2 hid or deselected its previews');
+            }
+            for(const [mode,expected] of [['frequency','color,detail'],['dnb','layer,layerm,layer2,layer2m'],['mask','mask,analysis']]) {
               for(const previous of ['mask','analysis','layer','layerm','color','detail','blur',null]) {
                 state.mode=mode;tabSel.B=previous;syncRightTabs();
                 if(tabs.filter(t=>!t.hidden).map(t=>t.dataset.k).join(',')!==expected)throw Error('Visible previews');
@@ -192,8 +198,12 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(html.count('id="maskPrecache"'), 1)
         operations = html.split('<div id="maskOperations">', 1)[1].split('<div id="info">', 1)[0]
         self.assertIn('id="maskCacheStatus"', operations)
-        self.assertIn('id="transferFormat"', operations)
-        self.assertIn("FS + Skintone only", operations)
+        self.assertNotIn('id="transferFormat"', operations)
+        self.assertNotIn('id="maskPrecache"', operations)
+        general = html.split('id="generalSettingsContent"', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
+        self.assertIn('id="transferFormat"', general)
+        self.assertIn('id="maskPrecache"', general)
+        self.assertIn('id="calculationLogText"', general)
         self.assertIn("$('maskOperations').hidden = state.mode !== 'mask'", html)
         self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
         settings_harness = """
@@ -211,6 +221,9 @@ class ProgressTests(unittest.TestCase):
             $('directionalSliders').append=()=>{};
             let transferStars=0;
             const updateStar=()=>{transferStars++;};
+            const globalWrites=[];
+            const api=async(path,body)=>{globalWrites.push({path,body});return body;};
+            const setBusy=()=>{};
             let dirty=0;
             const markDirty=()=>{dirty++;};
             const noop=()=>{}, scaleFrequencyRadius=noop, syncMode=noop,
@@ -342,19 +355,25 @@ class ProgressTests(unittest.TestCase):
             applySettings({...original,mode:'frequency',frequency:{...original.frequency,method:'median_fast'},
               frequency_transfer:{format:'tiff',compressed:false,opaque_alpha:false,parallel:false}});
             check(state.frequency.method==='median_fast');
-            check(JSON.stringify(getSettings().frequency_transfer)===JSON.stringify(state.frequencyTransfer));
+            check(!('frequency_transfer' in getSettings()));
+            state.frequencyTransfer={format:'tiff',compressed:false,opaque_alpha:false,parallel:false};
             syncTransfer();
             check($('transferFormat').value==='tiff' && $('transferCompression').value==='none');
-            check(!$('transferAlpha').checked && !$('transferParallel').checked);
+            check($('transferAlpha').checked && !$('transferParallel').checked);
             check($('transferHint').textContent.includes('4 GiB'));
             $('transferFormat').value='png';$('transferFormat').onchange();
-            check(state.frequencyTransfer.format==='png' && transferStars===1);
+            check(state.frequencyTransfer.format==='png' && transferStars===0);
+            check(globalWrites.at(-1).path==='/api/global-settings' && globalWrites.at(-1).body.layer_transfer.format==='png');
+            $('transferAlpha').checked=false;$('transferAlpha').onchange();
+            check(state.frequencyTransfer.opaque_alpha && globalWrites.at(-1).body.layer_transfer.opaque_alpha);
+            $('transferAlpha').checked=true;$('transferAlpha').onchange();
+            check(!state.frequencyTransfer.opaque_alpha && !globalWrites.at(-1).body.layer_transfer.opaque_alpha);
             check($('transferHint').textContent.includes('stored blocks'));
             const transferred=params();transferred.frequency_transfer.parallel=true;
             check(!state.frequencyTransfer.parallel);
             state.loaded=true;state.sourceKind='photocraft';state.pcConnected=true;state.busy=false;
             applySettings(original);
-            check(JSON.stringify(state.frequencyTransfer)===JSON.stringify(TRANSFER_DEFAULTS));
+            check(state.frequencyTransfer.format==='png' && !state.frequencyTransfer.parallel);
             syncFrequencyControls();check(state.frequency.on && $('blurOn').checked);
             $('blurOn').checked=false;$('blurOn').onchange();
             check(!state.frequency.on && !params().frequency.on && !getSettings().frequency.on);
@@ -529,7 +548,7 @@ class ProgressTests(unittest.TestCase):
             const applyLoaded=r=>{state.sourceKind=r.source_kind;calls.push('loaded');};
             const initializeHueCenter=async()=>{},apply=()=>applied++;
             const params=()=>({S:181}),logNote=t=>notes.push(t),finishProcessing=()=>{};
-            const renderTemporaryLog=()=>{},watchMaskPrecache=()=>{},invalidateMaskCacheStatus=()=>{};
+            const renderTemporaryLog=()=>{},recordCalculation=()=>{},watchMaskPrecache=()=>{},invalidateMaskCacheStatus=()=>{};
             const api=async()=>({connected});
             const operationApi=async(path,payload)=>{
               calls.push(path);
@@ -556,6 +575,148 @@ class ProgressTests(unittest.TestCase):
             check(state.sourceKind==='local'&&statuses.at(-1)==='cannot decode'&&!state.busy&&applied===2);
             await pcSend();check(statuses.at(-1)==='cannot decode'&&!state.busy);
           })().then(()=>globalThis.localTransferCheck='ok',e=>globalThis.localTransferCheck=e.message);
+        """
+        watcher_code = "let watchFolderErrors = '';" + html.split("let watchFolderErrors = '';", 1)[1].split("function renderBatch", 1)[0]
+        variation_harness += """
+          (async () => {
+            const state={busy:false},shellUiReady=true,document={hidden:false},calls=[],notes=[],statuses=[],prompts=[];
+            let ready=true,token='watch-1',failure=null,applied=0,hues=0,loaded=0;
+            const setBusy=value=>state.busy=value,logNote=text=>notes.push(text),setStatus=text=>statuses.push(text);
+            const modes=[],messages=[],shellConnected=true,location={origin:'http://local'};
+            const switchMode=mode=>modes.push(mode),parent={postMessage:message=>messages.push(message)};
+            const setTimeout=()=>0,beginLoadTimings=()=>{};
+            const window={confirm:()=>{throw Error('Watch imports must not prompt');}};
+            const applyLoaded=result=>{state.imageInfo=result;loaded++;};
+            const initializeHueCenter=async()=>hues++,apply=async()=>applied++;
+            const api=async(path,body)=>{
+              calls.push(path);
+              if(path==='/api/watch-folder')return {ready,token};
+              throw Error('Unexpected watcher request');
+            };
+            const operationApi=async(path,body)=>{
+              calls.push(path);
+              if(body.token!==token || 'confirmation' in body)throw Error('Unexpected import request');
+              if(failure)throw Error(failure);
+              ready=false;
+              return {watch_name:'incoming.png',watch_cleanup:true,source_kind:'photocraft'};
+            };
+            function check(ok){if(!ok)throw Error('Watch-folder UI flow');}
+        """ + watcher_code + """
+            state.busy=true;await pollWatchFolder();check(calls.length===0);state.busy=false;
+            await pollWatchFolder();
+            check(calls.includes('/api/watch-folder/load') && loaded===1 && hues===1 && applied===1 && !state.busy);
+            check(modes.join(',')==='mask' && messages.length===1 && messages[0].type==='shp-watch-loaded');
+            check(!calls.includes('/api/watch-folder/prepare'));
+            check(notes.some(text=>text.includes('Inbox file removed')));
+            ready=true;token='watch-3';failure='document changed';await pollWatchFolder();
+            check(loaded===1 && notes.some(text=>text.includes('input retained: document changed')) && !state.busy);
+            check(modes.length===1 && messages.length===1);
+          })().then(()=>globalThis.watchFolderCheck='ok',e=>globalThis.watchFolderCheck=e.message);
+        """
+        crop_watcher = "let cropWatchError = '';" + crop.split("let cropWatchError = '';",1)[1].split("function xTransferTitles",1)[0]
+        variation_harness += """
+          (async()=>{
+            const X={running:false},document={hidden:false,createElement:()=>({})},window={},location={origin:'http://local'},messages=[];
+            const $=()=>({after(){}});
+            const parent={__shpNavigationLocked:true,postMessage:message=>messages.push(message)},setTimeout=()=>0;
+            let busy=false,loaded=0,fail=false,calls=0;
+            const xTransferBusy=value=>busy=value,xLoaded=()=>loaded++,setStatus=()=>{};
+            const api=async(path)=>{calls++;if(path==='/api/watch-folder')return {ready:true,token:'crop-token'};
+              if(fail)throw Error('wrong target');return {source_kind:'photocraft'};};
+        """ + crop_watcher + """
+            await pollCropWatchFolder();if(calls!==1||cropWatchPending.hidden)throw Error('Crop pending status missing');
+            parent.__shpNavigationLocked=false;await pollCropWatchFolder();
+            if(loaded!==1||!messages.some(m=>m.type==='shp-crop-watch-loaded')||busy)throw Error('Crop watch routing');
+            const selected=messages.filter(m=>m.type==='shp-crop-watch-loaded').length;
+            fail=true;await pollCropWatchFolder();
+            if(loaded!==1||messages.filter(m=>m.type==='shp-crop-watch-loaded').length!==selected||busy)
+              throw Error('Failed Crop import changed tab');
+          })().then(()=>globalThis.cropWatchCheck='ok',e=>globalThis.cropWatchCheck=e.message);
+        """
+        batch_display = "const display = snapshot => {" + html.split("const display = snapshot => {", 1)[1].split(
+            "const completed = {'Loading image", 1)[0] + "};"
+        variation_harness += """
+          (() => {
+            const batching=true,operation={token:'batch-counter-test'},liveOperation=operation,statuses=[];
+            const $=()=>({}),renderBatch=()=>{},recordCalculation=()=>{};
+            const setStatus=text=>statuses.push(text);
+        """ + batch_display + """
+            const items=Array.from({length:8},()=>({status:'pending'}));
+            display({token:operation.token,batch:{items}});
+            items[0].status='success';display({token:operation.token,batch:{items}});
+            items[1].status='failed';items[2].status='success';
+            display({token:operation.token,batch:{items},active:'Loading image'});
+            if(statuses.join('|')!=='Batch processing... (0/8)|Batch processing... (1/8)|Batch processing... (3/8)')
+              throw Error('Live batch counter');
+            display({token:operation.token,batch:{items},done:true,steps:[]});
+            if(statuses.length!==3)throw Error('Finished snapshot must not overwrite completion status');
+          })();
+        """
+        batch_code = "function renderBatch(batch) {" + html.split("function renderBatch(batch) {", 1)[1].split("$('batchStart').onclick = startBatch;", 1)[0]
+        batch_panel = html.split('id="g-batch"', 1)[1].split('</details>', 1)[0]
+        self.assertIn("<summary>BATCH PROCESSING</summary>", batch_panel)
+        self.assertEqual(re.findall(r'<button[^>]+id="([^"]+)"', batch_panel), ["batchChooseSource", "batchStart", "batchCancel"])
+        self.assertNotIn("<input", batch_panel)
+        self.assertNotIn("<textarea", batch_panel)
+        self.assertIn("$('g-batch').hidden=state.mode!=='combine';", html)
+        variation_harness += """
+          (async () => {
+            const state={busy:false,loaded:false,mode:'combine',sourceKind:'photocraft'};
+            const controls={},calls=[],statuses=[],notes=[];
+            const $=id=>controls[id]||(controls[id]={value:'',textContent:'',replaceChildren(...rows){this.rows=rows;}});
+            const document={createElement:()=>({textContent:''})};
+            let selected=null,failure=null,outcome='mixed';
+            const window={__shpNativeFileDialog:true,prompt:message=>{check(message==='SHP_OPEN_BATCH_SOURCE_V1');return selected;}};
+            const markDirty={t:1},clearTimeout=()=>{},logNote=text=>notes.push(text);
+            const current={mode:'combine',combine:{fs_mix:55,dnb_mix:35}};
+            const params=()=>JSON.parse(JSON.stringify(current)),setBusy=value=>state.busy=value;
+            const setStatus=text=>statuses.push(text);
+            let liveOperation=null;
+            function check(ok){if(!ok)throw Error('Combine batch UI: '+calls.join(','));}
+            const api=async(path,body)=>{
+              calls.push(path);
+              if(path==='/api/batch/cancel'){check(body.token==='cancel-token');return {cancelling:true};}
+              check(path==='/api/batch/images'&&(body.folder==='/photos'||body.paths.length===2));
+              current.combine.fs_mix=0;
+              return {items:[{name:'one.png',path:'/photos/one.png'},{name:'two.png',path:'/photos/two.png'}]};
+            };
+            const operationApi=async(path,body)=>{
+              calls.push(path);
+              check(path==='/api/batch'&&body.settings.combine.fs_mix===55);
+              check(body.paths.join(',')==='/photos/one.png,/photos/two.png');
+              if(failure)throw Error(failure);
+              return {dir:'/photos/shpcombine_batch_001',succeeded:outcome==='success'?2:1,
+                failed:outcome==='mixed'?1:0,cancelled:outcome==='cancelled'?1:0,seconds:2,
+                items:[{name:'one.png',status:'success'},{name:'two.png',status:'failed',error:'bad image'}]};
+            };
+        """ + batch_code + """
+            selected='{"folder":"/photos"}';await $('batchChooseSource').onclick();check(batchSelection.paths.length===2);
+            check($('batchSourceSummary').textContent.includes('2 image(s) selected from folder'));
+            selected=null;await $('batchChooseSource').onclick();check(batchSelection.paths.length===2);
+            selected='{"paths":["/photos/one.png","/photos/two.png"]}';await $('batchChooseSource').onclick();
+            check(batchSelection.paths.length===2&&$('batchSourceSummary').textContent.includes('2 image'));
+            selected='{"folder":"/photos"}';await $('batchChooseSource').onclick();
+            calls.length=0;current.combine.fs_mix=55;
+            await startBatch();
+            check(calls.join(',')==='/api/batch/images,/api/batch'&&!state.busy);
+            check($('batchProgress').value===2&&$('batchProgress').max===2);
+            check($('batchItems').rows[1].textContent==='two.png: failed — bad image');
+            check($('batchSummary').textContent.includes('1 succeeded, 1 failed'));
+            check(statuses.at(-1)==='Batch completed with errors (2.0s).');
+            check(state.sourceKind==='photocraft'&&!state.loaded);
+            outcome='success';current.combine.fs_mix=55;await startBatch();
+            check(statuses.at(-1)==='Batch processing completed successfully (2.0s).');
+            outcome='cancelled';current.combine.fs_mix=55;await startBatch();
+            check(statuses.at(-1)==='Batch processing cancelled (2.0s).');
+            liveOperation={token:'cancel-token'};$('batchCancel').disabled=false;
+            await cancelBatch();check($('batchCancel').disabled&&calls.at(-1)==='/api/batch/cancel');
+            check(statuses.at(-1)==='Cancelling batch...');
+            current.combine.fs_mix=55;failure='disk full';await startBatch();
+            check(!state.busy&&$('batchSummary').textContent==='Batch failed.');
+            const before=calls.length;state.mode='crop';await startBatch();check(calls.length===before);
+            window.__shpNativeFileDialog=false;await $('batchChooseSource').onclick();
+            check(statuses.at(-1).includes('Tools desktop'));
+          })().then(()=>globalThis.batchCheck='ok',e=>globalThis.batchCheck=e.message);
         """
         crop_get_code = "async function xGet() {" + crop.split("async function xGet() {", 1)[1].split("async function xRun()", 1)[0]
         crop_send_code = "async function xSend() {" + crop.split("async function xSend() {", 1)[1].split("$('xSend').onclick", 1)[0]
@@ -688,9 +849,12 @@ class ProgressTests(unittest.TestCase):
           check(temporaryLog.notes.length===100);
           temporaryLog.load='Image loaded in 1.20s';
           temporaryLog.send='Send completed in 2.30s';
-          check(temporaryLogText().includes('Image loaded in 1.20s'));
-          check(temporaryLogText().includes('Send completed in 2.30s'));
+          check(!temporaryLogText().includes('Image loaded in 1.20s'));
+          check(!temporaryLogText().includes('Send completed in 2.30s'));
           renderTemporaryLog();
+          check($('calculationLogText').textContent.includes('Image loaded in 1.20s'));
+          check($('calculationLogText').textContent.includes('Send completed in 2.30s'));
+          check(!$('calculationLogText').textContent.includes('Actual failure'));
           check($('temporaryLogText').textContent===temporaryLogText());
           check($('status').textContent==='Actual failure');
         """
@@ -767,12 +931,12 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("button.workflow:disabled", css)
         for package, expected in (
             ("modules.crop.ui", {"xGet", "xSend"}),
-            ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save"}),
+            ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
         ):
             page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
             if package == "modules.crop.ui":
                 self.assertNotIn("#xRun { width:", page)
-                self.assertIn("#xRun.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }", page)
+                self.assertIn("button.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }", stylesheet().decode())
             workflow = set()
             for tag in re.findall(r"<button\b[^>]*>", page):
                 button_id = re.search(r'\bid="([^"]+)"', tag)
@@ -800,6 +964,49 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("--status-accent:#6a9fc5", css)
         self.assertIn("#status.ok::after", css)
         shell_js = files("shp_photocraft_tools.shell").joinpath("shell.js").read_text()
+        availability = "function viewAvailable(name) {" + shell_js.split(
+            "function viewAvailable(name) {", 1)[1].split("  const $", 1)[0]
+        navigation = "let skinBusy = false;" + shell_js.split("let skinBusy = false;", 1)[1].split("function requestMode()", 1)[0]
+        navigation += "function select(name, notify = true, internal = false) {" + shell_js.split(
+            "function select(name, notify = true, internal = false) {", 1)[1].split("function mountGeneralSettings", 1)[0]
+        navigation_harness = """
+          (() => {
+            const views=['mask','frequency','dnb','combine','crop','settings'],modes=['mask','frequency','dnb','combine'];
+            const names={crop:'Crop',dnb:'D&B'};
+            const window={};
+            let modules={dnb:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
+            const tabs=views.map(view=>({dataset:{view},setAttribute(k,v){this[k]=v;}}));
+            const document={querySelectorAll:()=>tabs},requestMode=()=>{};
+            const $=()=>({setAttribute(){},focus(){},classList:{toggle(){}}});
+        """ + availability + navigation + "document.querySelectorAll('[role=\"tab\"]').forEach(button => {" + shell_js.split(
+            "document.querySelectorAll('[role=\"tab\"]').forEach(button => {", 1)[1].split("function render()", 1)[0] + """
+            skinBusy=true;syncNavigation();
+            if(!tabs.every(tab=>tab.disabled&&tab['aria-disabled']==='true'))throw Error('All tabs must lock');
+            for(const view of views)select(view);
+            tabs.forEach(tab=>tab.onclick());
+            let prevented=0;
+            tabs[0].onkeydown({key:'ArrowRight',preventDefault(){prevented++;}});
+            if(prevented!==1)throw Error('Busy keyboard navigation not blocked');
+            if(active!=='dnb')throw Error('Busy click changed navigation');
+            select('mask',false,true);
+            if(active!=='mask')throw Error('Internal watch-load navigation was blocked');
+            active='dnb';
+            skinBusy=false;modules.dnb.busy=true;syncNavigation();select('settings');
+            if(active!=='dnb')throw Error('Backend busy navigation');
+            modules.dnb.busy=false;syncNavigation();
+            if(tabs.some(tab=>tab.disabled))throw Error('Tabs did not unlock');
+            if(active!=='dnb')throw Error('Busy clicks were queued');
+            select('settings');if(active!=='settings')throw Error('Normal navigation did not restore');
+            modules.crop={phase:'stopped'};
+            select('crop');if(active!=='settings')throw Error('Hidden tab accepted selection');
+            modules.dnb.phase='stopped';
+            tabs[5].onkeydown({key:'ArrowRight',preventDefault(){}});
+            if(active!=='settings')throw Error('Keyboard selected unloaded module');
+            modules.dnb.phase='starting';
+            tabs[5].onkeydown({key:'ArrowRight',preventDefault(){}});
+            if(active!=='mask')throw Error('Starting tabs not available');
+          })();
+        """
         badge_helpers = shell_js.split("(() => {", 1)[1].split("  const names =", 1)[0]
         badge_harness = badge_helpers + """
           (() => {
@@ -816,7 +1023,11 @@ class ProgressTests(unittest.TestCase):
               check(tab['aria-busy']===String(working));
               check(tab.textContent==='Crop');
               check(tab['aria-label']==='Crop: '+tab.title && tab.title.length>0);
+              if(phase!=='unavailable')check(tab.hidden===(phase==='stopped'));
             }
+            renderTabStatus(tab,{phase:'stopped'});check(tab.hidden);
+            renderTabStatus(tab,{phase:'unavailable'});check(tab.hidden);
+            renderTabStatus(tab,{phase:'starting'});check(!tab.hidden);
             renderTabStatus(tab,{phase:'error',error:'Connection lost'});
             check(tab.title==='Error: Connection lost');
           })();
@@ -827,6 +1038,7 @@ class ProgressTests(unittest.TestCase):
         isolation_harness = """
           (async () => {
             const names={crop:'Crop',dnb:'D&B'},frames=new Map(),reports=[],placeholders={crop:{},dnb:{}};
+            let skinBusy=false,cropWatchBusy=false;const syncNavigation=()=>{};
             let modules={},pending=null,initialSelection=true,active='crop';
             const select=name=>{active=name;initialSelection=false;};
             const tabs={crop:{},dnb:{}};
@@ -835,7 +1047,8 @@ class ProgressTests(unittest.TestCase):
               createElement:()=>({dataset:{},remove(){this.removed=true;}})};
             const panels=Object.fromEntries(Object.keys(names).map(name=>[name,
               {querySelector:()=>placeholders[name],append:frame=>{frame.appended=true;}}]));
-            const $=id=>panels[id.replace('panel-','')];
+            const general={settingsAvailability:{},generalSettingsHost:{}},ready=new WeakSet();
+            const $=id=>general[id]||panels[id.replace('panel-','')];
             const renderTabStatus=(tab,state)=>tab.phase=state.phase;
             const report=(message,error=false)=>reports.push([message,error]);
             const setTimeout=()=>{},location={origin:'http://local'};
@@ -844,10 +1057,11 @@ class ProgressTests(unittest.TestCase):
             const crop={dataset:{instance:'crop'},remove(){this.removed=true;}};
             frames.set('crop',crop);frames.set('dnb',skin);
             const check=ok=>{if(!ok)throw Error('Shell module isolation');};
-        """ + render_code + poll_code + """
+        """ + availability + render_code + poll_code + """
             modules={crop:{phase:'stopping',instance:'crop'},dnb:{phase:'running',instance:'skin'}};
             await poll();check(crop.removed&&!frames.has('crop')&&frames.get('dnb')===skin&&!skin.removed);
             modules.crop={phase:'stopped',instance:'crop'};await poll();
+            check(active==='dnb');
             check(placeholders.crop.textContent.includes('unloaded')&&!placeholders.crop.hidden);
             check(placeholders.dnb.hidden&&tabs.dnb.phase==='running'&&reports.at(-1)[0]==='');
             modules.crop={phase:'error',instance:'crop',error:'Child failed'};await poll();
@@ -859,13 +1073,17 @@ class ProgressTests(unittest.TestCase):
             initialSelection=true;modules.crop={phase:'stopped',startup_enabled:false};
             modules.dnb={phase:'running',instance:'skin-new',startup_enabled:true};await poll();
             check(active==='dnb'&&placeholders.crop.textContent.includes('startup is disabled'));
-            active='crop';await poll();check(active==='crop');
+            active='crop';await poll();check(active==='dnb');
             initialSelection=true;modules.dnb={phase:'stopped',startup_enabled:false};await poll();
-            check(active==='crop'&&!placeholders.crop.hidden&&!placeholders.dnb.hidden);
+            check(active==='settings'&&!placeholders.crop.hidden&&!placeholders.dnb.hidden);
+            modules.crop={phase:'starting',startup_enabled:true};await poll();
+            check(active==='settings');
+            modules.crop={phase:'running',instance:'crop-reloaded'};await poll();
+            check(active==='settings'&&frames.get('crop').dataset.instance==='crop-reloaded');
           })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
         """
-        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop'])
-        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop'];", shell_js)
+        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop', 'settings'])
+        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'settings'];", shell_js)
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
@@ -873,7 +1091,7 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('id="blurMask"',blur_panel)
         self.assertIn("#g-bands, #g-mask, #g-frequency { border-top:0; }",html)
         self.assertIn("['mask','skintone','frequency','dnb','combine'].includes(data.mode)", html)
-        self.assertIn("const modes = views.filter(view => view !== 'crop');", shell_js)
+        self.assertIn("const modes = ['mask', 'frequency', 'dnb', 'combine'];", shell_js)
         self.assertNotIn('class="badge"', shell_page)
         self.assertEqual(shell_page.count('title="Starting" data-service='), 5)
         self.assertIn('[role="tab"]:where(:not(:disabled)):hover', shell_css)
@@ -894,13 +1112,13 @@ class ProgressTests(unittest.TestCase):
                 send.assert_called_once_with(200, theme_script(), "text/javascript; charset=utf-8")
         context = js.JSGlobalContextCreate(None)
         try:
-            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
+            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.cropWatchCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:
                     self.assertTrue(js.JSCheckScriptSyntax(context, source, None, 1, ctypes.byref(error)))
-                    if script in (harness, theme_harness, badge_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
+                    if script in (harness, theme_harness, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
                         js.JSEvaluateScript(context, source, None, None, 1, ctypes.byref(error))
                         if error.value:
                             message = js.JSValueToStringCopy(context, error, None)

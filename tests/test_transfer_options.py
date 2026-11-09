@@ -129,9 +129,12 @@ class RealCodecTests(unittest.TestCase):
             self.bridge.send_skintone(layers, settings, mask, target, icc)
         children = self.client.run("document.inspect")["layers"][0]["children"]
         self.assertEqual([child["name"] for child in children], ["Detail","Blur","Color"])
-        self.assertEqual([child["hasMask"] for child in children], [False,True,False])
+        self.assertTrue(self.client.run("document.inspect")["layers"][0]["hasMask"])
+        self.assertEqual([child["hasMask"] for child in children], [False,False,False])
         expected = ST.composite({key:a.astype(np.float32)/65535 for key,a in layers.items()},
-                                mask/255, settings)[1]
+                                np.ones_like(mask), settings)[1]
+        source = cv2.imread(str(path), -1)[...,:3].astype(np.float32)/65535
+        expected = source + (expected-source)*(mask[...,None]/255)
         actual = self.save_pixels("off.png")
         np.testing.assert_allclose(actual[...,:3], np.round(expected*65535), atol=1)
         self.assertEqual(len(self.bridge.session()["documents"]), 1)
@@ -151,10 +154,13 @@ class RealCodecTests(unittest.TestCase):
                 self.bridge.send_skintone(layers,settings,mask,target,icc,include_blur=False)
                 layers=self.client.run("document.inspect")["layers"]
                 self.assertEqual([a["name"] for a in layers[0]["children"]],["Detail","Hue","Color"])
-                self.assertTrue(layers[0]["children"][1]["hasMask"])
+                self.assertTrue(layers[0]["hasMask"])
+                self.assertFalse(layers[0]["children"][1]["hasMask"])
                 self.assertEqual(len(layers),2)
                 pixels={key:U.FS.rgb16(value).astype(np.float32)/65535 for key,value in U.FS.split(raw.astype(np.float32)/65535,"gaussian",2).items()}
-                expected=ST.composite(pixels,mask/255,settings)[1]
+                expected=ST.composite(pixels,np.ones_like(mask),settings)[1]
+                source=raw.astype(np.float32)/65535
+                expected=source+(expected-source)*(mask[...,None]/255)
                 self.client.call("doc.save",path="standalone.png")
                 actual=cv2.imread(str(self.bridge.exchange/"standalone.png"),cv2.IMREAD_UNCHANGED)
                 np.testing.assert_allclose(actual[...,:3],np.round(expected*65535),atol=2)
@@ -198,11 +204,14 @@ class RealCodecTests(unittest.TestCase):
                 blur=next(a for a in children if a["name"]=="Blur")
                 self.assertAlmostEqual(hue["opacity"],amount/100)
                 self.assertAlmostEqual(blur["opacity"],strength/100)
-                self.assertTrue(hue["hasMask"])
-                self.assertEqual(blur["hasMask"],masked)
+                self.assertFalse(hue["hasMask"])
+                self.assertFalse(blur["hasMask"])
+                self.assertTrue(self.client.run("document.inspect")["layers"][0]["hasMask"])
                 f={"blur_strength":strength,"blur_mask":masked}
                 expected=ST.composite({key:a.astype(np.float32)/65535 for key,a in layers.items()},
-                                      mask/255,settings,f)[1]
+                                      np.ones_like(mask),settings,f)[1]
+                source=cv2.imread(str(path),-1)[...,:3].astype(np.float32)/65535
+                expected=source+(expected-source)*(mask[...,None]/255)
                 np.testing.assert_allclose(self.save_pixels("opacity.png")[...,:3],
                                            np.round(expected*65535),atol=3)
                 self.client.run("file.close",document=target["index"])
@@ -261,11 +270,13 @@ class RealCodecTests(unittest.TestCase):
                     self.assertEqual([layer["name"] for layer in group["children"]],
                                      ["Detail","Hue","Blur","Color"])
                     children = group["children"]
-                    self.assertEqual([child["hasMask"] for child in children],[False,True,True,False])
+                    self.assertTrue(group["hasMask"])
+                    self.assertEqual([child["hasMask"] for child in children],[False,False,False,False])
                     actual = self.save_pixels("composite.png")
                     if reference is None:
                         reference = actual.copy()
                     np.testing.assert_array_equal(actual,reference)
+                    self.client.run("layer.layerMask.enabled",layer=group["id"],enabled=False)
                     for child in children:
                         if child["name"] == "Hue":
                             continue
@@ -274,11 +285,9 @@ class RealCodecTests(unittest.TestCase):
                         self.client.run("layer.setProps",layer=child["id"],blend="Normal")
                         self.client.run("layer.setProps",layer=inspection["layers"][1]["id"],visible=False)
                         actual = self.save_pixels("isolated.png")
-                        visible = mask > 0 if child["name"]=="Blur" else np.ones(mask.shape,bool)
+                        visible = np.ones(mask.shape,bool)
                         np.testing.assert_array_equal(actual[...,:3][visible],layers[child["name"].lower()][visible])
-                        if child["name"] == "Blur":
-                            np.testing.assert_array_equal(actual[...,3],mask.astype(np.uint16)*257)
-                        elif actual.shape[2] == 4:
+                        if actual.shape[2] == 4:
                             np.testing.assert_array_equal(actual[...,3],np.full(mask.shape,65535,np.uint16))
                     self.assertEqual(list(self.bridge.exchange.iterdir()),[])
                     self.client.run("file.close",document=target["index"])

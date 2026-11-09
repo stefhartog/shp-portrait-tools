@@ -71,7 +71,8 @@ class MedianFastApiTests(unittest.TestCase):
         class FakeBridge:
             def fetch(inner,dest):
                 return self.image,{"index":1,"name":self.image.name}
-            def send_skintone(inner,layers,settings,mask,doc,icc,*,blur_future=None,transfer=None,blur_strength=100,blur_masked=True):
+            def send_skintone(inner,layers,settings,mask,doc,icc,*,blur_future=None,transfer=None,blur_strength=100,blur_masked=True,mask_placement="folder"):
+                self.assertEqual(mask_placement, "folder")
                 if blur_future is not None:
                     layers={**layers,"blur":blur_future.result()}
                 received.append((layers,mask,transfer))
@@ -80,6 +81,7 @@ class MedianFastApiTests(unittest.TestCase):
         p = {**T.PARAMS,"mode":"frequency","frequency":{"method":"median_fast","radius":15,"blur_radius":30},
              "skintone":{"hue_amount":0},"precache_mask":False,
              "frequency_transfer":{"format":"tiff","compressed":False,"opaque_alpha":False,"parallel":False}}
+        self.post("/api/global-settings", {"layer_transfer":p["frequency_transfer"]})
         self.post("/api/load",{"path":str(self.image)})
         self.post("/api/run",p)
         with Image.open(BytesIO(self.get("/img/color")[0])) as image:
@@ -98,4 +100,4 @@ class MedianFastApiTests(unittest.TestCase):
         self.assertEqual(transfer,p["frequency_transfer"])
         response = self.post("/api/presets/save",{"name":"fast","settings":p})
         self.assertEqual(response["presets"]["fast"]["frequency"]["method"],"median_fast")
-        self.assertEqual(response["presets"]["fast"]["frequency_transfer"],p["frequency_transfer"])
+        self.assertNotIn("frequency_transfer", response["presets"]["fast"])

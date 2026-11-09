@@ -456,14 +456,34 @@ class Bridge(BaseBridge):
         return self._send_skin_layers(
             [("Corrected Result", pixels, "Normal", False)], doc, source_icc=source_icc)
 
-    def send_frequency(self, layers, mask8, doc, source_icc):
+    def _group_skin_mask(self, scratch, group, mask, filename, scratch_docs):
+        self._activate(scratch)
+        if not mask.any():
+            self.client.run("layer.layerMask.hideAll", layer=group)
+            return
+        if not cv2.imwrite(str(self.exchange / filename), mask):
+            raise ControlError("could not write the shared SkinTools mask")
+        mask_doc = self._open(filename)
+        scratch_docs.append(mask_doc)
+        for attempt in range(MASK_ATTEMPTS):
+            try:
+                self._attach_mask(scratch, mask_doc, group, "Attaching shared SkinTools mask")
+                break
+            except ControlError:
+                if attempt == MASK_ATTEMPTS - 1:
+                    raise
+                time.sleep(.2)
+        self._release_source(mask_doc, scratch_docs)
+        self._activate(scratch)
+
+    def send_frequency(self, layers, mask8, doc, source_icc, *, mask_placement="folder"):
         return self._send_skin_layers(
             [("Color", layers["color"], "Normal", False),
              ("Blur", layers["blur"], "Normal", True),
              ("Detail", layers["detail"], "Linear Light", False)],
-            doc, mask8, source_icc)
+            doc, mask8, source_icc, mask_placement=mask_placement)
 
-    def send_skin_bands(self, layers, mask8, doc, *, source_icc=None, band_mix=100):
+    def send_skin_bands(self, layers, mask8, doc, *, source_icc=None, band_mix=100, mask_placement="folder"):
         """Insert enabled D&B bands together in one SkinTools folder."""
         if not isinstance(layers, (list, tuple)) or not layers:
             raise ControlError("at least one enabled D&B band is required")
@@ -490,12 +510,14 @@ class Bridge(BaseBridge):
         return self._send_skin_layers(
             [(f"D&B band {index}", pixels, "Soft Light", True, band_mix)
              for index, pixels in normalized],
-            doc, mask8, source_icc, group_name="SkinTools", group_mode="Pass Through")
+            doc, mask8, source_icc, group_name="SkinTools", group_mode="Pass Through", mask_placement=mask_placement)
 
     def send_skintone(self, layers, settings, mask8, doc, source_icc, *, blur_future=None, transfer=None, include_blur=True,
                       blur_strength=100, blur_masked=True, directional=None, bands=None,
-                      band_mask8=None, band_mix=100):
+                      band_mask8=None, band_mix=100, mask_placement="folder"):
         """Assemble enabled FS, skintone, directional and D&B layers together."""
+        if mask_placement not in ("folder", "layers"):
+            raise ControlError("mask placement must be folder or layers")
         options = transfer_settings(transfer)
         if (not isinstance(blur_strength, (float, int)) or isinstance(blur_strength, bool)
                 or not math.isfinite(blur_strength) or not 0 <= blur_strength <= 100
@@ -625,23 +647,8 @@ class Bridge(BaseBridge):
                                 blend="Normal", opacity=strength / 100)
                 self._release_source(direction_doc, scratch_docs)
                 self._activate(scratch)
-                if not region.any():
-                    self.client.run("layer.layerMask.hideAll", layer=directional_id)
-                else:
-                    if not cv2.imwrite(str(self.exchange / files[5]), region):
-                        raise ControlError("could not write Directional Blur mask")
-                    region_doc = self._open(files[5])
-                    scratch_docs.append(region_doc)
-                    for attempt in range(MASK_ATTEMPTS):
-                        try:
-                            self._attach_mask(scratch, region_doc, directional_id, "Attaching Directional Blur mask")
-                            break
-                        except ControlError:
-                            if attempt == MASK_ATTEMPTS - 1:
-                                raise
-                            time.sleep(.2)
-                    self._release_source(region_doc, scratch_docs)
-                    self._activate(scratch)
+                if mask_placement == "layers":
+                    self._group_skin_mask(scratch, directional_id, region, files[5], scratch_docs)
                 self.client.run("layer.select", layer=directional_id)
             correction = None
             if settings.get("on", True):
@@ -653,27 +660,6 @@ class Bridge(BaseBridge):
                 self.client.run("layer.layerMask.delete", layer=correction)
                 self.client.run("layer.setProps", layer=correction, name="Hue", blend="Normal",
                                 opacity=settings["hue_amount"] / 100)
-            masked_layers = tuple(lid for lid in (blur_id if blur_masked else None, correction) if lid is not None)
-            if not mask8.any():
-                for lid in masked_layers:
-                    progress.call("Attaching empty skin mask", self.client.run, "layer.layerMask.hideAll", layer=lid)
-            elif masked_layers:
-                if not progress.call("Encoding shared mask", cv2.imwrite, str(self.exchange / files[1]), mask8):
-                    raise ControlError("could not write Skintone mask")
-                mask_doc = self._open(files[1])
-                scratch_docs.append(mask_doc)
-                for lid in masked_layers:
-                    for attempt in range(MASK_ATTEMPTS):
-                        try:
-                            self._attach_mask(scratch, mask_doc, lid,
-                                              "Attaching Blur mask" if lid == blur_id else "Attaching Hue mask")
-                            break
-                        except ControlError:
-                            if attempt == MASK_ATTEMPTS - 1:
-                                raise
-                            time.sleep(0.2)
-                self._release_source(mask_doc, scratch_docs)
-                self._activate(scratch)
             if detail_job is None:
                 self._write_rgb(files[2], layers["detail"], icc, options)
             else:
@@ -708,28 +694,6 @@ class Bridge(BaseBridge):
                 self._release_source(band_doc, scratch_docs)
                 self._activate(scratch)
                 band_ids.append(band_id)
-            if normalized_bands:
-                if not band_mask8.any():
-                    for band_id in band_ids:
-                        progress.call("Attaching empty D&B mask", self.client.run,
-                                      "layer.layerMask.hideAll", layer=band_id)
-                else:
-                    if not cv2.imwrite(str(self.exchange / band_mask_file), band_mask8):
-                        raise ControlError("could not write the D&B band mask")
-                    band_mask_doc = self._open(band_mask_file)
-                    scratch_docs.append(band_mask_doc)
-                    for band_id in band_ids:
-                        for attempt in range(MASK_ATTEMPTS):
-                            try:
-                                self._attach_mask(scratch, band_mask_doc, band_id,
-                                                  "Attaching D&B band mask")
-                                break
-                            except ControlError:
-                                if attempt == MASK_ATTEMPTS - 1:
-                                    raise
-                                time.sleep(0.2)
-                    self._release_source(band_mask_doc, scratch_docs)
-                    self._activate(scratch)
             ordered_layers = tuple(lid for lid in
                                    (color_id, blur_id, directional_id, correction, detail_id, *band_ids)
                                    if lid is not None)
@@ -737,6 +701,14 @@ class Bridge(BaseBridge):
                 self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
             group = int(progress.call("Assembling SkinTools folder", self.client.run,
                                       "layer.groupLayers", name="SkinTools", mode="Normal")["layer"])
+            if mask_placement == "folder":
+                self._group_skin_mask(scratch, group, mask8, files[1], scratch_docs)
+            else:
+                for lid in (blur_id if blur_masked else None, correction):
+                    if lid is not None:
+                        self._group_skin_mask(scratch, lid, mask8, files[1], scratch_docs)
+                for lid in band_ids:
+                    self._group_skin_mask(scratch, lid, band_mask8, band_mask_file, scratch_docs)
             target = self._find(doc["index"], doc["name"])
             self._activate(target["index"])
             tops = self.client.run("layer.list").get("layers") or []
@@ -785,10 +757,12 @@ class Bridge(BaseBridge):
                 prefix = str(primary) if primary else "SkinTools folder inserted" if inserted else "SkinTools send failed"
                 raise ControlError(prefix + "; " + "; ".join(cleanup_errors)) from primary
 
-    def _send_skin_layers(self, layers, doc, blur_mask=None, source_icc=None, *, group_name="SkinTools", group_mode="Normal"):
+    def _send_skin_layers(self, layers, doc, blur_mask=None, source_icc=None, *, group_name="SkinTools", group_mode="Normal", mask_placement="folder"):
         """Assemble off-document, then copy one layer/group in one target history step."""
         if not layers:
             raise ControlError("at least one skin layer is required")
+        if mask_placement not in ("folder", "layers"):
+            raise ControlError("mask placement must be folder or layers")
         h, w = layers[0][1].shape[:2]
         if any(len(layer) not in (4, 5) or layer[1].dtype != np.uint16
                or layer[1].shape != (h, w, 3) for layer in layers):
@@ -808,7 +782,6 @@ class Bridge(BaseBridge):
             icc = source_icc or self._target_profile(target)
             assembly = None
             ids = []
-            masked_ids = []
             for layer in layers:
                 name, pixels, blend, masked = layer[:4]
                 opacity = layer[4] if len(layer) == 5 else 100
@@ -833,8 +806,6 @@ class Bridge(BaseBridge):
                     self._release_source(scratch, scratch_docs)
                     self._activate(assembly)
                 ids.append(lid)
-                if masked:
-                    masked_ids.append(lid)
             self._activate(assembly)
             if blur_mask is not None:
                 for i, lid in enumerate(ids):
@@ -842,26 +813,10 @@ class Bridge(BaseBridge):
                 lid = int(self.client.run("layer.groupLayers", name=group_name, mode=group_mode)["layer"])
                 rel = self._file("skin mask")
                 files.append(rel)
-                if not cv2.imwrite(str(self.exchange / rel), blur_mask):
-                    raise ControlError("could not write the skin mask")
-                mask_doc = self._open(rel)
-                scratch_docs.append(mask_doc)
-                if not blur_mask.any():
-                    for masked_id in masked_ids:
-                        self.client.run("layer.layerMask.hideAll", layer=masked_id)
-                else:
-                    for masked_id in masked_ids:
-                        for attempt in range(MASK_ATTEMPTS):
-                            try:
-                                self._attach_mask(assembly, mask_doc, masked_id,
-                                                  "Attaching skin mask")
-                                break
-                            except ControlError:
-                                if attempt == MASK_ATTEMPTS - 1:
-                                    raise
-                                time.sleep(0.2)
-                self._release_source(mask_doc, scratch_docs)
-                self._activate(assembly)
+                targets = [lid] if mask_placement == "folder" else [
+                    layer_id for layer_id, spec in zip(ids, layers) if spec[3]]
+                for masked_id in targets:
+                    self._group_skin_mask(assembly, masked_id, blur_mask, rel, scratch_docs)
             else:
                 lid = ids[0]
             target = self._find(doc["index"], doc["name"])

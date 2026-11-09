@@ -163,6 +163,7 @@ class Desktop(Gtk.Application):
         self.status_epoch = 0
         self.geometry_timer = None
         self.geometry = {}
+        self.watch_wake_tokens = {}
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -394,9 +395,28 @@ class Desktop(Gtk.Application):
                 if self.connection.error:
                     summary += " | Desktop connection: " + self.connection.error
                 GLib.idle_add(self.update_status, summary, status, epoch)
+                states = status.get("modules", {})
+                if not any(state.get("busy") for state in states.values()):
+                    for name in ("dnb", "crop"):
+                        if states.get(name, {}).get("phase") == "running":
+                            inbox = self.connection.request(f"/{name}/api/watch-folder")
+                            inbox["service"] = name
+                            GLib.idle_add(self.wake_watch_folder, inbox, epoch)
             except (OSError, ValueError, KeyError) as error:
                 GLib.idle_add(self.update_status, "Tools connection lost: " + str(error), None, epoch)
             self.connection.stopped.wait(3)
+
+    def wake_watch_folder(self, inbox, epoch):
+        if self.quitting or self.control_pending or epoch != self.status_epoch or self.window is None:
+            return GLib.SOURCE_REMOVE
+        service = inbox.get("service", "dnb")
+        token = inbox.get("token") if inbox.get("ready") else None
+        if token is None:
+            self.watch_wake_tokens.pop(service, None)
+        elif token != self.watch_wake_tokens.get(service):
+            self.watch_wake_tokens[service] = token
+            self.show()
+        return GLib.SOURCE_REMOVE
 
     def update_status(self, summary, status=None, epoch=None):
         if self.quitting or self.control_pending or (epoch is not None and epoch != self.status_epoch):
@@ -717,21 +737,46 @@ class Desktop(Gtk.Application):
 
     def script_dialog(self, view, script):
         kind = script.get_dialog_type()
-        if (kind == WebKit2.ScriptDialogType.PROMPT and script.get_message() == "SHP_OPEN_IMAGE_V1"
+        request = script.get_message()
+        if (kind == WebKit2.ScriptDialogType.PROMPT
+                and request in ("SHP_OPEN_IMAGE_V1", "SHP_OPEN_BATCH_FOLDER_V1", "SHP_OPEN_BATCH_IMAGES_V1",
+                                "SHP_OPEN_BATCH_SOURCE_V1")
                 and view.get_uri() == self.base + "/"):
             self.dialog_open = True
-            chooser = Gtk.FileChooserDialog(title="Open image", transient_for=self.window, modal=True,
-                                            action=Gtk.FileChooserAction.OPEN)
+            batch_source = request == "SHP_OPEN_BATCH_SOURCE_V1"
+            if batch_source:
+                mode = Gtk.MessageDialog(transient_for=self.window, modal=True,
+                                         message_type=Gtk.MessageType.QUESTION, text="Choose batch source")
+                mode.format_secondary_text("Choose one folder's direct images, or select image files from one folder.")
+                mode.add_button("Cancel", Gtk.ResponseType.CANCEL)
+                mode.add_button("Folder", 1)
+                mode.add_button("Images", 2)
+                response = mode.run()
+                mode.destroy()
+                if response not in (1, 2):
+                    self.dialog_open = False
+                    return True
+                request = "SHP_OPEN_BATCH_FOLDER_V1" if response == 1 else "SHP_OPEN_BATCH_IMAGES_V1"
+            folder = request == "SHP_OPEN_BATCH_FOLDER_V1"
+            multiple = request == "SHP_OPEN_BATCH_IMAGES_V1"
+            chooser = Gtk.FileChooserDialog(title="Choose batch folder" if folder else "Choose batch images" if multiple else "Open image",
+                                            transient_for=self.window, modal=True,
+                                            action=Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN)
+            if multiple:
+                chooser.set_select_multiple(True)
             chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Open", Gtk.ResponseType.ACCEPT)
             images = Gtk.FileFilter()
             images.set_name("Images")
             for extension in ("jpg", "jpeg", "png", "tif", "tiff", "webp"):
                 images.add_pattern(f"*.{extension}")
                 images.add_pattern(f"*.{extension.upper()}")
-            chooser.add_filter(images)
+            if not folder:
+                chooser.add_filter(images)
             try:
                 if chooser.run() == Gtk.ResponseType.ACCEPT:
-                    script.prompt_set_text(chooser.get_filename())
+                    selected = ({"folder": chooser.get_filename()} if folder else {"paths": chooser.get_filenames()})
+                    script.prompt_set_text(json.dumps(selected) if batch_source else
+                                           json.dumps(chooser.get_filenames()) if multiple else chooser.get_filename())
             finally:
                 chooser.destroy()
                 self.dialog_open = False

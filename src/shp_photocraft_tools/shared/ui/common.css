@@ -49,6 +49,13 @@ button.primary:not(:disabled):hover, button.workflow:not(:disabled):hover { back
 button.primary:not(:disabled):active, button.workflow:not(:disabled):active { background:color-mix(in srgb, var(--acc) 85%, black); border-color:color-mix(in srgb, var(--acc) 85%, black); }
 button.primary:focus-visible, button.workflow:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 button:disabled { opacity:.5; cursor:default; }
+button.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }
+button.cancel:where(:not(:disabled)):hover { background:#c63b41; border-color:#c63b41; }
+.workflow-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:8px 0; }
+.workflow-actions .workflow { flex:1; white-space:nowrap; }
+.batch-progress { width:100%; accent-color:var(--acc); }
+.batch-items { max-height:240px; overflow:auto; padding-left:24px; color:var(--dim); }
+.batch-summary { color:var(--dim); overflow-wrap:anywhere; }
 #presetBar button { padding:3.5px 8px; }
 #pcGet, #pcSend, #pcSendLayers, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }
 .row { display:flex; align-items:center; gap:8px; margin:4px 0; }

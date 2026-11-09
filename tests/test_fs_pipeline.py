@@ -60,6 +60,38 @@ class PipelineTests(unittest.TestCase):
         return U.parse_params({"mode": "frequency", "S": 181,
                                "frequency": {"method": method, "radius": 2, "blur_radius": 4}})
 
+    def test_mask_placement_defaults_migrates_and_persists(self):
+        import json
+        path = self.root / "settings.json"
+        with patch.object(U, "GLOBAL_SETTINGS", path), patch.object(U, "PRESETS", self.root / "presets.json"):
+            self.assertEqual(U.read_global_settings()["mask_placement"], "folder")
+            settings = U.read_global_settings()
+            settings.pop("mask_placement")
+            path.write_text(json.dumps(settings))
+            self.assertEqual(U.read_global_settings()["mask_placement"], "folder")
+            U.api_global_settings({"layer_transfer": settings["layer_transfer"], "mask_placement": "layers"})
+            self.assertEqual(U.read_global_settings()["mask_placement"], "layers")
+            U.api_global_settings({"layer_transfer": settings["layer_transfer"]})
+            self.assertEqual(U.read_global_settings()["mask_placement"], "layers")
+            with self.assertRaises(ValueError):
+                U.api_global_settings({"layer_transfer": settings["layer_transfer"], "mask_placement": "invalid"})
+
+    def test_folder_and_legacy_layer_masks_include_empty_masks(self):
+        layers = {key: FS.rgb16(value) for key, value in FS.separate(
+            self.source, self.mask, "gaussian", 2, 4).items()}
+        for placement in ("folder", "layers"):
+            for empty in (False, True):
+                with self.subTest(placement=placement, empty=empty):
+                    b = self.bridge(f"{placement}-{empty}")
+                    mask = U.u8(np.zeros_like(self.mask) if empty else self.mask)
+                    with patch.object(b, "_group_skin_mask", wraps=b._group_skin_mask) as attach:
+                        b.send_skintone(layers, ST.settings({}), mask, U.BRIDGE["doc"],
+                                        self.icc, mask_placement=placement)
+                    self.assertEqual(attach.call_count, 1 if placement == "folder" else 2)
+                    if placement == "folder":
+                        self.assertEqual(attach.call_args.args[1], 77)
+                    self.assertEqual(list(b.exchange.iterdir()), [])
+
     def test_disabled_skintone_send_omits_hue_but_preserves_fs_and_blur_masks(self):
         p = self.params()
         p["skintone"]["on"] = False

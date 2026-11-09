@@ -326,31 +326,32 @@ class TransferTests(unittest.TestCase):
                         group = inspection["layers"][0]
                         self.assertEqual(group["id"], result["layer"])
                         self.assertEqual(group["blend"], "Normal")
-                        self.assertFalse(group["hasMask"])
+                        self.assertTrue(group["hasMask"])
                         detail, blur, color = group["children"]
                         self.assertEqual([a["name"] for a in group["children"]], ["Detail", "Blur", "Color"])
                         self.assertEqual(detail["blend"], "Linear Light")
-                        self.assertTrue(blur["hasMask"])
+                        self.assertFalse(blur["hasMask"])
                         self.assertFalse(detail["hasMask"])
                         self.assertFalse(color["hasMask"])
                         after = self.save_pixels("after.png")
                         scale = np.iinfo(after.dtype).max
                         numeric = {key: a.astype(np.float64) / 65535 for key, a in layers.items()}
-                        np.testing.assert_allclose(after[..., :3] / scale,
-                                                   F.composite(numeric, mask / 255), atol=3 / scale)
+                        original = before[..., :3] / scale
+                        expected = original + (F.composite(numeric, np.ones_like(mask)) - original) * (mask[..., None] / 255)
+                        np.testing.assert_allclose(after[..., :3] / scale, expected, atol=3 / scale)
                         # Hiding Blur leaves a full-image reconstruction, independent of mask.
                         self.client.run("layer.setProps", layer=blur["id"], visible=False)
                         reconstructed = self.save_pixels("reconstructed.png")
                         np.testing.assert_allclose(reconstructed[..., :3] / scale, before[..., :3] / scale,
                                                    atol=3 / scale)
                         self.client.run("layer.setProps", layer=blur["id"], visible=True)
-                        # Only Blur uses the soft mask: Color itself is full-image and unmasked.
+                        # The shared folder mask blends its whole stack with the original.
                         self.client.run("layer.setProps", layer=detail["id"], visible=False)
                         low = self.save_pixels("low.png")[..., :3] / scale
-                        expected = numeric["color"] + (numeric["blur"] - numeric["color"]) * (mask[..., None] / 255)
+                        expected = before[...,:3]/scale + (numeric["blur"]-before[...,:3]/scale)*(mask[...,None]/255)
                         np.testing.assert_allclose(low, expected, atol=2 / scale)
-                        # Disable Blur's mask and its entire unattenuated data becomes visible.
-                        self.client.run("layer.layerMask.enabled", layer=blur["id"], enabled=False)
+                        # Disable the folder mask to expose the unattenuated Blur data.
+                        self.client.run("layer.layerMask.enabled", layer=group["id"], enabled=False)
                         smoothed = self.save_pixels("smoothed.png")[..., :3] / scale
                         np.testing.assert_allclose(smoothed, numeric["blur"], atol=2 / scale)
                         self.assertEqual(list(self.bridge.exchange.iterdir()), [])

@@ -571,7 +571,8 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             if modules.modules[name].phase != "running":
                 raise LaunchError(f"{name} is not ready. Use its Start control.")
             modules.checked(name)
-            connection = http.client.HTTPConnection("127.0.0.1", modules.config["ports"][name], timeout=900)
+            connection = http.client.HTTPConnection("127.0.0.1", modules.config["ports"][name],
+                                                   timeout=None if name == "dnb" and path == "/api/batch" else 900)
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))) if self.command == "POST" else None
             connection.request(self.command, path, body, {"Content-Type": "application/json",
                                "Origin": f"http://127.0.0.1:{modules.config['ports'][name]}"})

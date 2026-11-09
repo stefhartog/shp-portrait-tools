@@ -49,6 +49,7 @@ class DnbTests(unittest.TestCase):
             patch.object(S, "STATE", dict(S.STATE, img=None, imgs={}, masks=None, last=None, version=0)),
             patch.object(S, "BRIDGE", {"b": None, "doc": None}),
             patch.object(S.M, "pick_target", return_value=None),
+            patch.object(S, "GLOBAL_SETTINGS", self.root / "config" / "settings.json"),
         ]
         for item in self.patches:
             item.start()
@@ -70,7 +71,7 @@ class DnbTests(unittest.TestCase):
 
     def post(self, route, body):
         headers={"Content-Type":"application/json"}
-        if route=="/api/pc/send_layers":
+        if route in ("/api/pc/send_layers", "/api/global-settings"):
             headers["Origin"]=self.base
         request = Request(self.base + route, json.dumps(body).encode(), headers)
         with urlopen(request, timeout=10) as response:
@@ -167,6 +168,58 @@ class DnbTests(unittest.TestCase):
         self.assertEqual(self.post("/api/presets/delete", {"name": "Portrait"})["presets"], {})
         self.assertEqual(S.read_presets()["default"], PARAMS)
 
+    def test_global_transfer_migrates_once_and_is_not_preset_owned(self):
+        legacy = {"format": "tiff", "compressed": False, "opaque_alpha": False, "parallel": False}
+        saved = {"default": {**PARAMS, "frequency_transfer": legacy},
+                 "presets": {"Legacy": {**PARAMS, "frequency_transfer": legacy}}}
+        S.write_presets(saved)
+        original = S.PRESETS.read_bytes()
+        settings = json.loads(self.get("/api/global-settings")[0])
+        self.assertEqual(settings["layer_transfer"], legacy)
+        persisted = json.loads(S.GLOBAL_SETTINGS.read_text())
+        self.assertTrue(persisted["layer_transfer"]["exclude_opaque_alpha"])
+        self.assertNotIn("opaque_alpha", persisted["layer_transfer"])
+        self.assertEqual(S.PRESETS.read_bytes(), original)
+        changed = {**legacy, "format": "png", "parallel": True}
+        self.assertEqual(self.post("/api/global-settings", {"layer_transfer": changed})["layer_transfer"], changed)
+        result = self.post("/api/presets/default", {"settings": {**PARAMS, "frequency_transfer": legacy}})
+        self.assertNotIn("frequency_transfer", result["default"])
+        result = self.post("/api/presets/save", {"name": "New", "settings": {**PARAMS, "frequency_transfer": legacy}})
+        self.assertNotIn("frequency_transfer", result["presets"]["New"])
+        self.assertEqual(result["presets"]["Legacy"]["frequency_transfer"], legacy)
+        self.assertEqual(json.loads(self.get("/api/global-settings")[0])["layer_transfer"], changed)
+
+    def test_global_settings_errors_do_not_overwrite_existing_preferences(self):
+        S.GLOBAL_SETTINGS.parent.mkdir(parents=True)
+        for invalid in ('{bad json', '[]', '{"layer_transfer":{"format":"jpeg"}}'):
+            S.GLOBAL_SETTINGS.write_text(invalid)
+            with self.assertRaises(HTTPError) as error:
+                self.get("/api/global-settings")
+            self.assertEqual(error.exception.code, 400)
+            self.assertEqual(S.GLOBAL_SETTINGS.read_text(), invalid)
+        S.GLOBAL_SETTINGS.write_text(json.dumps({"other_setting": 42, "layer_transfer": {"format": "tiff"}}))
+        self.post("/api/global-settings", {"layer_transfer": {"format": "png"}})
+        self.assertEqual(json.loads(S.GLOBAL_SETTINGS.read_text())["other_setting"], 42)
+        with self.assertRaises(HTTPError):
+            self.post("/api/global-settings", {"layer_transfer": {"parallel": "yes"}})
+        self.assertEqual(S.read_global_settings()["layer_transfer"]["format"], "png")
+
+    def test_exclude_alpha_default_and_legacy_global_migration(self):
+        self.assertFalse(S.read_global_settings()["layer_transfer"]["opaque_alpha"])
+        self.assertTrue(json.loads(S.GLOBAL_SETTINGS.read_text())["layer_transfer"]["exclude_opaque_alpha"])
+        for include in (True, False):
+            S.GLOBAL_SETTINGS.write_text(json.dumps({"other":42, "layer_transfer":{"opaque_alpha":include}}))
+            self.assertEqual(S.read_global_settings()["layer_transfer"]["opaque_alpha"], include)
+            stored = json.loads(S.GLOBAL_SETTINGS.read_text())
+            self.assertEqual(stored["layer_transfer"]["exclude_opaque_alpha"], not include)
+            self.assertNotIn("opaque_alpha", stored["layer_transfer"])
+            self.assertEqual(stored["other"], 42)
+        for exclude in (True, False):
+            settings = self.post("/api/global-settings", {"layer_transfer":{"exclude_opaque_alpha":exclude}})
+            self.assertEqual(settings["layer_transfer"]["opaque_alpha"], not exclude)
+        with self.assertRaises(HTTPError):
+            self.post("/api/global-settings", {"layer_transfer":{"exclude_opaque_alpha":"true"}})
+
     def test_fetch_and_send_routes_use_separate_dnb_semantics(self):
         sent = []
         flattened=[]
@@ -175,7 +228,8 @@ class DnbTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": "synthetic.png"}
 
-            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None, mask_placement="folder"):
+                self.assertEqual(mask_placement, "folder")
                 sent.append((layers[0][1], mask, doc))
                 return {"layer": 9, "document": doc["name"]}
 
@@ -206,7 +260,8 @@ class DnbTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None, mask_placement="folder"):
+                self.assertEqual(mask_placement, "folder")
                 sent.append((layers[0][1].copy(), mask.copy()))
                 return {"layer": 9, "document": doc["name"]}
 

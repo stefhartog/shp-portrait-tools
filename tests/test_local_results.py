@@ -3,6 +3,7 @@
 import ast
 from concurrent.futures import ThreadPoolExecutor
 import io
+import itertools
 import json
 import tempfile
 import threading
@@ -69,10 +70,10 @@ class LocalResultTests(unittest.TestCase):
                 else:
                     self.assertEqual(decoded.dtype, np.uint16)
                     np.testing.assert_array_equal(decoded[..., :3], S.FS.rgb16(expected))
-                    self.assertTrue(np.all(decoded[..., 3] == 65535))
+                    self.assertEqual(decoded.shape[2], 3)
                     with Image.open(output) as image:
                         self.assertEqual(image.info["icc_profile"], S.SRGB_ICC)
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()),
+        self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.is_file()),
                          ["synthetic.png", "synthetic_shpdnb_001.png", "synthetic_shpfs_001.png",
                           "synthetic_shpskinmask_001.png"])
         np.testing.assert_array_equal(cv2.imread(str(self.image), cv2.IMREAD_UNCHANGED)[..., :3], pixels)
@@ -113,6 +114,39 @@ class LocalResultTests(unittest.TestCase):
                 S.api_send_result({**T.PARAMS, "mode": "mask"})
         self.assertFalse(list(self.root.glob("*_shpskinmask_*")))
 
+    def test_global_formats_compression_alpha_and_mask_exemption(self):
+        loaded = self.post("/api/load", {"path": str(self.image)})
+        result = T.synthetic_image()
+        mask = np.ones(result.shape[:2], np.float32)
+        with patch.object(S, "dnb_full_result", return_value=([], result, mask)), \
+             patch.object(S, "full_skin_mask", return_value=mask), \
+             patch.object(S, "combined_result", return_value=(None, None, result)):
+            for fmt, compressed, alpha in itertools.product(("png", "tiff"), (False, True), (False, True)):
+                options = {"format":fmt, "compressed":compressed, "opaque_alpha":alpha, "parallel":True}
+                self.post("/api/global-settings", {"layer_transfer":options})
+                for mode in ("dnb", "combine"):
+                    with self.subTest(format=fmt, compressed=compressed, alpha=alpha, mode=mode):
+                        params = {**T.PARAMS, "mode":mode, "generation":loaded["generation"],
+                                  "frequency_transfer":{"format":"png"}}
+                        output = Path(self.send(params)["path"])
+                        self.assertEqual(output.suffix, "." + fmt)
+                        decoded = cv2.imread(str(output), cv2.IMREAD_UNCHANGED)
+                        self.assertEqual(decoded.dtype, np.uint16)
+                        self.assertEqual(decoded.shape[2], 4 if alpha else 3)
+                        np.testing.assert_array_equal(decoded[..., :3], S.FS.rgb16(result))
+                        with Image.open(output) as image:
+                            self.assertEqual(image.info["icc_profile"], S.SRGB_ICC)
+                            if fmt == "tiff":
+                                self.assertEqual(image.tag_v2[259], 8 if compressed else 1)
+                output = Path(self.send({**T.PARAMS, "mode":"mask"})["path"])
+                self.assertEqual(output.suffix, ".png")
+                self.assertEqual(cv2.imread(str(output), -1).dtype, np.uint8)
+            saved = self.post("/api/save", {**T.PARAMS, "mode":"combine"})
+            self.assertIn("result.tiff", saved["files"])
+            settings = json.loads((Path(saved["dir"]) / "settings.json").read_text())
+            self.assertNotIn("frequency_transfer", settings)
+            self.assertEqual(settings["output_settings"], options)
+
     def test_collision_symlink_concurrency_and_failed_write_cleanup(self):
         victim = self.root / "keep.png"
         victim.write_bytes(b"untouched")
@@ -124,6 +158,12 @@ class LocalResultTests(unittest.TestCase):
         self.assertEqual(len(set(outputs)), 6)
         self.assertEqual(victim.read_bytes(), b"untouched")
         self.assertEqual((self.root / "synthetic_shpdnb_002.png").read_bytes(), b"also untouched")
+        (self.root / "synthetic_shpdnb_001.tiff").symlink_to(victim)
+        output = Path(S.write_local_result(self.image, "shpdnb", b"tiff", extension=".tiff"))
+        self.assertEqual(output.name, "synthetic_shpdnb_002.tiff")
+        self.assertEqual(victim.read_bytes(), b"untouched")
+        with self.assertRaisesRegex(ValueError, "extension"):
+            S.write_local_result(self.image, "shpdnb", b"bad", extension="/escape")
         before = set(self.root.iterdir())
         with patch.object(local_output.os, "fsync", side_effect=OSError("disk full")):
             with self.assertRaisesRegex(OSError, "disk full"):
@@ -251,6 +291,13 @@ class NativeChooserTests(unittest.TestCase):
                 {"Content-Type": "application/json", "Origin": "http://127.0.0.1:18765"})
             handler.fail.assert_not_called()
             handler.send.assert_called_once_with(200, b'{"saved":true}', "application/json")
+            handler.path = "/dnb/api/batch"
+            handler.rfile = io.BytesIO(b"{}")
+            supervisor.ShellHandler.proxy(handler)
+            factory.assert_called_with("127.0.0.1", 18765, timeout=None)
+            factory.return_value.request.assert_called_with(
+                "POST", "/api/batch", b"{}",
+                {"Content-Type": "application/json", "Origin": "http://127.0.0.1:18765"})
 
     def test_native_dialog_selection_cancel_and_frame_capability_without_gtk(self):
         source = Path(S.__file__).parents[2] / "desktop/controller.py"
@@ -260,8 +307,8 @@ class NativeChooserTests(unittest.TestCase):
         chooser = Mock()
         gtk = SimpleNamespace(FileChooserDialog=Mock(return_value=chooser), FileFilter=Mock(),
                               ResponseType=SimpleNamespace(CANCEL=0, ACCEPT=1),
-                              FileChooserAction=SimpleNamespace(OPEN=1))
-        namespace = {"Gtk": gtk, "WebKit2": SimpleNamespace(ScriptDialogType=SimpleNamespace(PROMPT=1))}
+                              FileChooserAction=SimpleNamespace(OPEN=1, SELECT_FOLDER=2))
+        namespace = {"Gtk": gtk, "json": json, "WebKit2": SimpleNamespace(ScriptDialogType=SimpleNamespace(PROMPT=1))}
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
         host = SimpleNamespace(base="http://127.0.0.1:1234", window=object(), dialog_open=False)
         view = Mock()
@@ -279,6 +326,45 @@ class NativeChooserTests(unittest.TestCase):
             else:
                 script.prompt_set_text.assert_not_called()
             chooser.destroy.assert_called_once()
+            self.assertFalse(host.dialog_open)
+        for request in ("SHP_OPEN_BATCH_FOLDER_V1", "SHP_OPEN_BATCH_IMAGES_V1"):
+            chooser.reset_mock()
+            gtk.FileChooserDialog.reset_mock()
+            chooser.run.return_value = 1
+            chooser.get_filenames.return_value = ["/chosen/a.jpg", "/chosen/b.png"]
+            script = Mock()
+            script.get_dialog_type.return_value = 1
+            script.get_message.return_value = request
+            self.assertTrue(namespace["script_dialog"](host, view, script))
+            if request == "SHP_OPEN_BATCH_FOLDER_V1":
+                self.assertEqual(gtk.FileChooserDialog.call_args.kwargs["action"], 2)
+                chooser.set_select_multiple.assert_not_called()
+                script.prompt_set_text.assert_called_once_with("/chosen/portrait.png")
+            else:
+                chooser.set_select_multiple.assert_called_once_with(True)
+                script.prompt_set_text.assert_called_once_with(json.dumps(["/chosen/a.jpg", "/chosen/b.png"]))
+            chooser.destroy.assert_called_once()
+            self.assertFalse(host.dialog_open)
+        mode = Mock()
+        gtk.MessageDialog = Mock(return_value=mode)
+        gtk.MessageType = SimpleNamespace(QUESTION=1)
+        for response in (0, 1, 2):
+            mode.reset_mock()
+            chooser.reset_mock()
+            mode.run.return_value = response
+            chooser.run.return_value = 1
+            script = Mock()
+            script.get_dialog_type.return_value = 1
+            script.get_message.return_value = "SHP_OPEN_BATCH_SOURCE_V1"
+            self.assertTrue(namespace["script_dialog"](host, view, script))
+            mode.destroy.assert_called_once()
+            if response == 0:
+                chooser.run.assert_not_called()
+                script.prompt_set_text.assert_not_called()
+            else:
+                expected = {"folder": "/chosen/portrait.png"} if response == 1 else {"paths": ["/chosen/a.jpg", "/chosen/b.png"]}
+                script.prompt_set_text.assert_called_once_with(json.dumps(expected))
+                chooser.destroy.assert_called_once()
             self.assertFalse(host.dialog_open)
         self.assertIn("WebKit2.UserContentInjectedFrames.ALL_FRAMES", source.read_text())
         self.assertIn("location.origin ===", source.read_text())

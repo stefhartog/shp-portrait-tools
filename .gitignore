@@ -9,6 +9,8 @@ build/
 models/
 results/
 inbox/
+watchfolder/
+watchfolder_crop/
 out*/
 testpictures/
 tools/

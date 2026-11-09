@@ -8,6 +8,7 @@ see Original | Result | Soft-light layer side by side, and Save to write, at ful
 the settings), 2_skinmask and 3_softlight_layer (no mask applied) plus settings.json to results/<name>_<time>/.
 The skin mask (segmenter minus eyes/brows/lips/nostrils minus off-colour pixels) is computed once at Load.
 Presets (named settings, plus one default loaded at start) are stored in $DNB_DATA/presets.json.
+Global result/transfer file options live in the app config settings.json, outside module presets.
 Previews are computed on a downscaled copy (max ~1600 px) of the subject crop or the whole image; Save always
 works at full resolution.
 """
@@ -18,6 +19,8 @@ import hashlib
 import json
 import math
 import threading
+import tempfile
+import os
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +36,7 @@ from PIL import Image, ImageCms
 from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
-from shp_photocraft_tools.shared.local_output import write_local_result
+from shp_photocraft_tools.shared.local_output import write_local_result, batch_output
 
 from . import dodge_burn as D
 from . import skin_mask as K
@@ -46,11 +49,15 @@ from . import combine_scale as C
 from . import estimate_body_scale as B
 from . import progress
 from .mask_precache import MaskPrecache, Superseded
+from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
 from .paths import DATA, MODELS
 
 ROOT = DATA
 HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
+GLOBAL_SETTINGS = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "settings.json"
+GLOBAL_SETTINGS_LOCK = threading.Lock()
+WATCH_DIRECTORY = Path("/home/stef/shp-photocraft-tools/watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
 FULL_MASK_LOCK = threading.Lock()
@@ -87,7 +94,8 @@ def colour_plan(path, raw8):
     sRGB or no profile: used as is. Adobe RGB: kept as is, analysed with its own gamma/luminance weights, and the same
     profile is embedded in every JPEG we write. Any other profile: converted to sRGB (and tagged sRGB)."""
     try:
-        icc = Image.open(path).info.get("icc_profile")
+        with Image.open(path) as image:
+            icc = image.info.get("icc_profile")
     except Exception:
         icc = None
     if not icc:
@@ -390,7 +398,7 @@ def api_load(req):
                                opaque, skintone_error, colour_note, h, w, started)
 
 
-def prepare_loaded_image(req):
+def prepare_loaded_image(req, *, set_colour=True):
     path = Path(req["path"]).expanduser().absolute()
     if path.suffix.lower() not in IMG_EXT or not path.is_file():
         raise ValueError(f"not an image file: {path}")
@@ -424,12 +432,13 @@ def prepare_loaded_image(req):
     mode, icc_out, converted, colour_note = colour_plan(path, raw8)
     if converted is not None:
         raw8, img = converted, converted.astype(np.float32) / 255.0
-    D.set_colour_mode(mode)
+    if set_colour:
+        D.set_colour_mode(mode)
     return path, img, source_img, raw8, mode, icc_out, source_icc, opaque, skintone_error, colour_note
 
 
 def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
-                        opaque, skintone_error, colour_note, h, w, started):
+                        opaque, skintone_error, colour_note, h, w, started, *, publish=True):
     prepared = time.perf_counter()
     t = progress.call("Analyzing image / estimating S", M.pick_target, path, raw8, include_unscaled=True)
     analyzed = time.perf_counter()
@@ -454,24 +463,133 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
     if masks is None:
         progress.call("Mask not generated: no usable detected scale", lambda: None)
     directory = path.parent.stat()
-    MASK_PRECACHE.reset()
-    STATE.update(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
+    loaded = dict(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
                  seen=seen, pbox=pbox, last=None, struct=None, avers=0,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
                  landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={}, preview_cache={},
                  full_mask_cache=None,
                  source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
-    STATE["pose"] = ({"kp": np.array(t["kp"], copy=True),
+    loaded["pose"] = ({"kp": np.array(t["kp"], copy=True),
                       **({"sc": np.array(t["sc"], copy=True)} if t.get("sc") is not None else {})}
                      if t is not None and t.get("kp") is not None else None)
-    BRIDGE["doc"] = None
-    return {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
+    info = {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
             "seconds": time.perf_counter() - started,
             "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
                         "mask": mask_finished - mask_started if mask_started is not None else None},
             "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour,
-            "skintone_error": skintone_error, "generation": STATE["landmark_generation"], "source_kind": "local",
-            "directional_pose": directional_availability()}
+            "skintone_error": skintone_error, "source_kind": "local"}
+    if not publish:
+        return loaded, info
+    MASK_PRECACHE.reset()
+    STATE.update(loaded)
+    BRIDGE["doc"] = None
+    return {**info, "generation": STATE["landmark_generation"], "directional_pose": directional_availability()}
+
+
+def batch_sources(req):
+    folder, paths = req.get("folder"), req.get("paths")
+    if (folder is None) == (paths is None):
+        raise ValueError("select one input folder or image files from one folder")
+    if folder is not None:
+        if not isinstance(folder, str) or not folder.strip():
+            raise ValueError("input folder must be a nonempty path")
+        directory = Path(folder).expanduser().resolve(strict=True)
+        if not directory.is_dir():
+            raise ValueError("input folder is not a directory")
+        sources = sorted((p for p in directory.iterdir() if p.suffix.lower() in IMG_EXT and p.is_file()),
+                         key=lambda p: p.name)
+    else:
+        if not isinstance(paths, list) or not paths or any(not isinstance(p, str) or not p.strip() for p in paths):
+            raise ValueError("select at least one image file")
+        sources = [Path(p).expanduser().absolute() for p in paths]
+        directory = sources[0].parent.resolve(strict=True)
+        sources = [p.parent.resolve(strict=True) / p.name for p in sources]
+        if any(p.parent != directory for p in sources):
+            raise ValueError("all batch images must come from the same folder")
+        if any(p.suffix.lower() not in IMG_EXT or not p.is_file() for p in sources):
+            raise ValueError("select supported local image files only")
+        if len(set(sources)) != len(sources):
+            raise ValueError("the same image was selected more than once")
+    if not sources:
+        raise ValueError("the folder has no supported images in its direct children")
+    return directory, sources
+
+
+def api_batch_images(req):
+    directory, sources = batch_sources(req)
+    return {"folder": str(directory), "items": [{"name": p.name, "path": str(p)} for p in sources]}
+
+
+def api_batch_cancel(req):
+    return progress.cancel_batch(req.get("token"))
+
+
+def api_batch(req):
+    """A local-only Combine run; no editor state, PhotoCraft document or Crop work is replaced."""
+    directory, sources = batch_sources(req)
+    settings = deepcopy(req.get("settings"))
+    if not isinstance(settings, dict) or settings.get("mode") != "combine":
+        raise ValueError("batch processing supports Combine settings only")
+    settings.pop("generation", None)
+    settings.pop("view", None)
+    settings.pop("S", None)
+    settings.pop("frequency_transfer", None)
+    transfer = read_global_settings()["layer_transfer"]
+    parse_params({**settings, "S": 181})
+    started = time.perf_counter()
+    items = [{"name": path.name, "path": str(path), "status": "pending"} for path in sources]
+    with batch_output(directory) as (folder, write, write_preset):
+        preset = {**settings, "batch": {"input_folder": str(directory),
+                  "scale": "independently detected for each image", "output_settings": transfer, "items": items}}
+        preset_path = write_preset(preset)
+        progress.batch_status(folder, items)
+        for index, (path, item) in enumerate(zip(sources, items), 1):
+            item["status"] = "running"
+            progress.batch_status(folder, items)
+            try:
+                progress.check_batch_cancel()
+                image_started = time.perf_counter()
+                if path.is_symlink():
+                    raise ValueError("batch inputs must be direct files, not symbolic links")
+                loaded = progress.call(f"{index}/{len(items)}: Loading {path.name}",
+                                       prepare_loaded_image, {"path": str(path)}, set_colour=False)
+                progress.check_batch_cancel()
+                state, analysis = finish_loaded_image(*loaded, *loaded[1].shape[:2], image_started, publish=False)
+                progress.check_batch_cancel()
+                if state["S"] is None:
+                    raise ValueError("no usable detected scale; batch needs an independently estimated S")
+                validate_skintone_source(state)
+                effective = {**deepcopy(settings), "S": state["S"]}
+                p = parse_params(effective)
+                with D.colour_mode(loaded[4]):
+                    _, mask, _ = progress.call("Calculating batch skin mask", tool_mask,
+                                               state["img"], state["masks"], p, p["S"])
+                    if mask is None:
+                        mask = np.ones(state["img"].shape[:2], np.float32)
+                    _, _, result = progress.call("Combining batch image", combined_result,
+                                                 state["source_img"], mask, p, state=state)
+                progress.check_batch_cancel()
+                data = progress.call("Encoding batch result", PCB.tagged_rgb16,
+                                     FS.rgb16(result), state["source_icc"] or SRGB_ICC, transfer)
+                progress.check_batch_cancel()
+                output_path = progress.call("Saving batch result", write, index, path, data,
+                                            extension="." + transfer["format"])
+                item.update(status="success", S=p["S"], output=Path(output_path).name,
+                            source_analysis=analysis, effective_frequency=p["frequency"])
+            except progress.BatchCancelled:
+                for remaining in items[index - 1:]:
+                    remaining["status"] = "cancelled"
+                progress.batch_status(folder, items)
+                progress.call("Saving cancelled batch mapping", write_preset, preset)
+                break
+            except Exception as error:  # Each image is an independent job; report failures and continue.
+                item.update(status="failed", error=f"{type(error).__name__}: {error}")
+            progress.batch_status(folder, items)
+            progress.call("Updating batch preset and output mapping", write_preset, preset)
+        return {"dir": str(folder), "preset": preset_path, "items": items, "seconds": time.perf_counter() - started,
+                "succeeded": sum(item["status"] == "success" for item in items),
+                "failed": sum(item["status"] == "failed" for item in items),
+                "cancelled": sum(item["status"] == "cancelled" for item in items)}
 
 
 def directional_availability():
@@ -909,22 +1027,24 @@ def frequency_layers(img, mask, p, scale=1):
     return FS.separate(img, mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale)
 
 
-def validate_skintone_source():
-    if STATE.get("skintone_error"):
-        raise ValueError(STATE["skintone_error"])
-    if not STATE["source_opaque"]:
+def validate_skintone_source(state=None):
+    state = STATE if state is None else state
+    if state.get("skintone_error"):
+        raise ValueError(state["skintone_error"])
+    if not state["source_opaque"]:
         raise ValueError("Skintone currently needs an opaque merged image; flatten transparency before Get")
 
 
-def skintone_layers(img, mask, p, scale=1, *, native=False):
-    validate_skintone_source()
+def skintone_layers(img, mask, p, scale=1, *, native=False, state=None):
+    state = STATE if state is None else state
+    validate_skintone_source(state)
     directional = p.get("directional", DB.DEFAULTS)
     if directional["on"]:
-        directional, _ = DB.effective_settings(directional, STATE.get("pose"), STATE["img"].shape)
+        directional, _ = DB.effective_settings(directional, state.get("pose"), state["img"].shape)
     if directional["on"]:
-        if STATE["masks"] is None:
+        if state["masks"] is None:
             raise ValueError("Directional Blur unavailable: no shared skin mask. Get Image with usable skin detection.")
-        DB.segments(directional, STATE.get("pose"), STATE["img"].shape)
+        DB.segments(directional, state.get("pose"), state["img"].shape)
         for pair, keys in DB.PAIRS.items():
             if any(directional.get(key, DB.DEFAULTS[key]) for key in keys):
                 DB.scaled(DB.pair_settings(directional, pair), p["S"], scale)
@@ -949,10 +1069,10 @@ def skintone_layers(img, mask, p, scale=1, *, native=False):
                 base[y:y + 128] = ST.base(part, mask[y:y + 128], f)
         else:
             base = ST.base(layers, mask, f)
-        origin = STATE["region_box"][:2] if img.shape[:2] != STATE["img"].shape[:2] else (0, 0)
+        origin = state["region_box"][:2] if img.shape[:2] != state["img"].shape[:2] else (0, 0)
         raster, region_mask = progress.call("Calculating Directional Blur", DB.apply,
-                                            base, mask, directional, STATE.get("pose"), p["S"],
-                                            source_shape=STATE["img"].shape, origin=origin, scale=scale)
+                                            base, mask, directional, state.get("pose"), p["S"],
+                                            source_shape=state["img"].shape, origin=origin, scale=scale)
         del base
         pixels = FS.rgb16(raster)
         layers["directional"] = pixels if native else pixels.astype(np.float32) / 65535
@@ -961,14 +1081,14 @@ def skintone_layers(img, mask, p, scale=1, *, native=False):
     return layers
 
 
-def combined_result(source, mask, p, scale=1, *, previews=None):
+def combined_result(source, mask, p, scale=1, *, previews=None, state=None):
     """FS mix against original, followed by original-derived masked Soft Light bands."""
     fs_mix=p["combine"]["fs_mix"]/100
     dnb_mix=p["combine"]["dnb_mix"]/100
     fs_layers={}
     base=source.copy()
     if fs_mix>0 or previews is not None:
-        fs_layers=skintone_layers(source,mask,p,scale)
+        fs_layers=skintone_layers(source,mask,p,scale,state=state)
         _,fs_result=ST.composite(fs_layers,mask,p["skintone"],p["frequency"])
         if previews is not None:
             previews["fs_result"]=fs_result
@@ -1071,7 +1191,9 @@ def api_save(req):
     stem = Path(STATE["path"]).stem
     out = ROOT / "results" / f"{stem}_{datetime.datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{stem}_1_result.jpg").write_bytes(encode(u8(after), ".jpg", 95, STATE["icc"]))
+    transfer = read_global_settings()["layer_transfer"]
+    (out / f"{stem}_1_result.{transfer['format']}").write_bytes(
+        PCB.tagged_rgb16(FS.rgb16(after), STATE["icc"] or SRGB_ICC, transfer))
     mask_out = total if total is not None else np.ones(img.shape[:2], np.float32)
     cv2.imwrite(str(out / f"{stem}_2_skinmask.png"), u8(mask_out))
     # Three identical channels, not a Gray image: PhotoCraft (and Photoshop) convert a Gray image to RGB with a gray
@@ -1085,7 +1207,8 @@ def api_save(req):
             if not cv2.imwrite(str(out / f"{stem}_4_softlight_band2.png"), np.repeat(gray[..., None], 3, axis=2)):
                 raise OSError("could not write the second D&B band layer")
     d = (after - img).mean(axis=2)
-    settings = {k: v for k, v in req.items() if k != "view"}
+    settings = {k: v for k, v in module_settings(req).items() if k != "view"}
+    settings["output_settings"] = transfer
     settings.update(image=STATE["path"], stats={"p95": float(np.percentile(np.abs(d), 95) * 255), "max": float(np.abs(d).max() * 255)},
                     layer_order=[f"band {index}" for index, _ in reversed(layers)],
                     band1_on=p["band1_on"], second_band=p["second_band"],
@@ -1093,7 +1216,7 @@ def api_save(req):
                            "2_skinmask": "ONE mask = skin x color range x tone range x structure protection (8-bit gray; all white if none are used); use as the layer mask of file 3",
                            "3_softlight_layer": "16-bit RGB PNG (three identical gray channels, so no gray-profile conversion on import), Soft Light blend mode, 50% gray = no change, NO mask applied"},
                     soft_light="W3C soft-light formula; Photoshop's soft light differs slightly",
-                    colour=("embedded ICC profile written into the result JPEG" if STATE["icc"] else "no profile written (source had none)"))
+                    colour="embedded source ICC profile, or sRGB when source had none; flattened result is RGB16")
     (out / "settings.json").write_text(json.dumps(settings, indent=2))
     return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
 
@@ -1105,9 +1228,12 @@ def save_combined(req,p):
     stem=Path(STATE["path"]).stem
     out=ROOT/"results"/f"{stem}_combine_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
     out.mkdir(parents=True,exist_ok=False)
-    (out/"result.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(result),STATE["source_icc"] or SRGB_ICC))
-    (out/"settings.json").write_text(json.dumps({**req,"image":STATE["path"]},indent=2))
-    return {"dir":str(out),"files":["result.png","settings.json"]}
+    transfer = read_global_settings()["layer_transfer"]
+    filename = "result." + transfer["format"]
+    (out/filename).write_bytes(PCB.tagged_rgb16(FS.rgb16(result),STATE["source_icc"] or SRGB_ICC,transfer))
+    (out/"settings.json").write_text(json.dumps({**module_settings(req),"image":STATE["path"],
+                                               "output_settings":transfer},indent=2))
+    return {"dir":str(out),"files":[filename,"settings.json"]}
 
 
 def save_skin(req, p):
@@ -1135,7 +1261,9 @@ def save_skin(req, p):
         if not cv2.imwrite(str(out / "directional_mask.png"), u8(layers["directional_mask"])):
             raise ValueError("could not write Directional Blur mask")
     if result is not None:
-        (out / "result.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(result), STATE["source_icc"] or SRGB_ICC))
+        transfer = read_global_settings()["layer_transfer"]
+        (out / ("result." + transfer["format"])).write_bytes(
+            PCB.tagged_rgb16(FS.rgb16(result), STATE["source_icc"] or SRGB_ICC, transfer))
         if p["skintone"]["on"]:
             for name, table in zip(("Hue",), ST.tables(dict(p["skintone"], hue_amount=100))):
                 (out / f"{name}.cube").write_text(ST.cube_text(table, name))
@@ -1148,7 +1276,8 @@ def save_skin(req, p):
                             + ("with skinmask.png" if p["frequency"]["blur_mask"] else "unmasked") + "), " if p["frequency"]["on"] else "")
                          + "Color (Normal, unmasked)."
                          if result is not None else mask_name + ": reusable grayscale layer in Normal mode; no healing.")
-    (out / "settings.json").write_text(json.dumps({**req, "image": STATE["path"],
+    (out / "settings.json").write_text(json.dumps({**module_settings(req), "image": STATE["path"],
+        **({"output_settings": transfer} if result is not None else {}),
         "layer_recipe": recipe,
         "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "
                    "No saturation correction. Neutrals protected. Gaussian/median Color/Detail separation and "
@@ -1191,6 +1320,34 @@ def api_pc_fetch(req):
     return res
 
 
+def watch_target():
+    return capture_target(bridge())
+
+
+def load_watch_image(path, target):
+    if watch_target() != target:
+        raise ValueError("PhotoCraft document changed; export again from the intended document")
+    with Image.open(path) as image:
+        if (target["identity"]["width"], target["identity"]["height"]) != image.size:
+            raise ValueError("export size does not match the active PhotoCraft document")
+    started = time.perf_counter()
+    loaded = progress.call("Loading image / preparing profile", prepare_loaded_image,
+                           {"path": str(path)}, set_colour=False)
+    state, info = finish_loaded_image(*loaded, *loaded[1].shape[:2], started, publish=False)
+    h, w = state["img"].shape[:2]
+    if (target["identity"]["width"], target["identity"]["height"]) != (w, h):
+        raise ValueError("export size does not match the confirmed PhotoCraft document")
+    if watch_target() != target:
+        raise ValueError("PhotoCraft document changed during image analysis; export again")
+    D.set_colour_mode(loaded[4])
+    MASK_PRECACHE.reset()
+    state["source_kind"] = info["source_kind"] = "photocraft"
+    STATE.update(state)
+    BRIDGE["doc"] = target["document"]
+    return {**info, "generation": STATE["landmark_generation"], "pc_doc": BRIDGE["doc"],
+            "directional_pose": directional_availability()}
+
+
 def api_pc_send_layers(req):
     if STATE["img"] is None or BRIDGE["doc"] is None:
         raise ValueError("get a picture from PhotoCraft first")
@@ -1218,7 +1375,8 @@ def api_pc_send_layers(req):
                for index, pixels in layers]
     mask8 = u8(mask_out)
     del mask_out, total
-    r = bridge().send_skin_bands(payload,mask8,BRIDGE["doc"],source_icc=STATE["source_icc"])
+    r = bridge().send_skin_bands(payload,mask8,BRIDGE["doc"],source_icc=STATE["source_icc"],
+                                mask_placement=read_global_settings()["mask_placement"])
     return {"sent": True, **r}
 
 
@@ -1257,7 +1415,7 @@ def send_combined_layers(p):
         if not payload:
             raise ValueError("enable an FS or D&B contribution before Send Layers")
         return bridge().send_skin_bands(payload,u8(mask),BRIDGE["doc"],source_icc=STATE["source_icc"],
-                                        band_mix=p["combine"]["dnb_mix"])
+                                        band_mix=p["combine"]["dnb_mix"], mask_placement=read_global_settings()["mask_placement"])
     mix=p["combine"]["fs_mix"]/100
     for key in ("color","blur","directional"):
         if key in fs_layers:
@@ -1270,7 +1428,7 @@ def send_combined_layers(p):
     rgb={key:FS.rgb16(value) for key,value in fs_layers.items()}
     settings={**p["skintone"],"hue_amount":p["skintone"]["hue_amount"]*mix}
     return bridge().send_skintone(rgb,settings,u8(mask),BRIDGE["doc"],STATE["source_icc"],
-        transfer=p["frequency_transfer"],include_blur=p["frequency"]["on"],
+        transfer=p["frequency_transfer"],include_blur=p["frequency"]["on"], mask_placement=read_global_settings()["mask_placement"],
         blur_strength=p["frequency"]["blur_strength"],blur_masked=p["frequency"]["blur_mask"],
         directional=directional,bands=payload,band_mask8=u8(mask) if payload else None,band_mix=p["combine"]["dnb_mix"])
 
@@ -1292,7 +1450,7 @@ def send_skintone_parallel(p):
         directional_mask = u8(layers.pop("directional_mask"))
         strength = layers.pop("directional_strength")
         return bridge().send_skintone(layers, p["skintone"], u8(mask), BRIDGE["doc"], STATE["source_icc"],
-                                      transfer=p["frequency_transfer"], include_blur=f["on"],
+                                      transfer=p["frequency_transfer"], include_blur=f["on"], mask_placement=read_global_settings()["mask_placement"],
                                       blur_strength=f["blur_strength"], blur_masked=f["blur_mask"],
                                       directional=(directional, directional_mask, strength))
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="skin-fs") as pool:
@@ -1304,7 +1462,8 @@ def send_skintone_parallel(p):
                 pixels = {key: progress.call("Preparing RGB16 " + key.title(), FS.rgb16, value)
                           for key, value in layers.items()}
                 return bridge().send_skintone(pixels, p["skintone"], u8(mask), BRIDGE["doc"],
-                                              STATE["source_icc"], transfer=p["frequency_transfer"], include_blur=False)
+                                              STATE["source_icc"], transfer=p["frequency_transfer"], include_blur=False,
+                                              mask_placement=read_global_settings()["mask_placement"])
 
             def prepare_blur(color, skin):
                 blur = progress.call("Computing skin-aware Blur", FS.skin_filter,
@@ -1322,7 +1481,7 @@ def send_skintone_parallel(p):
                 return bridge().send_skintone(layers, p["skintone"], mask8, BRIDGE["doc"],
                                               STATE["source_icc"], blur_future=blur_job,
                                               transfer=p["frequency_transfer"], blur_strength=f["blur_strength"],
-                                              blur_masked=f["blur_mask"])
+                                              blur_masked=f["blur_mask"], mask_placement=read_global_settings()["mask_placement"])
             finally:
                 blur_job.cancel()
         finally:
@@ -1345,11 +1504,12 @@ def api_send_result(req):
     if STATE.get("source_kind") != "local" or not STATE.get("path"):
         raise ValueError("Get Image again to establish the output destination")
     p = parse_params(req)
+    transfer = read_global_settings()["layer_transfer"] if p["mode"] != "mask" else None
     if p["mode"] == "dnb":
         cs, result, total = dnb_full_result(p)
         del cs, total
         data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
-                             FS.rgb16(result), STATE["icc"] or SRGB_ICC)
+                             FS.rgb16(result), STATE["icc"] or SRGB_ICC, transfer)
     else:
         mask = progress.call("Preparing shared mask", full_skin_mask, p)
         if p["mode"] == "mask":
@@ -1364,10 +1524,11 @@ def api_send_result(req):
                 layers = progress.call("Calculating FS + Skintone result", skintone_layers, STATE["source_img"], mask, p)
                 _, result = ST.composite(layers, mask, p["skintone"], p["frequency"])
             data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
-                                 FS.rgb16(result), STATE["source_icc"] or SRGB_ICC)
+                                 FS.rgb16(result), STATE["source_icc"] or SRGB_ICC, transfer)
     suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs", "combine":"shpcombine"}[p["mode"]]
     path = progress.call("Saving result beside source", write_local_result, STATE["path"], suffix, data,
-                         STATE.get("source_directory"))
+                         STATE.get("source_directory"),
+                         extension="." + transfer["format"] if transfer else ".png")
     return {"saved": True, "path": path}
 
 
@@ -1377,6 +1538,89 @@ def read_presets():
     except Exception:
         d = {}
     return {"default": d.get("default"), "presets": d.get("presets", {})}
+
+
+def read_global_settings():
+    with GLOBAL_SETTINGS_LOCK:
+        try:
+            settings = json.loads(GLOBAL_SETTINGS.read_text())
+        except FileNotFoundError:
+            settings = {}
+        if not isinstance(settings, dict):
+            raise ValueError("global settings must be an object")
+        migrate = "layer_transfer" not in settings
+        if migrate:
+            # Only the startup default migrates; choosing a named preset never changes globals.
+            try:
+                presets = json.loads(PRESETS.read_text())
+            except FileNotFoundError:
+                presets = {}
+            if not isinstance(presets, dict):
+                raise ValueError("legacy presets must be an object")
+            legacy = presets.get("default") or {}
+            if not isinstance(legacy, dict):
+                raise ValueError("legacy default settings must be an object")
+            settings["layer_transfer"] = PCB.transfer_settings(
+                legacy.get("frequency_transfer", {"opaque_alpha": False}))
+        else:
+            migrate = "exclude_opaque_alpha" not in settings["layer_transfer"] if isinstance(settings["layer_transfer"], dict) else False
+        settings["layer_transfer"] = global_transfer_settings(settings["layer_transfer"])
+        if "mask_placement" not in settings:
+            settings["mask_placement"] = "folder"
+            migrate = True
+        if settings["mask_placement"] not in ("folder", "layers"):
+            raise ValueError("mask placement must be folder or layers")
+        if migrate:
+            write_global_settings(settings)
+        return settings
+
+
+def global_transfer_settings(value):
+    if isinstance(value, dict) and "exclude_opaque_alpha" in value:
+        value = dict(value)
+        exclude = value.pop("exclude_opaque_alpha")
+        if type(exclude) is not bool:
+            raise ValueError("exclude opaque alpha must be a boolean")
+        if "opaque_alpha" in value and value["opaque_alpha"] != (not exclude):
+            raise ValueError("conflicting opaque alpha settings")
+        value["opaque_alpha"] = not exclude
+    return PCB.transfer_settings(value)
+
+
+def write_global_settings(settings):
+    stored = {**settings, "layer_transfer": dict(settings["layer_transfer"])}
+    stored["layer_transfer"]["exclude_opaque_alpha"] = not stored["layer_transfer"].pop("opaque_alpha")
+    GLOBAL_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=GLOBAL_SETTINGS.parent,
+                                     prefix=".settings-", suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(stored, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
+            temporary.replace(GLOBAL_SETTINGS)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def api_global_settings(req):
+    transfer = global_transfer_settings(req["layer_transfer"])
+    settings = read_global_settings()
+    placement = req.get("mask_placement", settings["mask_placement"])
+    if placement not in ("folder", "layers"):
+        raise ValueError("mask placement must be folder or layers")
+    with GLOBAL_SETTINGS_LOCK:
+        settings["layer_transfer"] = transfer
+        settings["mask_placement"] = placement
+        write_global_settings(settings)
+    return settings
+
+
+def module_settings(settings):
+    if not isinstance(settings, dict):
+        raise ValueError("preset settings must be an object")
+    return {key: value for key, value in settings.items() if key != "frequency_transfer"}
 
 
 def write_presets(d):
@@ -1390,16 +1634,18 @@ def api_preset_save(req):
     name = str(req.get("name", "")).strip()
     if not name or len(name) > 60:
         raise ValueError("give the preset a name (1-60 characters)")
+    read_global_settings()
     d = read_presets()
     existed = name in d["presets"]
-    d["presets"][name] = req["settings"]
+    d["presets"][name] = module_settings(req["settings"])
     write_presets(d)
     return {"name": name, "updated": existed, **d}
 
 
 def api_preset_default(req):
+    read_global_settings()
     d = read_presets()
-    d["default"] = req["settings"]
+    d["default"] = module_settings(req["settings"])
     write_presets(d)
     return d
 
@@ -1429,6 +1675,14 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def load_watch_image(self, req):
+        watcher = getattr(self.server, "watch_folder", None)
+        if watcher is None:
+            raise ValueError("watch folder is not available in this service")
+        target = watch_target()
+        return watcher.load(req.get("token"), lambda path: load_watch_image(path, target),
+                            retry_key=target)
+
     def send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -1445,6 +1699,10 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             result = progress.snapshot(query.get("token", [""])[0], query.get("consume") == ["1"])
             return self.send(200, json.dumps(result).encode(), "application/json")
+        if path == "/api/watch-folder":
+            watcher = getattr(self.server, "watch_folder", None)
+            result = watcher.status() if watcher is not None else {"ready": False}
+            return self.send(200, json.dumps(result).encode(), "application/json")
         if path == "/api/health":
             return self.send(200, json.dumps({**identity("dnb", ROOT, MODELS),
                 "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
@@ -1458,6 +1716,11 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, HTML.read_bytes(), "text/html; charset=utf-8")
         if path == "/api/presets":
             return self.send(200, json.dumps(read_presets()).encode(), "application/json")
+        if path == "/api/global-settings":
+            try:
+                return self.send(200, json.dumps(read_global_settings()).encode(), "application/json")
+            except (OSError, ValueError) as error:
+                return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
         if path == "/api/images":
             return self.send(200, json.dumps(list_images()).encode(), "application/json")
         if path == "/img/landmarks":
@@ -1479,22 +1742,29 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def do_api_POST(self):
         token = None
         try:
-            if self.path in ("/api/send-result","/api/pc/send_layers") and (
+            if self.path in ("/api/send-result","/api/pc/send_layers", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare") and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/batch/cancel":
+                return self.send(200, json.dumps(api_batch_cancel(req)).encode(), "application/json")
             fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
                   "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/send_layers":api_pc_send_layers, "/api/pc/launch": api_pc_launch,
                   "/api/send-result": api_send_result,
+                  "/api/batch": api_batch, "/api/batch/images": api_batch_images,
+                  "/api/watch-folder/load": self.load_watch_image,
+                  "/api/global-settings": api_global_settings,
                   "/api/presets/save": api_preset_save, "/api/presets/default": api_preset_default, "/api/presets/delete": api_preset_delete}.get(self.path)
             if fn is None:
                 return self.send(404, b"not found", "text/plain")
             token = req.pop("_progress", None)
             with progress.operation(token):
                 with LOCK:
+                    if self.path in ("/api/pc/send", "/api/pc/send_layers"):
+                        req["frequency_transfer"] = read_global_settings()["layer_transfer"]
                     mask_params = None
                     if self.path in ("/api/run", "/api/pc/send", "/api/pc/send_layers", "/api/send-result", "/api/save") and STATE["img"] is not None:
                         if self.path == "/api/run" and type(req.get("precache_mask", True)) is not bool:
@@ -1517,6 +1787,9 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             self.send(200, json.dumps(res).encode(), "application/json")
         except Exception as e:  # report to the page instead of crashing the server
             result = {"error": f"{type(e).__name__}: {e}"}
+            if self.path.startswith("/api/watch-folder/") and getattr(self.server, "watch_last_error", None) != result["error"]:
+                print(f"Watch-folder {self.path.rsplit('/', 1)[-1]} failed: {result['error']}", flush=True)
+                self.server.watch_last_error = result["error"]
             if isinstance(token, str):
                 result["_progress"] = progress.snapshot(token, consume=True)
             self.send(400, json.dumps(result).encode(), "application/json")
@@ -1531,12 +1804,14 @@ def main():
     DIRS.extend(a.dir)
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
+    srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")
     print(f"SHP PhotoCraft D&B: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        srv.watch_folder.close()
         srv.server_close()
         MASK_PRECACHE.close()
 

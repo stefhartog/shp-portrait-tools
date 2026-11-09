@@ -44,7 +44,7 @@
       parent.postMessage({type:'shp-tools-theme-ready'}, location.origin);
       return;
     }
-    const host = document.querySelector('.shell-header') || document.getElementById('bar');
+    const host = document.getElementById('themeSettings') || document.querySelector('.shell-header') || document.getElementById('bar');
     const label = document.createElement('label');
     label.className = 'theme-picker';
     label.textContent = 'Theme';

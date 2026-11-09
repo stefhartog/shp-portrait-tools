@@ -98,7 +98,8 @@ class SkinToolsTransferTests(unittest.TestCase):
         self.assertEqual(folder["name"], "SkinTools")
         self.assertEqual([layer["name"] for layer in folder["children"]], ["D&B band 2"])
         self.assertEqual(folder["children"][0]["blend"], "Soft Light")
-        self.assertTrue(folder["children"][0]["hasMask"])
+        self.assertTrue(folder["hasMask"])
+        self.assertFalse(folder["children"][0]["hasMask"])
         self.assertAlmostEqual(folder["children"][0]["opacity"], 0.65, places=2)
         self.assertEqual(folder["blend"],"Pass Through")
         actual=self.save_pixels("band-result.png")[...,:3].astype(np.float32)/65535
@@ -131,13 +132,14 @@ class SkinToolsTransferTests(unittest.TestCase):
                          ["D&B band 2", "D&B band 1", "Detail", "Hue", "Directional Blur", "Blur", "Color"])
         for layer in children[:2]:
             self.assertEqual(layer["blend"], "Soft Light")
-            self.assertTrue(layer["hasMask"])
+            self.assertFalse(layer["hasMask"])
             self.assertAlmostEqual(layer["opacity"], 0.55, places=2)
         self.assertEqual(children[2]["blend"], "Linear Light")
-        self.assertTrue(children[3]["hasMask"])
-        self.assertTrue(children[4]["hasMask"])
+        self.assertTrue(folder["hasMask"])
+        self.assertFalse(children[3]["hasMask"])
+        self.assertFalse(children[4]["hasMask"])
         self.assertAlmostEqual(children[4]["opacity"],.37,places=2)
-        self.assertTrue(children[5]["hasMask"])
+        self.assertFalse(children[5]["hasMask"])
         self.assertFalse(children[6]["hasMask"])
         self.assertEqual(len(self.bridge.session()["documents"]), 1)
         self.assertEqual(list(self.bridge.exchange.iterdir()), [])
@@ -145,6 +147,27 @@ class SkinToolsTransferTests(unittest.TestCase):
         with Image.open(self.bridge.exchange / "combined.png") as image:
             self.assertEqual(image.info["icc_profile"], icc)
         (self.bridge.exchange / "combined.png").unlink()
+
+    def test_legacy_masks_remain_on_ingredients_not_folder(self):
+        target, icc = self.new_target()
+        mask = np.full((8, 8), 128, np.uint8)
+        pixels = np.full((8, 8, 3), 32768, np.uint16)
+        self.bridge.send_skintone(
+            {name: pixels for name in ("color", "blur", "detail")},
+            ST.settings({}), mask, target, icc, mask_placement="layers",
+            directional=(pixels, mask, 37), bands=[(1, pixels)], band_mask8=mask)
+        group = self.client.run("document.inspect")["layers"][0]
+        self.assertFalse(group["hasMask"])
+        self.assertEqual({layer["name"] for layer in group["children"] if layer["hasMask"]},
+                         {"D&B band 1", "Hue", "Directional Blur", "Blur"})
+        self.assertEqual(list(self.bridge.exchange.iterdir()), [])
+        self.client.run("file.close", document=target["index"])
+        target, icc = self.new_target()
+        self.bridge.send_skin_bands([(1, pixels)], mask, target, source_icc=icc,
+                                    mask_placement="layers")
+        group = self.client.run("document.inspect")["layers"][0]
+        self.assertFalse(group["hasMask"])
+        self.assertTrue(group["children"][0]["hasMask"])
 
     def test_send_result_is_full_rgb16_normal_layer_without_a_folder(self):
         target, icc = self.new_target()

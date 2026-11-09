@@ -164,10 +164,16 @@ not localhost/LAN addresses.
 
 ## Window, services and safe shutdown
 
-Shell order is **Skin Mask / FS + Skintone / D&B / Combine / Crop**.
+Shell order is **Skin Mask / FS + Skintone / D&B / Combine / Crop / Settings / Info**.
 All four skin tabs share one mounted iframe/source/settings/service. Switching never
 reloads the source or resets previews/zoom. Crop is initial unless disabled on startup.
 Tab titles/tooltips report service state; one unavailable module does not block the other.
+Stopped/unloaded services have no navigation tabs: stopping SkinTools hides all four
+skin tabs, while stopping Crop hides Crop. Starting, running/busy, stopping and error
+states remain visible; a connection outage retains the last known visibility.
+If the selected service stops, the shell selects available Crop, then D&B, otherwise
+Settings / Info. Starting a service restores its tabs without stealing selection.
+Tray Start/Stop controls remain available; the full busy-navigation lock is unchanged.
 
 Native X hides to tray; relaunch/Show presents the same window. Tray supports Show/Hide,
 Quit, Restart, explicit Force Restart, and Crop/D&B service/startup controls.
@@ -199,11 +205,28 @@ star a preset, but editing hidden shared settings does. Legacy `skintone` opens 
 | Skin Mask | Shared mask/ranges/structure and analysis/scale. Left Original; right Mask/Analysis. |
 | FS + Skintone | Frequency separation, Blur, Directional Blur, Skintone Correction. Left Original/Result; right Color/Detail and Directional Region when enabled. |
 | D&B | BAND 1, BAND 2, SHARED CONTROLS. Left Original/Result; right Band 1/Band 1 + mask and enabled Band 2 equivalents. |
-| Combine | **FS mix and D&B mix only**. Edit ingredient settings in their own tabs. Left Original/Combined; right FS result/D&B result/Mask. |
+| Combine | **FS mix and D&B mix**, plus local batch controls. Edit ingredient settings in their own tabs. Left Original/Combined; right FS result/D&B result/Mask. |
 
 Slider readouts update while dragging; image processing waits for release/cancel/lost
 capture/blur, keyboard changes debounce. Busy/off/missing geometry gating retains settings.
 Themes Current/PhotoCraft affect UI only; PhotoCraft is default absent saved preference.
+The rightmost **Settings / Info** page contains Theme Selection, PhotoCraft layer-transfer
+options, Skin Mask precache and the temporary calculation-timings log, plus About.
+These controls are global, not module-preset settings. Layer-transfer options persist in
+`$XDG_CONFIG_HOME/shp-photocraft-tools/settings.json` (normally
+`~/.config/shp-photocraft-tools/settings.json`), migrating the old default preset's
+choices once. Legacy presets are retained but no longer change these options; newly
+saved presets omit them. Precache (`shp-mask-precache`) and theme (`shp-tools-theme`)
+remain global browser-storage preferences, and calculation timings remain temporary.
+**Exclude opaque alpha** is on for new settings (RGB rather than RGBA). Existing
+include-alpha preferences migrate inversely without changing the resulting files.
+Processing controls require the skin-tools service to be running;
+Appearance/About remain accessible when it is stopped. Switching to this page does
+not change the active skin-tool mode or clear its source/previews.
+
+Image-analysis details, the mask-cache status badge, non-timing Log notes and all existing
+operation/status messages stay in their original locations. Standalone skin-tools views
+offer the same general controls in a Settings / Info section.
 Shared grey-off/blue-on switches, transparent disabled readouts, accessible focus and
 responsive equal-width action slots remain. Quiet preview work delays visible busy feedback
 150 ms but blocks conflicting input immediately. Status measures completion through image
@@ -273,8 +296,43 @@ FS mix blends Original->configured FS result, then original-derived D&B Soft Lig
 bands act on that base at D&B mix. Both sliders are 0-100%, default 100%.
 Right **FS result / D&B result** show configured effects **before** mix even at mix 0;
 Combined uses mixes. Shared settings remain linked without duplicate panels.
-Final full-resolution work skips zero contributions; no batch/layered standalone
-format is introduced.
+Final full-resolution work skips zero contributions; no layered standalone format
+is introduced.
+
+The separate collapsible **BATCH PROCESSING** panel in Combine accepts a folder or
+multiple image files from one folder. One **Choose source** button offers Folder or
+Images, then opens the appropriate native picker; there are no manual path fields.
+Folder and file selections both display the discovered image count. Choose source and
+Start Batch use the shared workflow-button styling; Cancel appears while processing.
+Source selection requires the Tools desktop. Folder selection includes only direct children in the existing
+JPEG/PNG/TIFF/WebP formats, not nested subfolders. Batch is Combine-only: it never runs
+Crop or contacts PhotoCraft, even when the current editor source is a PhotoCraft document.
+
+Start captures the current mix and ingredient settings. Each image is independently
+decoded/analyzed for scale S, pose and skin mask, and its FS radii are recalculated
+from the calibration/Blur percentage. Other settings, including Hue Center, stay fixed.
+An image with no usable detected scale fails explicitly instead of borrowing the
+editor's S. Symbolic-link inputs are refused. The loaded editor image/settings stay intact.
+
+Each run exclusively creates `shpcombine_batch_001` (or the next unused number) inside
+the input folder. Each successful item gets a RGB16 flattened PNG or TIFF named
+`<source-stem>_001.png` (or `.tiff`), with the batch folder number after every stem and
+source ICC/sRGB, using global format/compression/opaque-alpha options captured at batch start.
+One `preset.json` stores the shared mix/ingredient settings at the top level and a `batch`
+manifest recording that output-options snapshot and mapping each source/status/independently detected scale and FS radius to its
+result filename. It is updated atomically after each item; no per-image JSON copies are
+written. Existing folders, outputs and source files are never overwritten. An
+output-name collision (including same-stem inputs with different original extensions)
+is reported as a per-image failure, without adding item numbers. An external
+edit to the batch preset stops metadata updates explicitly. Progress and per-image errors
+remain visible in the panel, and later images continue after per-image failures.
+Cancel is cooperative: it stops at the next safe processing boundary, preserves already
+saved results, and marks unsaved/current and remaining items cancelled in `preset.json`.
+An in-progress inference/filter/atomic save finishes before that boundary; Cancel does
+not terminate worker processes or delete completed output. The top status updates after
+each photo as `Batch processing... (3/8)`; completion includes total runtime in seconds
+to one decimal, e.g. `Batch processing completed successfully (42.3s).`, with the existing checkmark treatment.
+output locations, counts, timings and failure details go to the log.
 
 ## Send Result, Send Layers and local output
 
@@ -288,8 +346,18 @@ locally even if PC later connects; disconnected PC sources error, never save to 
 * **Send Result:** corrected flattened RGB16 Normal photograph, matching the intended
   calculation rather than exaggerated diagnostics.
 * **Send Layers:** one editable **SkinTools** folder, enabled ingredients only:
-  band 2 / band 1 (masked Soft Light), Detail (Linear Light), Hue (masked), Directional
-  Blur (masked), ordinary Blur (mask optional), Color.
+  band 2 / band 1 (Soft Light), Detail (Linear Light), Hue, Directional
+  Blur, ordinary Blur, Color.
+
+Settings / Info > PhotoCraft transfer options > **Send Layers mask** defaults to
+**Mask on top folder**: one shared Skin Mask on SkinTools, no ingredient masks.
+**Mask on every layer** restores the previous ingredient-specific masks (bands,
+Hue, Directional Blur and ordinary Blur when its mask switch is enabled); Color
+and Detail remain unmasked. The global choice persists independently of presets;
+existing settings without this choice adopt the folder default without losing other
+preferences. Folder masking affects the whole editable stack, so its appearance can
+differ from individually masked ingredients. Flattened Send Result, local exports,
+Crop and standalone Skin Mask are unchanged.
 
 FS-only omits bands; D&B-only contains bands and uses Pass Through so they affect the
 destination below. FS/Combine use Normal folders with their Color foundation.
@@ -307,20 +375,70 @@ Detail against neutral, retaining masks; Hue amount scales by mix. Nonlinear Hue
 clipping and quantization can differ from flattened output. **Send Result is authoritative**
 when exact photograph appearance matters. Editable ingredients remain adjustable.
 
-Local **Send Result** creates one exclusively numbered PNG beside the source, no sidecar,
+### PhotoCraft export watch folder
+
+The skin-tools UI watches the direct PNG children of
+`/home/stef/shp-photocraft-tools/watchfolder` while connected and idle. Export there
+with the PhotoCraft action; Tools waits at least two seconds without a file change
+and verifies the complete PNG before importing. Other formats, nested folders and
+symlinks are not imported.
+The tray controller also polls the service independently of the WebUI. A stable,
+complete PNG presents the existing Tools window (including when hidden in the tray);
+the resumed UI then imports it through the same Get Image flow. No second app is
+launched. The desktop controller and skin-tools service must be running; a backend
+without a tray/controller cannot open a desktop window.
+
+Crop has its own independent PNG inbox at
+`/home/stef/shp-photocraft-tools/watchfolder_crop`. Start **Crop** in the Tools tray
+if it is unloaded. Stable exports use Crop's Get Image flow and automatically select
+the **Crop** tab, associating the active PhotoCraft document with the same identity/
+revision/dimension checks and cleanup-on-success rules. SkinTools processing blocks
+Crop imports until navigation unlocks. The tray detects either inbox without opening
+a second app; each service only consumes its own inbox. `watchfolder_crop/` is Git-ignored.
+
+Each incoming image automatically associates with the **active PhotoCraft document at
+processing time**, without a dialog. Keep the exporting document active until import
+finishes: a PNG cannot prove its origin, so matching dimensions cannot distinguish two
+different same-size documents. Tools checks identity/revision and image dimensions around load/analysis,
+then runs the normal Get Image UI flow (including Hue Center and preview calculation).
+Successful watch imports automatically select **Skin Mask**, including after a tray wake;
+failed/invalid imports do not change the selected tab.
+Send Result / Send Layers use the captured PhotoCraft document, not a local destination.
+Imports wait until current processing/batch work is finished.
+
+The inbox PNG is removed only after successful load and association. Partial,
+invalid or failed imports remain in place, with errors in Log/status. Missing/disconnected
+targets retry automatically; association failures retry when the active document identity,
+revision or dimensions change. Invalid unchanged PNGs wait for a corrected export.
+Cleanup failure
+is reported without reimporting an already loaded file. Tools retains an app-owned source
+snapshot in its data `dnb/inbox/watch-*/` directory, like other Get Image source captures.
+There is no independent watcher process: polling ends with the desktop/UI/service, and shutdown
+uses the existing module work gate. `watchfolder/` is ignored by Git.
+
+### Local outputs
+
+Local **Send Result** creates one exclusively numbered PNG or TIFF beside the source, no sidecar,
 overwrite or layered format. Permission/identity/symlink/disk errors are explicit.
+Global format/compression/opaque-alpha choices apply to flattened D&B/FS/Combine results,
+including standalone Save. Parallel encoding applies to supported multi-layer PhotoCraft
+transfers; batches process images sequentially and each flattened result has one encoder.
+Masks and Crop remain unchanged.
 
 | Mode | Suffix | Output |
 |---|---|---|
 | Crop | `_shpcrop_001.png` | Selected RGB8 final canvas; inherited sRGB conversion, no new ICC embedding guarantee |
 | Skin Mask | `_shpskinmask_001.png` | Grayscale8 |
-| D&B | `_shpdnb_001.png` | RGB16 opaque-alpha, processing ICC/sRGB |
-| FS | `_shpfs_001.png` | RGB16 opaque-alpha, source ICC/sRGB |
-| Combine | `_shpcombine_001.png` | RGB16 opaque-alpha, source ICC/sRGB |
+| D&B | `_shpdnb_001.png` or `.tiff` | RGB16, optional opaque alpha, processing ICC/sRGB |
+| FS | `_shpfs_001.png` or `.tiff` | RGB16, optional opaque alpha, source ICC/sRGB |
+| Combine | `_shpcombine_001.png` or `.tiff` | RGB16, optional opaque alpha, source ICC/sRGB |
 
 Standalone Save remains separate: D&B enabled bands/mask/settings/full result;
 FS Color/Detail/optional Blur/Directional/Hue cube/masks/result/settings;
-Combine `result.png` and `settings.json`; Skin Mask mask/settings.
+Combine `result.png`/`result.tiff` and `settings.json`; Skin Mask mask/settings.
+Standalone ingredient layers stay in their existing format; only flattened results
+use global file options. Export metadata records the output settings separately from
+module preset settings.
 
 ## Cache, diagnostics and performance
 
@@ -330,13 +448,14 @@ never upscale preview rasters. One immutable full-mask/optional-structure cache 
 at 256 MiB and reused across modes when mask/source/S identity matches.
 Mix/FS/Hue/band-only edits do not regenerate an identical mask.
 
-Default-on **Precache skin mask**, under Skin Mask > Image analysis, starts one worker
+Default-on **Precache skin mask**, under Settings / Info, starts one worker
 after 600 ms settled preview; stale/over-budget work is discarded. Send waits for matching
 work or computes its mask. Cross/spinner/check reflect the actual retained entry.
 Checkbox is a local preference, not preset; disabling cancels pending preparation.
 Cache retention caps do not limit temporary working memory.
 
-Log is bounded browser memory, visible in Skin Mask Image analysis; genuine errors use
+Log notes remain bounded browser memory in Skin Mask Image analysis; calculation timings
+are separate in Settings / Info. Genuine errors use
 status/tooltips, not hidden success. Stage timings measure actual command/work completion,
 not paint. [HANDOFF.md](HANDOFF.md#mask-cache-resource-measurements-and-validation-boundaries)
 separates historical synthetic microbenchmarks from live observations:

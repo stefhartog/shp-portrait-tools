@@ -24,6 +24,7 @@ from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 from shp_photocraft_tools.shared.local_output import write_local_result
+from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
 
 from . import expand as X
 from . import photocraft_bridge as PCB
@@ -34,6 +35,7 @@ SETTINGS_FILE = DATA / "settings.json"
 PRESETS_FILE = DATA / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
+WATCH_DIRECTORY = Path("/home/stef/shp-photocraft-tools/watchfolder_crop")
 DIRS = []
 BRIDGE = {"b": None}
 STATE = {"img": None, "name": None, "doc": None, "job": X.Job(), "thread": None, "seq": 0, "imgs": {}}
@@ -68,7 +70,7 @@ def running():
     return STATE["thread"] is not None and STATE["thread"].is_alive()
 
 
-def api_load(req):
+def api_load(req, *, target=None):
     path = Path(req["path"]).expanduser().absolute()
     if path.suffix.lower() not in IMG_EXT or not path.is_file():
         raise ValueError(f"not an image file: {path}")
@@ -79,6 +81,11 @@ def api_load(req):
         rgb = X.to_srgb(im)
     directory = path.parent.stat()
     preview = jpeg_bytes(rgb, 92, 2400)
+    if target is not None:
+        if (target["identity"]["width"], target["identity"]["height"]) != rgb.size:
+            raise ValueError("export size does not match the active PhotoCraft document")
+        if capture_target(bridge()) != target:
+            raise ValueError("PhotoCraft document changed during Crop image loading")
     STATE.update(img=rgb, name=path.name, doc=None, seq=STATE["seq"] + 1, job=X.Job(),
                  path=str(path), source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
     STATE["imgs"]["xorig"] = preview
@@ -87,6 +94,16 @@ def api_load(req):
     STATE["imgs"].pop("xresult", None)
     return {"name": path.name, "width": rgb.width, "height": rgb.height, "seq": STATE["seq"],
             "ratios": X.RATIOS, "limit": X.EXPAND_LIMIT, "source_kind": "local"}
+
+
+def load_watch_image(path, target):
+    if capture_target(bridge()) != target:
+        raise ValueError("PhotoCraft document changed before Crop image loading")
+    result = api_load({"path":str(path)}, target=target)
+    STATE["doc"] = target["document"]
+    STATE["source_kind"] = result["source_kind"] = "photocraft"
+    result["pc_doc"] = STATE["doc"]
+    return result
 
 
 def api_fetch(req):
@@ -345,6 +362,15 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def load_watch_image(self, req):
+        watcher = getattr(self.server, "watch_folder", None)
+        if watcher is None:
+            raise ValueError("Crop watch folder is not available")
+        if running():
+            return {"skipped":True}
+        target = capture_target(bridge())
+        return watcher.load(req.get("token"), lambda path:load_watch_image(path, target), retry_key=target)
+
     def send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -355,6 +381,9 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/watch-folder":
+            watcher = getattr(self.server, "watch_folder", None)
+            return self.send(200, json.dumps(watcher.status() if watcher else {"ready":False}).encode(), "application/json")
         if path == "/api/health":
             return self.send(200, json.dumps({**identity("crop", DATA),
                 "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
@@ -377,13 +406,13 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
     def do_api_POST(self):
         try:
-            if self.path in ("/api/send-result", "/api/comfy/free") and (
+            if self.path in ("/api/send-result", "/api/comfy/free", "/api/watch-folder/load") and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            fn = ROUTES.get(self.path)
+            fn = self.load_watch_image if self.path == "/api/watch-folder/load" else ROUTES.get(self.path)
             if fn is None:
                 return self.send(404, b"not found", "text/plain")
             if self.path in NO_LOCK:
@@ -393,6 +422,9 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                     res = fn(req)
             self.send(200, json.dumps(res).encode(), "application/json")
         except Exception as e:  # report to the page instead of crashing the server
+            if self.path == "/api/watch-folder/load" and getattr(self.server, "watch_last_error", None) != str(e):
+                print(f"Crop watch-folder load failed: {type(e).__name__}: {e}", flush=True)
+                self.server.watch_last_error = str(e)
             self.send(400, json.dumps({"error": f"{type(e).__name__}: {e}"}).encode(), "application/json")
 
 
@@ -408,12 +440,14 @@ def main():
         X.COMFY_URL = a.comfy.rstrip("/")
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         busy=running, loaded=lambda: STATE["img"] is not None)
+    srv.watch_folder = WatchFolder(WATCH_DIRECTORY, DATA / "inbox")
     print(f"SHP PhotoCraft Crop: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        srv.watch_folder.close()
         srv.server_close()
 
 

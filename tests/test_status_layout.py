@@ -1,6 +1,8 @@
 """Disposable headless layout checks; no Tools service or application requests."""
 
 import json
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import re
@@ -9,6 +11,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import threading
 import unittest
 
 from shp_photocraft_tools.shared.ui import stylesheet
@@ -149,6 +152,7 @@ class StatusLayoutTests(unittest.TestCase):
                 self.check_panel_graph_geometry(command, root, profile)
                 self.check_stretch_removed(command, root, profile)
                 self.check_crop_setting_queue(command, root)
+                self.check_general_settings(command, root, profile)
                 command("WebDriver:DeleteSession")
             finally:
                 if connection is not None:
@@ -235,7 +239,7 @@ class StatusLayoutTests(unittest.TestCase):
           const state={directional:directionalSettings(),mode:'frequency',loaded:false,
             imageInfo:{directional_pose:{}}};
           const markDirty=()=>{},syncTabs=()=>{},tabSel={B:'color'};
-          const statusOk=false,pendingShellMode=null;
+          const statusOk=false,shellConnected=false;
         """+slider_helper+helper+panel+"""
           const reference=slider($('blurSliders'),'reference',0,100,1,50,()=>{});
           const parity=[];
@@ -855,7 +859,7 @@ class StatusLayoutTests(unittest.TestCase):
         helper="let panelOperationBusy"+html.split("let panelOperationBusy",1)[1].split("function previewFeedback",1)[0]
         command("WebDriver:ExecuteScript",script="""
           const $=id=>document.getElementById(id),state={loaded:true,sourceKind:'local'};
-          const statusOk=false,pendingShellMode=null;
+          const statusOk=false,shellConnected=false;
           for(const panel of document.querySelectorAll('aside details.grp')){
             panel.hidden=false;panel.open=true;
             const toggle=panel.querySelector(':scope > summary input[type=checkbox]');
@@ -872,6 +876,13 @@ class StatusLayoutTests(unittest.TestCase):
           const samples=[...document.querySelectorAll('.availability-test')];
           panelTest.busy(true);
           const busy=samples.every(e=>e.disabled);
+          const cancel=document.getElementById('batchCancel');
+          cancel.hidden=false;cancel.disabled=false;
+          const cancellable=!cancel.disabled;
+          const actions=document.querySelector('#g-batch .workflow-actions');
+          const source=document.getElementById('batchChooseSource'),start=document.getElementById('batchStart');
+          const ordered=source.parentElement===actions&&source.nextElementSibling===start;
+          const cancelColor=getComputedStyle(cancel).backgroundColor==='rgb(179, 54, 59)';
           const toggles=[...document.querySelectorAll('aside details.grp > summary input[type=checkbox]')];
           const exempt=toggles.every(e=>!e.disabled);
           panelTest.busy(false);
@@ -890,7 +901,7 @@ class StatusLayoutTests(unittest.TestCase):
           const picker=document.getElementById('toneSwatch').disabled;
           document.getElementById('toneOn').checked=true;panelTest.sync();
           const on=[...document.querySelectorAll('#g-range .availability-test')].every(e=>!e.disabled);
-          return {busy,exempt,restored,fast,mask,stillExempt,intrinsic,off,picker,on};
+          return {busy,cancellable,ordered,cancelColor,exempt,restored,fast,mask,stillExempt,intrinsic,off,picker,on};
         """,args=[],sandbox=None)
         self.assertTrue(all(result.values()),result)
 
@@ -945,6 +956,139 @@ class StatusLayoutTests(unittest.TestCase):
         self.assertTrue(result["hidden"])
         self.assertIn("mask.svg", result["src"])
         self.assertTrue(load())
+
+    def check_general_settings(self, command, root, profile):
+        html = (root / "modules/dnb/ui/index.html").read_text()
+        shell = (root / "shell/index.html").read_text()
+        shell_js = (root / "shell/shell.js").read_text()
+        theme = (root / "shared/ui/theme.js").read_text()
+        markup = '<details id="generalSettings">' + html.split('<details class="grp" id="generalSettings">', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
+        lookup = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
+        # Use the real control handlers and lookup across two documents, without a Tools server.
+        transfer = "let maskPlacement =" + html.split("let maskPlacement =", 1)[1].split("const skintoneSliders", 1)[0]
+        precache = "$('maskPrecache').checked =" + html.split("$('maskPrecache').checked =", 1)[1].split("function watchMaskPrecache", 1)[0]
+        child = '<!doctype html>' + markup + '<div id="info">Source analysis retained</div><div id="temporaryLogText">Source status retained</div><span id="maskCacheStatus">Cached</span><script>' + """
+          window.addEventListener('error',event=>parent.fixtureErrors.push(event.message));
+          const state={frequencyTransfer:{format:'png',compressed:true,opaque_alpha:true,parallel:true}};
+          let stars=0,dirty=0;
+          const updateStar=()=>stars++,markDirty=()=>dirty++;
+          const api=async(path,body)=>body,setBusy=()=>{},setStatus=()=>{};
+        """ + lookup + transfer + precache + """
+          syncTransfer();
+          Object.defineProperty($('transferFormat'),'disabled',{configurable:true,get(){return false;},set(){}});
+          window.settingsTest={state,lookup:$,stars:()=>stars,dirty:()=>dirty};
+          window.addEventListener('message',event=>{
+            if(event.source===parent&&event.data.type==='shp-tools-probe')
+              parent.postMessage({type:'shp-skin-ready'},location.origin);
+          });
+        </script>"""
+        child = child.replace("location.origin", "parent.location.origin")
+        body = shell.split("<body>", 1)[1].split("</body>", 1)[0]
+        fixture = """
+          window.fixtureErrors=[];
+          window.addEventListener('error',event=>fixtureErrors.push(event.message));
+          const create=document.createElement.bind(document);
+          document.createElement=tag=>{
+            const node=create(tag);
+            if(tag==='iframe')node.srcdoc=CHILD;
+            return node;
+          };
+          window.fetch=async()=>({ok:true,json:async()=>({modules:{
+            crop:{phase:'stopped',startup_enabled:false},
+            dnb:{phase:'running',instance:'settings-fixture',startup_enabled:true}
+          }})});
+          window.setTimeout=()=>0;
+        """.replace("CHILD", json.dumps(child))
+        page = profile / "general-settings.html"
+        page.write_text('<!doctype html><meta charset="utf-8"><style>' + stylesheet().decode()
+                        + (root / "shell/shell.css").read_text() + '</style><script>'
+                        + theme + '</script>' + body + '<script>' + fixture.replace("</script>", "<\\/script>")
+                        + shell_js + '</script>')
+        server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(profile)))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        command("WebDriver:Navigate", url=f"http://127.0.0.1:{server.server_port}/{page.name}")
+        evaluate = lambda script: command("WebDriver:ExecuteScript", script=script, args=[], sandbox=None)
+        deadline = time.monotonic() + 10
+        while not evaluate("return !!document.getElementById('generalSettingsHost').querySelector('#transferFormat');"):
+            if time.monotonic() >= deadline:
+                self.fail("General settings did not mount: " + str(evaluate(
+                    "return {errors:window.fixtureErrors,status:document.getElementById('status').textContent,frames:document.querySelectorAll('iframe').length};")))
+            time.sleep(.1)
+        result = evaluate("""
+          document.getElementById('tab-settings').click();
+          const frame=document.querySelector('#panel-dnb iframe'),child=frame.contentWindow;
+          const control=document.getElementById('transferFormat');
+          const before=child.settingsTest.lookup('transferFormat')===control;
+          control.disabled=true;const blocked=control.disabled;control.disabled=false;
+          control.value='tiff';control.dispatchEvent(new Event('change'));
+          document.getElementById('maskPrecache').checked=false;
+          document.getElementById('maskPrecache').dispatchEvent(new Event('change'));
+          const descriptor=Object.getOwnPropertyDescriptor(control,'disabled');
+          return {selected:document.getElementById('tab-settings').getAttribute('aria-selected'),
+            themeHost:document.getElementById('themeSelect').closest('#themeSettings')!==null,
+            dnbHidden:document.getElementById('panel-dnb').inert,
+            cropHidden:document.getElementById('panel-crop').inert,
+            settingsVisible:!document.getElementById('panel-settings').inert,
+            sameControl:before,blocked,nativeSetter:!descriptor,
+            format:child.settingsTest.state.frequencyTransfer.format,
+            stars:child.settingsTest.stars(),dirty:child.settingsTest.dirty(),
+            precache:child.localStorage.getItem('shp-mask-precache'),
+            analysis:frame.contentDocument.getElementById('info').textContent,
+            status:frame.contentDocument.getElementById('temporaryLogText').textContent,
+            badge:frame.contentDocument.getElementById('maskCacheStatus').textContent,
+            originalEmpty:frame.contentDocument.getElementById('generalSettingsContent').children.length};
+        """)
+        self.assertEqual(result, {"selected":"true", "themeHost":True, "dnbHidden":True,
+                                 "cropHidden":True, "settingsVisible":True, "sameControl":True,
+                                 "blocked":True, "nativeSetter":True, "format":"tiff", "stars":0,
+                                 "dirty":1, "precache":"0", "analysis":"Source analysis retained",
+                                 "status":"Source status retained", "badge":"Cached", "originalEmpty":0})
+        result = evaluate("""
+          const frame=document.querySelector('#panel-dnb iframe'),before=document.getElementById('transferFormat');
+          window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,origin:location.origin,
+            data:{type:'shp-skin-ready'}}));
+          const retained=document.getElementById('transferFormat')===before;
+          document.getElementById('tab-settings').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+          return {retained,wrapped:document.getElementById('tab-mask').getAttribute('aria-selected')};
+        """)
+        self.assertEqual(result, {"retained":True, "wrapped":"true"})
+        self.assertEqual(evaluate("""
+          const tab=document.getElementById('tab-dnb'),range=document.createRange();
+          range.selectNodeContents(tab);
+          const before=range.getBoundingClientRect(),box=tab.getBoundingClientRect();
+          tab.setAttribute('aria-selected','true');
+          const after=range.getBoundingClientRect(),selected=tab.getBoundingClientRect();
+          const decoration=getComputedStyle(tab,'::before');
+          const appearance=()=>{
+            const style=getComputedStyle(tab),pseudo=getComputedStyle(tab,'::before'),rect=tab.getBoundingClientRect();
+            return {box:[rect.x,rect.y,rect.width,rect.height],
+              border:[style.borderTopColor,style.borderRightColor,style.borderBottomColor,style.borderLeftColor],
+              background:style.backgroundColor,opacity:style.opacity,
+              pseudo:[pseudo.top,pseudo.right,pseudo.bottom,pseudo.left,pseudo.backgroundColor,
+                pseudo.borderTopColor,pseudo.borderBottomColor]};
+          };
+          const enabled=appearance(),enabledText=getComputedStyle(tab).color;
+          tab.disabled=true;
+          const disabled=appearance(),disabledText=getComputedStyle(tab).color;
+          tab.disabled=false;
+          const result={textStable:before.x===after.x&&before.y===after.y,
+            layoutStable:box.y===selected.y&&box.height===selected.height,
+            top:decoration.top,bottom:decoration.bottom,pointer:decoration.pointerEvents,
+            disabledStable:JSON.stringify(enabled)===JSON.stringify(disabled),
+            textDarkens:enabledText!==disabledText};
+          tab.setAttribute('aria-selected','false');
+          return result;
+        """), {"textStable":True, "layoutStable":True, "top":"-2px",
+               "bottom":"-1px", "pointer":"none", "disabledStable":True, "textDarkens":True})
+        self.assertEqual(evaluate("""
+          const crop=document.getElementById('tab-crop');
+          return {hidden:crop.hidden,space:crop.getBoundingClientRect().width,
+            skinVisible:!document.getElementById('tab-mask').hidden,
+            settingsVisible:!document.getElementById('tab-settings').hidden};
+        """), {"hidden":True, "space":0, "skinVisible":True, "settingsVisible":True})
 
     def check_analysis_controls(self, command, html, profile):
         # Run only control initialization and mocked overlay requests, never the application.
@@ -1014,7 +1158,8 @@ class StatusLayoutTests(unittest.TestCase):
         self.check_slider_handles(command)
         result = evaluate("""
           return {
-            labels:[...document.querySelectorAll('.gbody label,#toolModeRow label,.gbody option,#toolModeRow option,#view option')]
+            maskPlacement:[...document.querySelectorAll('#maskPlacement option')].map(e=>({value:e.value,label:e.textContent})),
+            labels:[...document.querySelectorAll('.gbody label,#toolModeRow label,.gbody option:not(#maskPlacement option),#toolModeRow option,#view option')]
               .map(e=>e.textContent.trim()).filter(Boolean),
             color:[...document.querySelectorAll('#colorSliders label')].map(e=>({text:e.textContent,tip:e.title})),
             toggles:[...document.querySelectorAll('#optsAn button')].map(e=>({id:e.id,type:e.type,pressed:e.getAttribute('aria-pressed'),name:e.textContent.trim()})),
@@ -1023,6 +1168,9 @@ class StatusLayoutTests(unittest.TestCase):
         """)
         for label in result["labels"]:
             self.assertEqual(label, label.lower())
+        self.assertEqual(result["maskPlacement"], [
+            {"value": "folder", "label": "Mask on top folder"},
+            {"value": "layers", "label": "Mask on every layer"}])
         self.assertEqual(result["inputs"], 0)
         self.assertEqual([item["id"] for item in result["toggles"]], ["anDetect", "anSkin", "anStruct"])
         for item in result["toggles"]:

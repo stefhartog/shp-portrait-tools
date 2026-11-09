@@ -10,13 +10,17 @@
   }
   function renderTabStatus(tab, state) {
     const {busy, label} = moduleStatus(state);
+    if (state.phase !== 'unavailable') tab.hidden = state.phase === 'stopped';
     tab.title = label;
     tab.setAttribute('aria-label', tab.textContent.trim()+': '+label);
     tab.setAttribute('aria-busy', String(busy));
   }
   const names = {crop: 'Crop', dnb: 'D&B'};
-  const views = ['mask', 'frequency', 'dnb', 'combine', 'crop'];
-  const modes = views.filter(view => view !== 'crop');
+  const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'settings'];
+  const modes = ['mask', 'frequency', 'dnb', 'combine'];
+  function viewAvailable(name) {
+    return name === 'settings' || modules[name === 'crop' ? 'crop' : 'dnb']?.phase !== 'stopped';
+  }
   const $ = id => document.getElementById(id);
   const frames = new Map();
   let modules = {};
@@ -25,6 +29,17 @@
   let skinMode = 'dnb';
   let sequence = 0, pending = null;
   const ready = new WeakSet();
+  let skinBusy = false;
+  let cropWatchBusy = false;
+  function navigationLocked() { return skinBusy || cropWatchBusy || !!modules.dnb?.busy; }
+  function syncNavigation() {
+    const locked = navigationLocked();
+    window.__shpNavigationLocked = locked;
+    document.querySelectorAll('[role="tab"]').forEach(tab => {
+      tab.disabled = locked;
+      tab.setAttribute('aria-disabled', String(locked));
+    });
+  }
 
   function requestMode() {
     const frame = frames.get('dnb');
@@ -37,9 +52,10 @@
     $('status').textContent = message;
     $('status').classList.toggle('err', error);
   }
-  function select(name, notify = true) {
+  function select(name, notify = true, internal = false) {
+    if (navigationLocked() && !internal) return;
     if (name === 'skintone') name = 'frequency';
-    if (!views.includes(name)) return;
+    if (!views.includes(name) || !viewAvailable(name)) return;
     initialSelection = false;
     active = name;
     for (const key of views) {
@@ -47,46 +63,83 @@
       $(`tab-${key}`).setAttribute('aria-selected', String(selected));
       $(`tab-${key}`).tabIndex = selected ? 0 : -1;
     }
-    for (const key of Object.keys(names)) {
-      const selected = key === (active === 'crop' ? 'crop' : 'dnb');
+    for (const key of [...Object.keys(names), 'settings']) {
+      const selected = key === (active === 'settings' ? 'settings' : active === 'crop' ? 'crop' : 'dnb');
       const panel = $(`panel-${key}`);
       panel.classList.toggle('inactive', !selected);
       panel.setAttribute('aria-hidden', String(!selected));
       panel.inert = !selected;
       if (selected) panel.setAttribute('aria-labelledby', `tab-${active}`);
     }
-    if (name !== 'crop') { skinMode = name; if (notify) requestMode(); }
+    if (modes.includes(name)) { skinMode = name; if (notify) requestMode(); }
+  }
+  function mountGeneralSettings(frame) {
+    const source = frame.contentDocument.getElementById('generalSettingsContent');
+    if (!source) return report('General settings are unavailable in this skin-tools view. Refresh Tools when work is saved.', true);
+    // Restore native availability setters before controls leave the iframe's panel gating.
+    source.querySelectorAll('input,select').forEach(control => { delete control.disabled; });
+    $('generalSettingsHost').replaceChildren(...source.children);
+    $('generalSettingsHost').hidden = false;
+    frame.contentDocument.getElementById('generalSettings').hidden = true;
+    $('settingsAvailability').hidden = true;
   }
   window.addEventListener('message', event => {
+    const crop = frames.get('crop');
+    if (crop && event.source === crop.contentWindow && event.origin === location.origin) {
+      if (event.data?.type === 'shp-crop-watch-busy' && typeof event.data.busy === 'boolean') {
+        cropWatchBusy = event.data.busy; syncNavigation(); return;
+      }
+      if (event.data?.type === 'shp-crop-watch-loaded' && !skinBusy && !modules.dnb?.busy) {
+        select('crop', false, true); return;
+      }
+    }
     const frame = frames.get('dnb'), data = event.data;
     if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin ||
         !data || typeof data !== 'object') return;
     if (data.type === 'shp-skin-ready') {
+      if (!ready.has(frame)) mountGeneralSettings(frame);
       ready.add(frame);
       frame.contentWindow.postMessage({type:'shp-tools-connect'}, location.origin);
-      if (active !== 'crop') requestMode();
+      if (modes.includes(active)) requestMode();
+    } else if (data.type === 'shp-watch-loaded') {
+      pending = null;
+      select('mask', false, true);
+    } else if (data.type === 'shp-skin-busy' && typeof data.busy === 'boolean') {
+      skinBusy = data.busy;
+      if (skinBusy) pending = null;
+      syncNavigation();
     } else if (data.type === 'shp-skin-mode' && (modes.includes(data.mode) || data.mode === 'skintone') &&
                (data.request === null || Number.isSafeInteger(data.request))) {
+      if (navigationLocked()) return;
+      if (data.request !== null && data.request !== pending) return;
       if (pending !== null && data.request !== pending) return;
       pending = null;
       skinMode = data.mode === 'skintone' ? 'frequency' : data.mode;
-      if (active !== 'crop') select(skinMode, false);
+      if (modes.includes(active)) select(skinMode, false);
     }
   });
   document.querySelectorAll('[role="tab"]').forEach(button => {
     button.onclick = () => select(button.dataset.view);
     button.onkeydown = event => {
+      if (navigationLocked()) { event.preventDefault(); return; }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
         event.preventDefault();
         const direction = event.key === 'ArrowRight' ? 1 : -1;
-        select(views[(views.indexOf(active) + direction + views.length) % views.length]);
+        const available = views.filter(viewAvailable);
+        select(available[(available.indexOf(active) + direction + available.length) % available.length]);
         $(`tab-${active}`).focus();
       }
     };
   });
   function render() {
+    if (modules.dnb?.phase !== 'running') skinBusy = false;
+    if (modules.crop?.phase !== 'running') cropWatchBusy = false;
+    syncNavigation();
     if (initialSelection && modules.crop?.startup_enabled === false) {
       select(modules.dnb?.phase === 'running' || modules.dnb?.startup_enabled !== false ? 'dnb' : 'crop');
+    }
+    if (!viewAvailable(active)) {
+      select(['crop', 'dnb', 'settings'].find(viewAvailable), true, true);
     }
     for (const [name, state] of Object.entries(modules)) {
       document.querySelectorAll(`[role="tab"][data-service="${name}"]`).forEach(tab => {
@@ -100,6 +153,11 @@
           + (name === 'dnb' ? ' Skin Mask, FS + Skintone, D&B and Combine share this service.' : '')
         : `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
       const frame = frames.get(name);
+      if (name === 'dnb') {
+        const available = state.phase === 'running' && frame?.dataset.instance === state.instance && ready.has(frame);
+        $('settingsAvailability').hidden = available;
+        $('generalSettingsHost').hidden = !available;
+      }
       if (frame) frame.hidden = state.phase !== 'running';
       if (state.phase === 'running' && (!frame || frame.dataset.instance !== state.instance)) {
         frame?.remove();
