@@ -1,10 +1,12 @@
 # SHP PhotoCraft Tools handoff
 
-Current reproducible implementation, updated **2026-11-08**. This file describes the
+Current reproducible implementation, updated **2026-11-10**. This file describes the
 completed Tools code in this revision, not incidental experiments or planned features.
 Use [README.md](README.md) for operation/setup, [MODELS.md](MODELS.md) for external weights
 and nodes, and [PROVENANCE.md](PROVENANCE.md) for the migration sources.
 `docs/source/` is deliberately frozen historical context, not current installation guidance.
+The [Windows port handoff](docs/windows-handoff.md) records actual platform blockers
+and a browser-first validation plan; Windows support is not implemented or verified.
 
 ## Scope, ownership and activation
 
@@ -69,7 +71,7 @@ not rebuild segmentation or change the selected skin region.
 |---|---|---|---|
 | Skin Mask | Shared skin/feather, structure, light and colour range; Image analysis/S/landmarks | Original | Mask, Analysis |
 | FS + Skintone | Frequency separation, Blur, Directional Blur, Skintone Correction | Original, Result | Color, Detail, Region when Directional enabled |
-| D&B | BAND 1, BAND 2, SHARED CONTROLS | Original, Result | Band 1, Band 1 + mask; Band 2 and Band 2 + mask when enabled |
+| D&B | BAND 1, BAND 2, SHARED CONTROLS | Original, Result | Band 1, Band 1 + mask; Band 2 and Band 2 + mask always available |
 | Combine | **FS mix and D&B mix**, plus local batch controls; edit ingredients in their individual tabs. Image analysis is hidden. | Original, Combined | FS result, D&B result, Mask |
 
 Shared mask values remain active while panels are hidden. S/source access is through
@@ -154,7 +156,8 @@ Preview scales radii; final outputs stay full-resolution.
 
 Optional Blur filters Color using normalized skin-weighted Gaussian support, not
 black premultiplication; no support retains Color. Strength 0-100 controls layer opacity.
-Skin mask off uses whole-image support and sends Blur unmasked for later painting.
+Skin mask off uses whole-image support and sends Blur unmasked for later painting
+in per-layer export mode. Default folder mode masks the whole SkinTools stack.
 Turning Blur off skips its calculation/encoding/import but retains Color/Detail.
 
 Skintone is one masked Hue Color Lookup between low-frequency effects and Detail.
@@ -326,6 +329,11 @@ failed imports never switch. Crop watch work announces busy to the shell, blocks
 competing imports, and waits for SkinTools navigation locks. Desktop monitor polls both
 running services, with independent wake-token deduplication. No stopped module is
 automatically started; enable Crop in tray first.
+Both inboxes must already exist: installer/service startup does not create them.
+Missing-directory status is explicit. They remain fixed Linux paths; no portable
+path configuration has been implemented. Crop's pending hint defers during its own
+work; SkinTools navigation locks defer cross-module imports in the shared UI.
+Backend locks remain per service, not a global atomic processing lock.
 
 The D&B service owns a `WatchFolder` for the explicit
 `/home/stef/shp-photocraft-tools/watchfolder` path. Its connected UI polls every three

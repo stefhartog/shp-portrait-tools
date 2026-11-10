@@ -15,6 +15,8 @@ Private repository: `stefhartog/shp-photocraft-tools`, local checkout
 dependencies. See [HANDOFF.md](HANDOFF.md) for the current implementation/limitations,
 [PROVENANCE.md](PROVENANCE.md) for source revisions and [MODELS.md](MODELS.md) for
 external weights/nodes. Frozen `docs/source/` notes are historical.
+For a future Windows port, see [Windows handoff](docs/windows-handoff.md);
+the current application remains Linux-only.
 
 ## Setup
 
@@ -244,6 +246,9 @@ Tau slider 0.01-0.4 retains positive legacy values outside its range until moved
 **Band diagnostic previews always exaggerate x8 about neutral 0.5**, including "+ mask"
 and band 2; no toggle remains. This is visualization only. Result, Combine D&B result,
 saved rasters and sent layers remain actual strength.
+The **Band 2 / Band 2 + mask** preview tabs remain available even when Band 2 is
+off; switching it off does not change the selected preview. Disabled-band image
+content may be empty after recalculation; this does not enable its contribution.
 
 ### Frequency separation, Blur and Skintone
 
@@ -254,7 +259,9 @@ Median Fast is faster but not numerically identical to Median.
 
 Blur's switch controls only additional Gaussian Blur, not Color/Detail.
 Strength is 0-100%. Its skin-mask switch uses normalized skin-weighted sampling and a
-separate editable mask; off samples the whole image and sends Blur unmasked.
+separate editable mask in the optional per-layer export mode; off samples the whole
+image and leaves Blur unmasked in that mode. The default top-folder export instead
+applies one shared skin mask to the complete SkinTools folder.
 Turning Blur off skips its work but retains the Color/Detail foundation.
 Skintone is one masked Hue LUT between low-frequency effects and Detail; off bypasses
 Hue calculations. Legacy Saturation is ignored, not a separate correction.
@@ -332,7 +339,7 @@ An in-progress inference/filter/atomic save finishes before that boundary; Cance
 not terminate worker processes or delete completed output. The top status updates after
 each photo as `Batch processing... (3/8)`; completion includes total runtime in seconds
 to one decimal, e.g. `Batch processing completed successfully (42.3s).`, with the existing checkmark treatment.
-output locations, counts, timings and failure details go to the log.
+Output locations, counts, timings and failure details go to the log.
 
 ## Send Result, Send Layers and local output
 
@@ -395,6 +402,10 @@ the **Crop** tab, associating the active PhotoCraft document with the same ident
 revision/dimension checks and cleanup-on-success rules. SkinTools processing blocks
 Crop imports until navigation unlocks. The tray detects either inbox without opening
 a second app; each service only consumes its own inbox. `watchfolder_crop/` is Git-ignored.
+Neither inbox is created by installation or service startup. Create the required
+directory yourself, or have the PhotoCraft export action create it. Missing inboxes
+are reported, not silently created. These fixed paths currently belong to the Linux
+installation; configurable portable paths are future work.
 
 Each incoming image automatically associates with the **active PhotoCraft document at
 processing time**, without a dialog. Keep the exporting document active until import
@@ -405,6 +416,9 @@ Successful watch imports automatically select **Skin Mask**, including after a t
 failed/invalid imports do not change the selected tab.
 Send Result / Send Layers use the captured PhotoCraft document, not a local destination.
 Imports wait until current processing/batch work is finished.
+Crop also waits for its own expansion/load work and displays a pending-import hint.
+The backend locks are per service, not a global atomic lock across every module;
+the normal shared-window/tray flow additionally coordinates busy status.
 
 The inbox PNG is removed only after successful load and association. Partial,
 invalid or failed imports remain in place, with errors in Log/status. Missing/disconnected
