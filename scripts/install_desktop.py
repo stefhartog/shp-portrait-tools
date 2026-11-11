@@ -13,13 +13,71 @@ ROOT = Path(__file__).resolve().parent.parent
 NAME = "shp-photocraft-tools"
 
 
+def refresh_display_metadata(paths):
+    """Update only recognized managed display fields, retaining launch identity/custom fields."""
+    updates = {}
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"Refusing to update a symlink: {path}")
+        if not path.exists():
+            continue
+        content = path.read_text()
+        fields = {}
+        section = None
+        lines = content.splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if line.startswith("["):
+                section = line.strip()
+            elif section == "[Desktop Entry]" and "=" in line:
+                key, value = line.rstrip("\r\n").split("=", 1)
+                if key in fields:
+                    raise ValueError(f"Duplicate desktop field {key}: {path}")
+                fields[key] = (index, value)
+        expected = {"Name": ("SHP PhotoCraft Tools", "SHP Portrait Tools"),
+                    "Comment": ("Show the PhotoCraft Tools window and tray controller",
+                                "Show the Portrait Tools window and tray controller")}
+        if fields.get("Icon", (None, None))[1] != NAME or fields.get("StartupWMClass", (None, None))[1] != NAME:
+            raise ValueError(f"Not a recognized Tools shortcut: {path}")
+        for key, (old, new) in expected.items():
+            if fields.get(key, (None, None))[1] not in (old, new):
+                raise ValueError(f"Custom {key} needs manual review: {path}")
+            index = fields[key][0]
+            ending = "\r\n" if lines[index].endswith("\r\n") else "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f"{key}={new}{ending}"
+        updates[path] = "".join(lines)
+    if not updates:
+        raise ValueError("No installed Tools shortcuts found")
+    for path, content in updates.items():
+        path.write_text(content)
+    return list(updates)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", type=Path, required=True, help="existing ONNX model directory (read-only; not copied)")
+    parser.add_argument("--models", type=Path, help="existing ONNX model directory (read-only; not copied)")
+    parser.add_argument("--update-display-only", action="store_true",
+                        help="update installed shortcut display names only; leave launcher/config/icons unchanged")
     parser.add_argument("--exiftool", type=Path, help="optional existing Perl ExifTool executable (not copied)")
     parser.add_argument("--desktop-dir", type=Path, help="override xdg-user-dir DESKTOP")
     parser.add_argument("--comfy-dir", type=Path, help="existing ComfyUI checkout for Tools-owned instance on port 18788")
     args = parser.parse_args()
+    if args.update_display_only:
+        home = Path.home()
+        data = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
+        desktop = args.desktop_dir.expanduser() if args.desktop_dir else Path(
+            subprocess.run(["xdg-user-dir", "DESKTOP"], check=True, capture_output=True, text=True).stdout.strip())
+        if not desktop.is_absolute() or desktop == home:
+            parser.error("A distinct absolute desktop folder is required (use --desktop-dir)")
+        try:
+            updated = refresh_display_metadata([data / "applications" / f"{NAME}.desktop", desktop / f"{NAME}.desktop"])
+        except ValueError as error:
+            parser.error(str(error))
+        if shutil.which("update-desktop-database"):
+            subprocess.run(["update-desktop-database", str(data / "applications")], check=True)
+        print(json.dumps({"updated": [str(path) for path in updated]}, indent=2))
+        return
+    if args.models is None:
+        parser.error("--models is required unless --update-display-only is used")
     python = ROOT / ".venv" / "bin" / "python"
     if not python.is_file():
         parser.error("Run uv sync --extra gpu in this repository first")

@@ -1,1 +1,1 @@
-"""SHP PhotoCraft D&B."""
+"""Skin Tools: Skin Mask, FS & Tone, Dodge & Burn and Combine."""

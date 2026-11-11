@@ -97,7 +97,7 @@ def detect_config():
 class Bridge(BaseBridge):
     env_prefix = "DNB"
     module = "dnb"
-    app_name = "SHP PhotoCraft D&B"
+    app_name = "SHP Portrait Tools — Skin Tools"
 
     def test_native_frequency(self, doc, source_path, method, radius, *, source_pixels=None):
         """Build only native Color/Detail on a verified merged snapshot."""
@@ -358,7 +358,7 @@ class Bridge(BaseBridge):
                                    "cannot preserve numeric layer values")
             return icc
 
-    def send(self, layer16, mask8, doc, name="SHP PhotoCraft D&B soft light", *, source_icc=None):
+    def send(self, layer16, mask8, doc, name="SHP Portrait Tools D&B soft light", *, source_icc=None):
         """Copy the 16-bit RGB layer with its mask and blend mode into the target in one step."""
         h, w = mask8.shape
         if layer16.shape[:2] != (h, w):
@@ -420,7 +420,7 @@ class Bridge(BaseBridge):
         inserted = []
         try:
             for index, pixels in layers:
-                result = self.send(pixels, mask8, doc, name=f"SHP PhotoCraft D&B band {index}",
+                result = self.send(pixels, mask8, doc, name=f"SHP Portrait Tools D&B band {index}",
                                    source_icc=source_icc)
                 if result["layer"] is None:
                     raise ControlError("PhotoCraft did not return the inserted D&B band ID")

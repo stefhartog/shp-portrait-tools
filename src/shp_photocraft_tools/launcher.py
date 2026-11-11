@@ -20,7 +20,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .shared.health import identity
 
-APP = "SHP PhotoCraft Tools"
+APP = "SHP Portrait Tools"
 DEFAULT_PORTS = {"crop": 18768, "dnb": 18765}
 SHELL_PORT = 18760
 MODULES = {"crop": "crop.server", "dnb": "dnb.ui_server"}
@@ -50,14 +50,14 @@ def read_config(path):
     for filename in MODEL_FILES:
         model = Path(models) / filename
         if not model.is_file() or not os.access(model, os.R_OK):
-            raise LaunchError(f"Missing or unreadable D&B model: {model}. Update {path}; weights are not copied.")
+            raise LaunchError(f"Missing or unreadable Skin Tools model: {model}. Update {path}; weights are not copied.")
     ports = config.get("ports", DEFAULT_PORTS)
     if not isinstance(ports, dict) or set(ports) != set(MODULES):
         raise LaunchError(f"'ports' must contain crop and dnb in {path}")
     if any(type(port) is not int or not 1024 <= port <= 65535 for port in ports.values()):
         raise LaunchError(f"Launcher ports must be integers between 1024 and 65535 in {path}")
     if len(set(ports.values())) != 2:
-        raise LaunchError("Crop and D&B must use different ports")
+        raise LaunchError("AI Fill and Skin Tools must use different ports")
     config["ports"] = ports
     shell_port = config.get("shell_port", SHELL_PORT)
     if type(shell_port) is not int or not 1024 <= shell_port <= 65535 or shell_port in ports.values():

@@ -1,4 +1,4 @@
-# SHP PhotoCraft Tools handoff
+# SHP Portrait Tools handoff
 
 Current reproducible implementation, updated **2026-11-10**. This file describes the
 completed Tools code in this revision, not incidental experiments or planned features.
@@ -26,12 +26,53 @@ are excluded from this publication. They may remain dirty in the development che
 the committed application neither imports nor requires an excluded prototype module.
 There is no Blemish tab/API or Windows support in this state.
 
+Public branding is **SHP Portrait Tools**, with **Skin Tools** (`dnb`) and **AI Fill**
+(`crop`) module display names. All internal IDs, GTK application identity, routes,
+commands, data/config/preset locations and watch-folder paths remain unchanged.
+PhotoCraft names the host editor; exported `SkinTools` folder names remain compatible.
+`scripts/install_desktop.py --update-display-only` updates recognized desktop Name/
+Comment fields without touching Exec, icon, identity, config or launcher target.
+Custom display names are refused rather than overwritten; running window/tray titles
+need a user-driven restart. Historical source manuals retain their original names.
+Integration caveat (PhotoCraft 0.22.0): GUI control port preferences do not supply
+Tools' shared token file or automation filesystem roots. Tray reachability is TCP
+only. Rejected authentication now carries `code: authentication` through both
+module status APIs; Get surfaces it rather than opening a local chooser. Other
+disconnected local-open routing is unchanged. Explicit control AND root flags
+bypass PhotoCraft single-instance forwarding; do not restore an automation
+wrapper or remove only its control flag as an assumed LightCraft handoff fix.
+Opt-in combined integration is now available in `editor_handoff.py` and
+`scripts/install_editor_handoff.py`: permissioned launcher at `photocraft-dnb`,
+LightCraft-specific authenticated helper at `photocraft-lightcraft`. Existing
+listener must authenticate; absent listener can be started only by the launcher.
+One-shot acknowledged `app.open` calls never replay after ambiguous transport loss.
+See README for targeted backups, configuration/restart order and rollback.
+Defer saved LightCraft edits while it runs: its on-exit save overwrites them.
+No live handoff or image/catalog operation was used to validate this integration.
+Shell grouping: matching 1px `--line` dividers with an extra 9px margin before
+Crop & Expand when both modules are visible, and before Settings & Info whenever
+any module is visible. No hue changes or changes to active/disabled tab geometry.
+On initial Tools WebUI load, Skin Mask is selected whenever Skin Tools is not
+stopped. The embedded child initializes and applies its saved default settings
+in mask mode before announcing ready; saved preset modes are not rewritten.
+Standalone Skin Tools retains its existing default-mode behavior. With Skin Tools
+stopped, startup falls back to Crop & Expand, then Settings & Info. Later status
+polls/restarts preserve a still-available user selection; watch import routing is unchanged.
+Skin Tools retouch preview defaults to Result at startup/new source (Skin Mask
+keeps its Original-only pane without overwriting that preference). Ctrl-primary
+hold in either image pane temporarily flips Original/Result and restores on
+release/cancel/lost capture/blur without persisting the temporary choice. Landmark
+editing/color picking/busy/mask mode exclude comparison. Preview requests load
+into detached images, decode, then atomically replace the current frame; per-pane
+revision caches make loaded switches immediate. Pane request sequences reject
+stale completions; failed images report an error while keeping a valid prior frame.
+
 ## Architecture and entrypoints
 
 | Surface | Responsibility |
 |---|---|
-| `modules/crop/` | Independent HTTP UI/server, signed canvas crop/outpaint, Comfy graphs, generated RGBA insertion. Crop alone resizes/crops the target canvas. |
-| `modules/dnb/` | One shared skin-tool source/analysis/UI/server; D&B, Skin Mask, FS + Skintone and Combine. Engines are reused, not copied into Combine. |
+| `modules/crop/` | AI Fill HTTP UI/server: Crop & Expand and Patch Fill, Comfy graphs, generated RGBA insertion. Only expansion resizes/crops the target canvas. |
+| `modules/dnb/` | Skin Tools shared source/analysis/UI/server: Skin Mask, FS & Tone, Dodge & Burn and Combine. Engines are reused, not copied into Combine. |
 | `shared/ui/` | Packaged local CSS, theme and lifecycle scripts, served identically by both modules. No Git CSS dependency/CDN. |
 | `shared/photocraft/` | Auth/config/env precedence, JSON-lines transport, reconnect/errors, document/session negotiation and merged-document fetch. Module-specific application remains separate. |
 | `launcher.py`, `supervisor.py`, `shell/` | Identity-verified owned startup, fixed proxy, mounted views, mode handshake, controls and lifecycle. |
@@ -43,12 +84,17 @@ There is no Blemish tab/API or Windows support in this state.
 Standalone commands are `shp-photocraft-crop` / `shpcrop` (port **8768**) and
 `shp-photocraft-dnb` / `shpdnb` (port **8765**). The supervised shell uses **18760**
 and owned backends **18768 / 18765**, plus optional owned Comfy **18788**.
-Skin Mask, FS + Skintone, D&B, Combine, Crop, Settings / Info is the shell DOM/keyboard order.
-The four skin tabs share one D&B iframe/service. Crop is initially selected unless
-its startup preference is disabled. Later polling never overrides manual selection.
-Exception: a selected service reaching `stopped` falls back to available Crop, D&B,
-then Settings so no hidden tab owns an inaccessible view. Only `stopped` hides module
-tabs (all four for SkinTools); starting/stopping/error/busy remain visible.
+Skin Mask, FS & Tone, Dodge & Burn, Combine, Crop & Expand, Patch Fill, Settings & Info is the shell DOM/keyboard order.
+The four Skin Tools tabs share one iframe/service. Skin Mask is initially selected
+whenever that service is available; if stopped, startup falls back to Crop & Expand,
+then Settings & Info. Later polling never overrides manual selection.
+Crop and Patch Fill share one mounted Crop iframe/service and use origin/source-checked
+`shp-tools-crop-mode` requests with matching sequence acknowledgements. Busy transfers,
+generation, settings/preset writes and mode loads lock shell navigation immediately.
+Crop watch imports explicitly switch back to expand mode before selecting the Crop tab.
+Exception: a selected service reaching `stopped` falls back to available Skin Mask,
+Crop & Expand, then Settings & Info so no hidden tab owns an inaccessible view. Only `stopped` hides module
+tabs (all four for Skin Tools, both Crop & Expand/Patch Fill for AI Fill); starting/stopping/error/busy remain visible.
 Unavailable status preserves last known visibility. Keyboard navigation skips hidden
 tabs, hidden-tab selection is rejected, and restart restores tabs without stealing
 the current view. The existing full processing navigation lock still applies.
@@ -70,7 +116,7 @@ not rebuild segmentation or change the selected skin region.
 | Mode | Processing controls | Left previews | Right previews |
 |---|---|---|---|
 | Skin Mask | Shared skin/feather, structure, light and colour range; Image analysis/S/landmarks | Original | Mask, Analysis |
-| FS + Skintone | Frequency separation, Blur, Directional Blur, Skintone Correction | Original, Result | Color, Detail, Region when Directional enabled |
+| FS & Tone | Frequency Separation & Skin Tone, Blur, Directional Blur, Skintone Correction | Original, Result | Color, Detail, Region when Directional enabled |
 | D&B | BAND 1, BAND 2, SHARED CONTROLS | Original, Result | Band 1, Band 1 + mask; Band 2 and Band 2 + mask always available |
 | Combine | **FS mix and D&B mix**, plus local batch controls; edit ingredients in their individual tabs. Image analysis is hidden. | Original, Combined | FS result, D&B result, Mask |
 
@@ -78,7 +124,7 @@ Shared mask values remain active while panels are hidden. S/source access is thr
 Skin Mask > Image analysis and common Get Image. Combine does not duplicate controls.
 Remembered invalid preview tabs fall back to the first available tab; both pane images
 remain mounted through changes. Image analysis/Log are visible only in Skin Mask.
-The rightmost general Settings / Info page holds Theme Selection, PhotoCraft layer-transfer
+The rightmost general Settings & Info page holds Theme Selection, PhotoCraft layer-transfer
 options, precache preference and calculation timings, plus About. Existing image-analysis
 details, the cache-status badge, non-timing notes and operation/status messages stay put.
 The shell adopts the existing controls into its own panel after the origin/source-checked
@@ -95,7 +141,7 @@ messages do not clear mounted controls; source reload replaces them, and stoppin
 hides them. Theme/About remain usable without a running skin service. Standalone skin views
 retain the controls in their own general section. Settings navigation never requests a skin
 mode or overrides it when a delayed mode acknowledgement arrives.
-SkinTools busy signals disable all shell navigation, including Crop/Settings, immediately;
+Skin Tools busy signals disable all shell navigation, including Crop & Expand/Settings & Info, immediately;
 supervisor busy status provides a fallback. Disabled tabs have no hover/press affordance.
 Busy mode requests are discarded rather than queued, and obsolete acknowledgements ignored.
 Directional informational text is hidden, but its handler target and switch/parent
@@ -242,7 +288,7 @@ Every layered skin send creates one **SkinTools** folder, top-down:
 5. Enabled ordinary Blur.
 6. Color, unmasked Normal.
 
-Global `mask_placement` in Settings / Info chooses `folder` (default, including
+Global `mask_placement` in Settings & Info chooses `folder` (default, including
 existing config migration) or `layers`. Folder mode attaches one shared skin mask
 to SkinTools, never its ingredients; an empty mask hides the folder. Layers mode
 restores the previous per-ingredient skin/Directional/D&B masks and optional Blur
@@ -326,13 +372,13 @@ service runs. Validated inbox/capture-target helpers now live in shared/watch_fo
 before publishing, then captures PhotoCraft provenance and cleans the unchanged input.
 UI uses xLoaded and source/origin-validated shp-crop-watch-loaded to select Crop;
 failed imports never switch. Crop watch work announces busy to the shell, blocks
-competing imports, and waits for SkinTools navigation locks. Desktop monitor polls both
+competing imports, and waits for Skin Tools navigation locks. Desktop monitor polls both
 running services, with independent wake-token deduplication. No stopped module is
 automatically started; enable Crop in tray first.
 Both inboxes must already exist: installer/service startup does not create them.
 Missing-directory status is explicit. They remain fixed Linux paths; no portable
 path configuration has been implemented. Crop's pending hint defers during its own
-work; SkinTools navigation locks defer cross-module imports in the shared UI.
+work; Skin Tools navigation locks defer cross-module imports in the shared UI.
 Backend locks remain per service, not a global atomic processing lock.
 
 The D&B service owns a `WatchFolder` for the explicit
@@ -379,7 +425,7 @@ Cache restoration is explicitly logged, not timed as fresh processing.
 Full mask cache has one immutable final mask/optional structure entry within **256 MiB**.
 Source/component hashes and effective mask/S/profile identity prevent stale reuse;
 FS/Hue/D&B band/mix-only edits reuse it. No full-resolution result/disk cache exists.
-Default-on precache (Settings / Info) uses one worker after **600 ms** settled
+Default-on precache (Settings & Info) uses one worker after **600 ms** settled
 preview; stale/over-budget jobs are discarded. Checkbox is a local preference, not preset.
 Send waits for matching work or computes its correct mask. Status cross/spinner/check
 reflects the actual retained cache, not just job completion. Temporary working memory
@@ -424,6 +470,59 @@ feather/model/upscaler settings and always corrected colour/seam/paste-back path
 CPU/default text encoding is a saved choice, not a VRAM-fit promise.
 Free Comfy memory refuses running/pending queue work; success requests asynchronous
 unload, not measured reclaimed memory. No inference is needed for regression fixtures.
+
+The top-level **Patch Fill** tab reuses the FLUX.1 Fill graph and Comfy client/lifecycle,
+with separate processing settings/presets and without changing expansion's saved method.
+`build_patch_graph` replaces outpaint padding with an uploaded full-resolution mask.
+`patch_bounds` derives one all-stroke nonzero-mask bounding rectangle, with per-axis
+padding of max(64 source pixels, ceil(25% of painted extent)) clipped to the source.
+Patch-only `patch_context` (integer 0-100, default 100) expands those bounds linearly
+toward the full source; integer rounding expands outward so support is never clipped.
+Source/mask upload uses that exact region. Native Fill applies megapixels/16-pixel
+alignment, colour matching, optional upscaling and seam correction to the region,
+then returns its original pixel size. Full-frame endpoint keeps the old graph/input
+behavior. `patch_variations` pastes the regional masked result/layer at original
+coordinates in a full-size canvas; all context-only and unpainted source pixels
+remain untouched. Feather alpha is calculated on the full-source mask before crop.
+At fixed MP, tighter context improves local sampling density, not guaranteed speed.
+The browser stores paint/erase alpha in a source-sized canvas and uses the existing
+image-to-canvas transform for pointer coordinates (wheel zoom, Space+drag pan).
+The pointer-transparent `#xBrushCursor` overlay uses source brush diameter times
+the current view scale in CSS pixels, independent of canvas DPR; it is shared by
+Paint/Erase and hidden outside the source, in other views and during busy work.
+Mode switches retain source/mask/selected preview and per-mode source view transforms;
+`xLoaded` clears the mask for normal and watch imports.
+`/api/run` requires a matching source sequence and nonempty same-size PNG mask for
+`mode:"patch"`; omitted mode retains expansion compatibility.
+
+`patch_variations` publishes incrementally through the existing job/selection/cancel
+routes. The authoritative local composite feathers inward only and rejects mismatched
+Comfy dimensions; zero painted-mask pixels remain exactly the loaded RGB8 sRGB source,
+not the original file's high-depth/ICC samples. Keep raw generated RGB plus the same
+alpha in the transfer layer to avoid double feathering. `Bridge.send_patch` uses the
+existing identity/size-checked layer transfer without `image.crop`; local Send Result
+keeps exclusive `_shpcrop_NNN.png` output and existing provenance checks.
+`tests/test_patch_fill.py` covers graph/masks/exact outside pixels, context bounds/
+monotonicity/endpoints/edge and disconnected strokes, region coordinate roundtrips, API validation,
+partial cancellation/failure, local saves, separate persistence and no-resize PhotoCraft insertion.
+`test_status_layout` exercises real paint/erase/zoom/mode and busy controls in an
+isolated Firefox page, plus actual shell/iframe mode acknowledgements, stop/start
+visibility, retained source/mask/preview and Crop-watch routing. No user's image/inbox or live GPU/Comfy inference was used;
+the installed app must be restarted by the user to load Python changes.
+
+Crop retains `settings.json` and `presets.json`; Patch Fill uses `patch-settings.json`
+and `patch-presets.json` in the same DATA directory. Mode-aware settings/preset routes
+default to expand for compatibility; the browser sends `mode` explicitly.
+Initialization copies existing Fill processing values and named presets once, before
+either mode edits them, without rewriting the legacy files. Patch presets contain only
+Fill keys, prompt, context area and fixed method. Old Patch settings/presets default context
+to 100; Crop settings/presets do not store or accept the Patch-only control.
+Subsequent edits/reset/load/delete are independent;
+Factory settings reset to defaults, not the copied values. Prompts are persisted per
+mode, variation count uses separate browser keys. Text-encoder CPU/default placement
+remains shared in the original settings file and is excluded from new presets and all
+preset loads/resets (legacy raw files stay readable/unchanged). Comfy URL, owned runtime,
+queue and memory release remain shared; no duplicate model server was introduced.
 
 Supervisor owns only identity-verified children/capabilities; no adopting/killing unrelated
 servers. Exact loopback Host, same-origin JSON, allowlists and revision/instance guards

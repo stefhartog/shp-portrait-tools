@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SHP PhotoCraft D&amp;B</title>
+<title>SHP Portrait Tools — Skin Tools</title>
 <link rel="stylesheet" href="static/shp-ui.css">
 <script src="static/theme.js"></script>
 <script src="static/lifecycle.js" defer></script>
@@ -129,7 +129,7 @@
     </div>
   </details>
   <details class="grp" id="generalSettings">
-    <summary>Settings / Info</summary>
+    <summary>Settings &amp; Info</summary>
     <div class="gbody" id="generalSettingsContent">
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
       <details id="g-transfer" open>
@@ -152,7 +152,7 @@
     <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option><option value="combine">combine</option>
   </select></div>
   <details class="grp" id="g-frequency" open hidden>
-    <summary>Frequency separation</summary>
+    <summary title="Frequency Separation &amp; Skin Tone">Frequency separation</summary>
     <div class="gbody">
       <div class="row"><label for="frequencyMethod" title="Gaussian: sigma. Median: square radius. Median Fast: same radius, faster 8-bit intermediate; quantization and outer borders differ. RGB16 output." style="cursor:help">method</label><select id="frequencyMethod"><option value="gaussian">gaussian</option><option value="median">median</option><option value="median_fast">median fast</option></select></div>
       <div id="frequencySliders"></div>
@@ -274,7 +274,7 @@
       <button class="tab on" data-k="result" title="The picture with the soft light layer applied through the mask.">Result</button></div></div>
       <div class="pan" id="p0" tabindex="0"><div class="empty">no result yet</div></div></div>
     <div class="pwrap"><div class="ptitle pane-header"><div class="tabs" id="tabsB">
-      <button class="tab" data-k="fs_result" hidden title="Configured FS + Skintone result before Combine mix.">FS result</button>
+      <button class="tab" data-k="fs_result" hidden title="Configured Frequency Separation &amp; Skin Tone result before Combine mix.">FS result</button>
       <button class="tab" data-k="dnb_result" hidden title="Configured D&amp;B result before Combine mix.">D&amp;B result</button>
       <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
       <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
@@ -318,7 +318,7 @@ function uiMode(mode) {
 const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:false, parallel:true};
 const state = {
   combine:{fs_mix:100,dnb_mix:100},
-  mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
+  mode: parent === window ? 'dnb' : 'mask', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
   directional: directionalSettings(),
   frequencyTransfer: {...TRANSFER_DEFAULTS},
@@ -340,7 +340,7 @@ async function api(path, body) {
   catch (e) {
     if (!(e instanceof SyntaxError)) throw e;
     const restart = path === '/api/hue-center' && r.status === 404
-      ? ' The running D&B backend does not have the Hue Center endpoint. Restart Tools/D&B when ready, then Get Image again; refreshing the page is not enough.'
+      ? ' The running Skin Tools backend does not have the Hue Center endpoint. Restart Tools/Skin Tools when ready, then Get Image again; refreshing the page is not enough.'
       : '';
     throw new Error(`${path}: HTTP ${r.status}; expected JSON but received ${r.headers.get('Content-Type') || 'an unknown content type'}.${restart}`);
   }
@@ -359,7 +359,7 @@ function logNote(message) {
   renderTemporaryLog();
 }
 function temporaryLogText() {
-  return ['SHP PhotoCraft Tools temporary log', ...temporaryLog.notes].filter(Boolean).join('\n')+'\n';
+  return ['SHP Portrait Tools temporary log', ...temporaryLog.notes].filter(Boolean).join('\n')+'\n';
 }
 function renderTemporaryLog() {
   $('temporaryLogText').textContent = temporaryLog.notes.length
@@ -712,6 +712,7 @@ function announceMode(request=null) {
   if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:uiMode(state.mode), request}, location.origin);
 }
 function switchMode(mode, request=null) {
+  endPreviewCompare();
   mode = uiMode(mode);
   if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
@@ -947,7 +948,7 @@ async function operationApi(path, body, sending=false) {
   operation.timer = setTimeout(poll, 100);
   try {
     const response = await api(path, {...body,_progress:operation.token});
-    if (!response._progress) throw new Error('Backend has no live progress support. Restart Tools/D&B when ready, then retry.');
+    if (!response._progress) throw new Error('Backend has no live progress support. Restart Tools/Skin Tools when ready, then retry.');
     display(response._progress);
     return response;
   } catch(e) {
@@ -979,9 +980,11 @@ async function loadList() {
   list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
 }
 function applyLoaded(r) {
+    endPreviewCompare();
     state.imageInfo = r;
     closeLandmarks(false);
     state.loadEpoch = (state.loadEpoch || 0) + 1;
+    tabSel.A = 'result'; syncTabs();
     state.imageGeneration = r.generation;
     state.hueCenterNote = '';
     state.hueCenterFailed = false;
@@ -1300,6 +1303,7 @@ async function pcGet() {
     state.pcConnected = connection.connected; syncTransferTitles();
     let path = null;
     if (!connection.connected) {
+      if (connection.code === 'authentication') throw new Error(connection.message);
       if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis file path/list controls; Send Result then saves beside that source.');
       path = window.prompt('SHP_OPEN_IMAGE_V1');
       if (!path) return;
@@ -1452,8 +1456,7 @@ async function startBatch() {
 $('batchStart').onclick = startBatch;
 $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
-const tabSel = {A: localStorage.getItem('dnb-tabA'), B: localStorage.getItem('dnb-tabB')};
-if (!['orig', 'result'].includes(tabSel.A)) tabSel.A = 'result';
+const tabSel = {A: 'result', B: localStorage.getItem('dnb-tabB')};
 function rightPreviewKinds(mode) {
   return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', 'layer2', 'layer2m'] : ['mask', 'analysis'];
 }
@@ -1465,16 +1468,15 @@ function syncRightTabs() {
 function syncLeftTabs() {
   const mask = state.mode === 'mask';
   $('tabsA').querySelectorAll('.tab').forEach(t => { t.hidden = mask && t.dataset.k === 'result'; });
-  if (mask && tabSel.A === 'result') tabSel.A = 'orig';
 }
 function paneKinds() {
   const diagnostic={layer:'layerx',layerm:'layermx',layer2:'layer2x',layer2m:'layer2mx'};
-  return [tabSel.A, state.mode==='dnb' ? diagnostic[tabSel.B] || tabSel.B : tabSel.B];
+  return [state.mode === 'mask' ? 'orig' : tabSel.A, state.mode==='dnb' ? diagnostic[tabSel.B] || tabSel.B : tabSel.B];
 }
 function syncTabs() {
   syncLeftTabs();
   syncRightTabs();
-  [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === tabSel[k])));
+  [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.k === (k === 'A' && state.mode === 'mask' ? 'orig' : tabSel[k]))));
   $('optsAn').hidden = tabSel.B !== 'analysis';
 }
 function syncMode() {
@@ -1700,48 +1702,54 @@ $('landmarkApply').onclick = async () => {
     setStatus(`Scale applied: ${r.S.toFixed(1)} px (${r.confidence}).`, false, true);
   } catch (e) { setStatus(e.message, true); if (landmarkEdit === edit) $('landmarkApply').disabled = false; }
 };
-function cyclePaneTab(index) {
-  const key = index === 0 ? 'A' : 'B', tabs = [...$(`tabs${key}`).querySelectorAll('.tab')].filter(t => !t.hidden);
-  const current = tabs.findIndex(t => t.dataset.k === tabSel[key]);
-  const next = tabs[(current + 1) % tabs.length];
-  tabSel[key] = next.dataset.k;
-  localStorage.setItem('dnb-tab' + key, next.dataset.k);
-  syncTabs();
-  if (state.version) showImages();
-}
 function clearPanels() {
   pans.forEach(p => {
-    p.querySelector('img')?.finishDisplay?.(false);
+    p.finishDisplay?.(false);
+    p.displaySequence = (p.displaySequence || 0) + 1;
+    p.previewCache = null;
+    p.previewRevision = null;
     p.innerHTML = '<div class="empty">no result yet</div>';
   });
 }
 function showImages() {
   const kinds = paneKinds();
   return Promise.all(pans.map((p, i) => new Promise(resolve => {
-    let img = p.querySelector('img');
-    if (!img) {
-      p.innerHTML = ''; img = document.createElement('img'); img.draggable = false; p.append(img);
-    }
-    if (img.finishDisplay) img.finishDisplay(false);
-    img.hidden = true;
-    const sequence = img.displaySequence = (img.displaySequence || 0) + 1;
-    const current = () => img.displaySequence === sequence && p.querySelector('img') === img;
-    img.finishDisplay = resolve;
-    img.onload = () => {
+    p.finishDisplay?.(false);
+    const sequence = p.displaySequence = (p.displaySequence || 0) + 1;
+    const current = () => p.displaySequence === sequence;
+    p.finishDisplay = resolve;
+    const revision = `${state.loadEpoch || 0}-${state.version}-${state.avers}`;
+    if (p.previewRevision !== revision) { p.previewRevision = revision; p.previewCache = new Map(); }
+    const src = landmarkEdit && i === 0 ? `img/landmarks?v=${landmarkEdit.generation}` : `img/${kinds[i]}?v=${state.version}-${state.avers}`;
+    const display = img => {
       if (!current()) return resolve(false);
-      p.querySelector('.empty')?.remove(); img.hidden = false; layout(); resolve(true);
+      const previous = p.querySelector('img');
+      if (previous !== img) {
+        if (previous) previous.replaceWith(img);
+        else p.append(img);
+      }
+      p.querySelector('.empty')?.remove(); layout(); resolve(true);
     };
-    img.onerror = () => {
+    const cached = p.previewCache.get(src);
+    if (cached) { display(cached); return; }
+    const img = document.createElement('img'); img.draggable = false;
+    const failed = () => {
         if (!current()) return resolve(false);
-        img.hidden = true;
-        if (!p.querySelector('.empty')) {
+        if (!p.querySelector('img') && !p.querySelector('.empty')) {
           const note = document.createElement('div'); note.className = 'empty';
           note.textContent = 'Preview could not be displayed. Press Apply to retry.'; p.append(note);
         }
         setStatus('Could not display the '+(i === 0 ? 'Original/Result' : 'analysis/mask')+' preview image. Press Apply to retry.', true);
         resolve(false);
-      };
-    img.src = landmarkEdit && i === 0 ? `img/landmarks?v=${landmarkEdit.generation}` : `img/${kinds[i]}?v=${state.version}-${state.avers}`;
+    };
+    img.onerror = failed;
+    img.onload = async () => {
+      try { await img.decode(); } catch (error) { failed(); return; }
+      if (!current()) return resolve(false);
+      p.previewCache.set(src, img);
+      display(img);
+    };
+    img.src = src;
   }))).then(results => results.every(Boolean));
 }
 function layout() {
@@ -1780,6 +1788,17 @@ async function moveCrop(body) {
   try { await api('/api/centre', body); view.z = 1; view.tx = 0; view.ty = 0; layout(); markDirty(); } catch (e) { setStatus(e.message, true); }
 }
 syncCropButtons();
+let previewCompare = null;
+function endPreviewCompare(event) {
+  if (!previewCompare || (event?.pointerId !== undefined && event.pointerId !== previewCompare.pointerId)) return;
+  const saved = previewCompare; previewCompare = null;
+  tabSel.A = saved.tab; syncTabs();
+  if (state.version) showImages();
+  if (saved.pane.hasPointerCapture(saved.pointerId)) saved.pane.releasePointerCapture(saved.pointerId);
+}
+['pointerup','pointercancel','lostpointercapture'].forEach(type =>
+  window.addEventListener(type, endPreviewCompare, true));
+window.addEventListener('blur', () => endPreviewCompare());
 pans.forEach(p => {
   p.addEventListener('wheel', e => {
     e.preventDefault();
@@ -1790,6 +1809,14 @@ pans.forEach(p => {
   let drag = null;
   let landmarkDrag = null;
   p.addEventListener('pointerdown', e => {
+    if (e.button === 0 && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey &&
+        state.loaded && state.version && state.mode !== 'mask' && !state.busy && !landmarkEdit && !pickingColor) {
+      if (previewCompare) return;
+      previewCompare = {tab:tabSel.A, pointerId:e.pointerId, pane:p};
+      tabSel.A = tabSel.A === 'orig' ? 'result' : 'orig';
+      syncTabs(); showImages();
+      p.setPointerCapture(e.pointerId); e.preventDefault(); return;
+    }
     if (landmarkEdit && p === pans[0] && e.button === 0 && !e.altKey) {
       const d = landmarkDraft(), pos = imagePoint(p, e);
       if (!d || !pos) return;
@@ -1826,13 +1853,12 @@ pans.forEach(p => {
     const d = drag; drag = null; p.classList.remove('drag');
     if (!d || d.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
     if (pickingColor) {
-      if (pans.indexOf(p) !== 0 || tabSel.A !== 'orig') { setStatus('Pick the color from the Original preview.'); return; }
+      if (pans.indexOf(p) !== 0 || paneKinds()[0] !== 'orig') { setStatus('Pick the color from the Original preview.'); return; }
       const point = imagePoint(p, e);
       if (!point) { setStatus('Click inside the image to pick a color.', true); return; }
       pickColorAt(point.u, point.v);
       return;
     }
-    if (d.ctrl) { cyclePaneTab(pans.indexOf(p)); return; }
     const img = p.querySelector('img');
     if (!d.shift || !img || !img.naturalWidth) return;
     const point = imagePoint(p, e);
@@ -2015,7 +2041,8 @@ async function loadPresets() {
   } catch (e) { presetErr(e); }
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
   fillPresetList('default');
-  applySettings(presetSettings('default')); snapNow();
+  const initialSettings = presetSettings('default');
+  applySettings(parent === window ? initialSettings : {...initialSettings, mode:'mask'}); snapNow();
   shellUiReady = true;
   if (parent !== window) parent.postMessage({type:'shp-skin-ready'}, location.origin);
 }

@@ -14,9 +14,12 @@ def detect_config():
 class Bridge(BaseBridge):
     env_prefix = "SHPC"
     module = "crop"
-    app_name = "SHP PhotoCraft Crop"
+    app_name = "SHP Portrait Tools — AI Fill"
 
-    def send_expand(self, layer_rgba, doc, margins, name="SHP PhotoCraft Crop expand"):
+    def send_patch(self, layer_rgba, doc):
+        return self.send_expand(layer_rgba, doc, (0, 0, 0, 0), name="SHP Portrait Tools Patch Fill", resize=False)
+
+    def send_expand(self, layer_rgba, doc, margins, name="SHP Portrait Tools Crop & Expand", *, resize=True):
         """Resize by signed margins and add the generated layer as one undo step."""
         h, w = layer_rgba.shape[:2]
         left, top, right, bottom = (int(m) for m in margins)
@@ -39,7 +42,8 @@ class Bridge(BaseBridge):
             self.client.run("layer.setProps", layer=lid, name=name)
             target = self._find(doc["index"], doc["name"])
             self._activate(target["index"])
-            self.client.run("image.crop", x=-left, y=-top, width=w, height=h)
+            if resize:
+                self.client.run("image.crop", x=-left, y=-top, width=w, height=h)
             tops = (self.client.run("layer.list") or {}).get("layers") or []
             if tops:
                 self.client.run("layer.select", layer=int(tops[0]["id"]))

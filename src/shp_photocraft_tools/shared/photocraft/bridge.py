@@ -16,6 +16,14 @@ OPENFILL = Path.home() / ".config" / "openfill-photocraft"
 class ControlError(RuntimeError):
     """PhotoCraft refused a request or could not be reached."""
 
+    code = "control"
+
+
+class AuthenticationError(ControlError):
+    """A running PhotoCraft rejected authentication, not a local-open request."""
+
+    code = "authentication"
+
 
 def detect_config(prefix, module):
     """Module-specific env overrides shared SHP_PC_*; existing OpenFill auth is reused."""
@@ -68,7 +76,7 @@ class Client:
         reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
         if not reply.get("ok"):
             self.close()
-            raise ControlError(f"PhotoCraft refused the control token: {reply.get('error')}")
+            raise AuthenticationError(f"PhotoCraft refused the control token: {reply.get('error')}")
 
     def close(self):
         for t in (self._file, self._sock):
@@ -89,6 +97,10 @@ class Client:
 
     def call(self, method, **params):
         return self._call(method, params, 2)
+
+    def call_once(self, method, **params):
+        """Do not replay an operation if its acknowledgement is lost."""
+        return self._call(method, params, 1)
 
     def _call(self, method, params, attempts):
         for attempt in range(1, attempts + 1):

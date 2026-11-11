@@ -1,14 +1,21 @@
-# SHP PhotoCraft Tools
+# SHP Portrait Tools
 
-Two independently runnable modules in one Python monorepo: **Crop** and the shared
-**Skin Mask / FS + Skintone / D&B / Combine** service. They share local packaged UI
+Two independently runnable modules in one Python monorepo:
+**Skin Tools** (Skin Mask / FS & Tone / Dodge & Burn / Combine) and **AI Fill**
+(Crop & Expand / Patch Fill) services. They share local packaged UI
 resources and PhotoCraft transport, not incompatible canvas/layer application logic.
 An optional shell and owned GTK/WebKit desktop provide one window with retained views.
+The tab strip uses matching subtle neutral dividers between Combine and Crop & Expand,
+and before Settings & Info. Module boundaries disappear when their
+tabs are hidden; no module-specific tab hues are used.
+The Tools WebUI starts on Skin Mask when Skin Tools is loaded, without applying
+Dodge & Burn first. If Skin Tools is unloaded, it falls back to Crop & Expand or
+Settings & Info. Later service status updates do not override the selected tab.
 
 | Module | Command | Standalone default |
 |---|---|---|
-| Crop | `uv run shp-photocraft-crop` | http://127.0.0.1:8768/ |
-| Skin tools | `uv run --extra gpu shp-photocraft-dnb` | http://127.0.0.1:8765/ |
+| AI Fill | `uv run shp-photocraft-crop` | http://127.0.0.1:8768/ |
+| Skin Tools | `uv run --extra gpu shp-photocraft-dnb` | http://127.0.0.1:8765/ |
 
 Private repository: `stefhartog/shp-photocraft-tools`, local checkout
 `/home/stef/shp-photocraft-tools`. Original projects are provenance, not installation
@@ -17,6 +24,21 @@ dependencies. See [HANDOFF.md](HANDOFF.md) for the current implementation/limita
 external weights/nodes. Frozen `docs/source/` notes are historical.
 For a future Windows port, see [Windows handoff](docs/windows-handoff.md);
 the current application remains Linux-only.
+
+The public product name is **SHP Portrait Tools**. Internal IDs remain `dnb` (Skin
+Tools) and `crop` (AI Fill). Existing `shp-photocraft-*` commands, routes, config/data
+locations, watch folders, presets and desktop application identity are intentionally
+unchanged; no migration or reinstall is required. PhotoCraft still names the actual
+editor integration, and `SkinTools` remains the exported layer-folder name.
+To refresh an existing shortcut's display name without touching its launcher,
+configuration or custom fields, run:
+
+```sh
+uv run --no-sync python scripts/install_desktop.py --update-display-only
+```
+
+Only recognized old/new Tools display fields are updated; custom names are refused
+for review. Restart Tools when ready to refresh the running window/tray titles.
 
 ## Setup
 
@@ -65,6 +87,10 @@ or enable control in an already-running instance. Existing OpenFill token/exchan
 are reused when present; OpenFill processing is not required.
 
 For a separate configuration, replace `photocraft` with your executable:
+
+The command below is a direct automation launch with per-process access roots. It
+does not participate in normal PhotoCraft single-instance file forwarding and should
+not be used as LightCraft's external-editor target; see the combined integration below.
 
 ```sh
 mkdir -p "$HOME/.config/shp-photocraft-tools/photocraft/exchange"
@@ -166,15 +192,71 @@ not localhost/LAN addresses.
 
 ## Window, services and safe shutdown
 
-Shell order is **Skin Mask / FS + Skintone / D&B / Combine / Crop / Settings / Info**.
+PhotoCraft tray reachability is TCP-only, not proof of authenticated document/file
+access. Get reports a rejected PhotoCraft token instead of silently opening the
+local-image chooser; genuinely disconnected local-open behavior is unchanged.
+PhotoCraft's GUI control port alone does not configure the shared token file or
+automation read/write roots required by Tools. In PhotoCraft 0.22.0, both explicit
+`--control` and automation-root flags opt out of normal single-instance file
+forwarding. Removing only `--control` from an automation wrapper is therefore not
+a complete LightCraft/Tools integration solution.
+
+### Optional combined LightCraft / Portrait Tools integration
+
+The repo-managed `shp_photocraft_tools.editor_handoff` provides a permissioned
+PhotoCraft launcher and a separate acknowledged external-editor helper. Install
+only after choosing this integration, using a new private backup directory:
+
+```sh
+uv run --no-sync python scripts/install_editor_handoff.py \
+  --backup-dir /absolute/path/to/new/private-backup --defer-editor-setting
+```
+
+This changes only the recognized PhotoCraft desktop `Exec` and installs
+`~/.local/bin/photocraft-dnb` / `~/.local/bin/photocraft-lightcraft`. Existing
+different helpers, custom launch actions or concurrent target edits are refused.
+The existing shared token/read/write configuration is reused; no broader grants
+are added. The launcher starts PhotoCraft only if its port refuses connections;
+an existing listener must authenticate, not trigger a duplicate instance.
+
+In the **running LightCraft**, select `~/.local/bin/photocraft-lightcraft` in
+Settings > External Editing (program path only, no quotes, flags or `%F`).
+Use the full absolute path in that field. Editing its JSON while it runs would
+be overwritten by its in-memory preferences on exit. Omit
+`--defer-editor-setting` only with LightCraft closed to update that one saved field.
+Then save your work and close PhotoCraft normally; reopen it from the updated
+desktop shortcut, and restart Portrait Tools to load current integration code.
+Do not start a second PhotoCraft while the old instance still owns its port.
+
+The helper validates all file paths under the existing read root, opens each
+with authenticated `app.open`, checks the acknowledgement and focuses PhotoCraft.
+It supports multiple filenames and spaces without shell interpretation. Failed or
+lost replies exit nonzero and produce a desktop error notification; file-open
+requests are never replayed after a lost acknowledgement. It never silently
+starts a GUI during external-editor handoff. This replaces native single-instance
+forwarding for this workflow; LightCraft's built-in PhotoCraft entry is not the helper.
+The upstream LightCraft catalog-add/duplicate-copy error happens **before** any
+external editor call, so this helper cannot fix that separate bug.
+
+Installer backups preserve the original desktop entry and LightCraft preferences
+under their home-relative paths, with a `manifest.json` listing original modes
+and whether each helper existed. For rollback, close the affected apps first,
+restore only intended fields from those originals (avoid overwriting newer user
+preferences), remove only helpers the manifest says were absent, and refresh the
+desktop database. No backup contains the PhotoCraft control token.
+
+Shell order is **Skin Mask / FS & Tone / Dodge & Burn / Combine / Crop & Expand / Patch Fill / Settings & Info**.
 All four skin tabs share one mounted iframe/source/settings/service. Switching never
-reloads the source or resets previews/zoom. Crop is initial unless disabled on startup.
+reloads the source or resets previews/zoom. Skin Mask is initial whenever Skin Tools is loaded.
+Crop and Patch Fill share a second mounted iframe and one service/Comfy connection,
+with acknowledged mode changes rather than reloading it. Processing, transfers and
+settings changes in that service lock navigation as well as Skin Tools processing.
 Tab titles/tooltips report service state; one unavailable module does not block the other.
-Stopped/unloaded services have no navigation tabs: stopping SkinTools hides all four
-skin tabs, while stopping Crop hides Crop. Starting, running/busy, stopping and error
+Stopped/unloaded services have no navigation tabs: stopping Skin Tools hides all four
+skin tabs, while stopping Crop hides both Crop and Patch Fill. Starting, running/busy, stopping and error
 states remain visible; a connection outage retains the last known visibility.
-If the selected service stops, the shell selects available Crop, then D&B, otherwise
-Settings / Info. Starting a service restores its tabs without stealing selection.
+If the selected service stops, the shell selects available Skin Mask, then Crop & Expand, otherwise
+Settings & Info. Starting a service restores its tabs without stealing selection.
 Tray Start/Stop controls remain available; the full busy-navigation lock is unchanged.
 
 Native X hides to tray; relaunch/Show presents the same window. Tray supports Show/Hide,
@@ -194,25 +276,36 @@ queues fail closed. Crop's **Free Comfy memory** refuses active/pending queue wo
 success requests asynchronous unload, not a measured RAM/VRAM reduction.
 Tools does not start/stop PhotoCraft for reachability status.
 
-## Skin tools and shared controls
+## Skin Tools and shared controls
 
 Get Image analyzes once. Shared scale, skin/colour/light/structure mask and preset settings
 stay linked across tabs. Edit mask controls and S/landmarks in **Skin Mask > Image analysis**.
 That panel is hidden in FS, D&B and Combine; hidden values still apply.
 Presets store the whole bundle and mode; switching tabs or S-derived pixel radii does not
-star a preset, but editing hidden shared settings does. Legacy `skintone` opens FS + Skintone.
+star a preset, but editing hidden shared settings does. Legacy `skintone` opens FS & Tone.
 
 | Mode | Controls / previews |
 |---|---|
 | Skin Mask | Shared mask/ranges/structure and analysis/scale. Left Original; right Mask/Analysis. |
-| FS + Skintone | Frequency separation, Blur, Directional Blur, Skintone Correction. Left Original/Result; right Color/Detail and Directional Region when enabled. |
+| FS & Tone | Frequency Separation & Skin Tone, Blur, Directional Blur, Skintone Correction. Left Original/Result; right Color/Detail and Directional Region when enabled. |
 | D&B | BAND 1, BAND 2, SHARED CONTROLS. Left Original/Result; right Band 1/Band 1 + mask and enabled Band 2 equivalents. |
 | Combine | **FS mix and D&B mix**, plus local batch controls. Edit ingredient settings in their own tabs. Left Original/Combined; right FS result/D&B result/Mask. |
+
+Original/Result starts on **Result** (Combined in Combine) at startup and for each
+new source, regardless of the previous session's preview selection. Skin Mask
+retains its Original-only left pane without changing the retouch preview preference.
+Hold **Ctrl + primary mouse button** in either image pane to temporarily compare
+Original and Result; releasing the mouse restores the exact prior selection, even
+outside the pane or after releasing Ctrl first. Cancel, lost capture and window
+blur also restore it. The gesture is inactive during landmark editing, color
+picking, processing and Skin Mask mode; other modifiers retain their normal behavior.
+Preview switches retain the valid displayed frame until the destination image is
+loaded and decoded, and reuse ready images for the current result revision.
 
 Slider readouts update while dragging; image processing waits for release/cancel/lost
 capture/blur, keyboard changes debounce. Busy/off/missing geometry gating retains settings.
 Themes Current/PhotoCraft affect UI only; PhotoCraft is default absent saved preference.
-The rightmost **Settings / Info** page contains Theme Selection, PhotoCraft layer-transfer
+The rightmost **Settings & Info** page contains Theme Selection, PhotoCraft layer-transfer
 options, Skin Mask precache and the temporary calculation-timings log, plus About.
 These controls are global, not module-preset settings. Layer-transfer options persist in
 `$XDG_CONFIG_HOME/shp-photocraft-tools/settings.json` (normally
@@ -228,7 +321,7 @@ not change the active skin-tool mode or clear its source/previews.
 
 Image-analysis details, the mask-cache status badge, non-timing Log notes and all existing
 operation/status messages stay in their original locations. Standalone skin-tools views
-offer the same general controls in a Settings / Info section.
+offer the same general controls in a Settings & Info section.
 Shared grey-off/blue-on switches, transparent disabled readouts, accessible focus and
 responsive equal-width action slots remain. Quiet preview work delays visible busy feedback
 150 ms but blocks conflicting input immediately. Status measures completion through image
@@ -356,7 +449,7 @@ locally even if PC later connects; disconnected PC sources error, never save to 
   band 2 / band 1 (Soft Light), Detail (Linear Light), Hue, Directional
   Blur, ordinary Blur, Color.
 
-Settings / Info > PhotoCraft transfer options > **Send Layers mask** defaults to
+Settings & Info > PhotoCraft transfer options > **Send Layers mask** defaults to
 **Mask on top folder**: one shared Skin Mask on SkinTools, no ingredient masks.
 **Mask on every layer** restores the previous ingredient-specific masks (bands,
 Hue, Directional Blur and ordinary Blur when its mask switch is enabled); Color
@@ -399,7 +492,7 @@ Crop has its own independent PNG inbox at
 `/home/stef/shp-photocraft-tools/watchfolder_crop`. Start **Crop** in the Tools tray
 if it is unloaded. Stable exports use Crop's Get Image flow and automatically select
 the **Crop** tab, associating the active PhotoCraft document with the same identity/
-revision/dimension checks and cleanup-on-success rules. SkinTools processing blocks
+revision/dimension checks and cleanup-on-success rules. Skin Tools processing blocks
 Crop imports until navigation unlocks. The tray detects either inbox without opening
 a second app; each service only consumes its own inbox. `watchfolder_crop/` is Git-ignored.
 Neither inbox is created by installation or service startup. Create the required
@@ -462,14 +555,14 @@ never upscale preview rasters. One immutable full-mask/optional-structure cache 
 at 256 MiB and reused across modes when mask/source/S identity matches.
 Mix/FS/Hue/band-only edits do not regenerate an identical mask.
 
-Default-on **Precache skin mask**, under Settings / Info, starts one worker
+Default-on **Precache skin mask**, under Settings & Info, starts one worker
 after 600 ms settled preview; stale/over-budget work is discarded. Send waits for matching
 work or computes its mask. Cross/spinner/check reflect the actual retained entry.
 Checkbox is a local preference, not preset; disabling cancels pending preparation.
 Cache retention caps do not limit temporary working memory.
 
 Log notes remain bounded browser memory in Skin Mask Image analysis; calculation timings
-are separate in Settings / Info. Genuine errors use
+are separate in Settings & Info. Genuine errors use
 status/tooltips, not hidden success. Stage timings measure actual command/work completion,
 not paint. [HANDOFF.md](HANDOFF.md#mask-cache-resource-measurements-and-validation-boundaries)
 separates historical synthetic microbenchmarks from live observations:
@@ -477,9 +570,16 @@ headless transfer options differed, but live user sends were 11-13 s across choi
 so TIFF is not a demonstrated real-world speedup. Nine-region synthetic Directional
 was about 1.64-1.77 s /710 MiB without inference/import; not a Combine/full-Send guarantee.
 
-## Crop
+## AI Fill: Crop & Expand and Patch Fill
 
-FLUX.2 remains default; FLUX.1 Fill has independent guidance 30, steps 28, 0.5 MP,
+**Crop & Expand** and **Patch Fill** are adjacent top-level Tools tabs sharing one source,
+ComfyUI connection and lifecycle. Switching modes retains the source, painted mask,
+selected result preview and each source view's zoom/pan; no internal mode switch remains.
+Loading a new source clears the mask. A successful Crop watch-folder import selects
+**Crop & Expand**, not Patch Fill. Standalone browser access to Patch Fill uses `/?mode=patch`
+on the Crop server.
+
+For expansion, FLUX.2 remains default; FLUX.1 Fill has independent guidance 30, steps 28, 0.5 MP,
 feather 64, Fill model and upscaler. Fill always colour-matches/seam-corrects/pastes
 Original back, without LoRA; FLUX.2 keeps optional Turbo/seam choices.
 Both offer model upscaling or Lanczos (no model); only selected neural models require
@@ -493,12 +593,73 @@ and publishes each finished variation immediately; later results do not steal se
 Cancel/failure preserves finished results, Send waits for generation to stop.
 Send resizes canvas/copies generated RGBA with inherited best-effort undo grouping.
 AI SETTINGS is collapsible; zoom/pan/double-click fit remain.
+Middle-mouse drag pans the viewport in Crop and Patch Fill (including result views)
+without moving the crop frame or painting/erasing. Release ends the pan; Patch Fill
+also retains Space+left-drag panning.
+
+**Patch Fill** uses the existing FLUX.1 Fill processing setup and
+variation/cancel workflow, with independently saved model, prompt and generation
+settings, without changing expansion's saved method. Paint or erase
+over the source; **Clear** resets the mask. Brush diameter is in original source pixels
+(1-512), independent of zoom; use the wheel to zoom and Space+drag to pan. An empty
+mask cannot Generate. Select a finished result to preview it; Send Result retains
+the current local numbered-save or PhotoCraft-document association.
+Paint and Erase show a contrasting circular cursor at the displayed brush diameter,
+scaling with brush size and zoom; it hides outside the image, while panning or busy,
+and in result/expansion views.
+
+The **context area** slider chooses what the model sees: **0% Local context** uses
+one bounding rectangle enclosing every painted stroke, padded on each side by 25%
+of its painted width/height or at least 64 original pixels, clipped to image bounds.
+Moving the slider toward **100% Whole image** progressively expands each edge of
+that rectangle to the corresponding image edge. At 100% the previous full-image
+processing path is preserved. Disconnected strokes share one enclosing rectangle;
+even faint painted pixels are included. Near image edges the available context is
+naturally smaller; a widely spread mask may already need the whole image at 0%.
+
+The source and mask are cropped together. The megapixel setting applies to this
+region, with existing 16-pixel model sizing, colour/seam correction and optional
+upscaling. The generated region is mapped back to its exact source coordinates;
+only the painted mask is composited, never the surrounding context. A local region
+gives a small patch more model-resolution detail but less scene context. It does
+not promise faster generation at unchanged megapixels/steps.
+The panel reports `Processing <region width> x <region height> of <source width> x
+<source height> px`, using the actual padded/clamped source-pixel region before model
+resizing. It updates after painting/erasing and while adjusting Context; an empty mask
+reports a zero-size processing region. Ratio, variation and Paint/Erase selection
+use gray highlighting; the thin divider separates Patch Fill and AI Settings.
+
+**Settings and named presets are separate for Crop and Patch Fill.** Crop keeps
+`settings.json` / `presets.json`; Patch Fill uses `patch-settings.json` /
+`patch-presets.json` in the same Crop data directory. On first use, existing saved
+Fill settings and named presets are copied into the Patch files once, without
+overwriting Crop's files. Later saves, preset loads/deletes and Factory settings
+resets affect only the selected mode. A reset uses factory defaults, not the initial
+copied values. Context area is Patch-only and saved in its settings and named presets;
+missing/older values and Factory settings use 100% to preserve prior behavior.
+Prompts are now saved independently with each mode's settings/presets.
+Variation count is a separate browser preference per mode; the mask and paint/erase
+brush selection remain session-only.
+
+Connection URL, managed Comfy lifecycle, queue and memory-release action stay shared.
+The CPU/default **text encoding** choice is also a shared resource preference, outside
+both modes' presets and resets; old preset copies of that field no longer override it.
+Diffusion/upscale model selections, guidance, steps, megapixels and feathering remain
+independent processing settings.
+
+Patch results retain the loaded image dimensions. **Feather px** fades inward only;
+pixels outside the painted mask remain byte-for-byte identical to the loaded working
+image. Crop's working source is RGB8 sRGB, so this is not a promise of retaining
+original encoded high-depth/ICC samples. The saved flattened result and generated
+RGBA patch layer share that effective mask; PhotoCraft receives the masked layer
+without resizing its canvas. No real Comfy/GPU generation was exercised by the
+isolated regression tests; check your existing Fill models/nodes before first use.
 
 ## Data, compatibility and isolated verification
 
 | Resource | Default |
 |---|---|
-| Crop settings/presets/inbox/results | `~/.local/share/shp-photocraft-tools/crop/` |
+| Crop and Patch Fill settings/presets, shared inbox/results | `~/.local/share/shp-photocraft-tools/crop/` |
 | Skin presets/inbox/results/models | `~/.local/share/shp-photocraft-tools/dnb/` |
 | Native data/cache/geometry | `<XDG_DATA_HOME>/shp-photocraft-tools/webview/` |
 | Supervisor/module/desktop/Comfy logs | `<XDG_STATE_HOME>/shp-photocraft-tools/` |

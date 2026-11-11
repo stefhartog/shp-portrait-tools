@@ -134,7 +134,7 @@ class Desktop(Gtk.Application):
         self.base = validate_url(url)
         # GTK3's Wayland app_id follows the program class, not the D-Bus application ID.
         GLib.set_prgname("shp-photocraft-tools")
-        GLib.set_application_name("SHP PhotoCraft Tools")
+        GLib.set_application_name("SHP Portrait Tools")
         Gdk.set_program_class("shp-photocraft-tools")
         identifier = hashlib.sha256(self.base.encode()).hexdigest()[:16]
         super().__init__(application_id=f"org.shp.PhotoCraftTools.p{identifier}",
@@ -201,7 +201,7 @@ class Desktop(Gtk.Application):
         self.view.connect("script-dialog", self.script_dialog)
         self.view.connect("load-failed", self.load_failed)
         self.view.connect("web-process-terminated", self.web_failed)
-        self.window = Gtk.ApplicationWindow(application=self, title="SHP PhotoCraft Tools")
+        self.window = Gtk.ApplicationWindow(application=self, title="SHP Portrait Tools")
         geometry_path = self.data / "window.json"
         try:
             geometry = json.loads(geometry_path.read_text())
@@ -287,21 +287,22 @@ class Desktop(Gtk.Application):
         self.indicator = AppIndicator3.Indicator.new(
             self.get_application_id(), str(self.tray_icon) if self.tray_icon and self.tray_icon.is_file() else "shp-photocraft-tools-tray",
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS)
-        self.indicator.set_title("SHP PhotoCraft Tools")
+        self.indicator.set_title("SHP Portrait Tools")
         menu = Gtk.Menu()
         for label in external_lines({}):
             item = Gtk.MenuItem(label=label)
             item.set_sensitive(False)
             menu.append(item)
             self.external_items.append(item)
-        for name, label in (("crop", "Crop"), ("dnb", "D&B")):
+        for name, label in (("crop", "AI Fill"), ("dnb", "Skin Tools")):
             item = Gtk.MenuItem(label=f"{label} - Connecting")
             submenu = Gtk.Menu()
             self.module_items[name] = item
             self.module_actions[name] = {}
             startup = Gtk.CheckMenuItem(label="Load on startup")
             startup.set_tooltip_text("Applies next launch; does not stop current work." +
-                                    (" Skin Mask, FS + Skintone and D&B share this service." if name == "dnb" else ""))
+                                    (" Skin Mask, FS & Tone, Dodge & Burn and Combine share this service." if name == "dnb"
+                                     else " Crop & Expand and Patch Fill share this service."))
             startup.connect("toggled", lambda button, n=name:
                             self.request_module(n, "startup") if not self.syncing_startup else None)
             submenu.append(startup)
@@ -438,7 +439,7 @@ class Desktop(Gtk.Application):
         for name, item in self.module_items.items():
             state = self.modules.get(name, {})
             phase = state.get("phase", "disconnected")
-            label = "Crop" if name == "crop" else "D&B"
+            label = "AI Fill" if name == "crop" else "Skin Tools"
             status = "busy" if phase == "running" and state.get("busy") else phase
             if (self.control_pending and self.pending_module and self.pending_module[0] == name
                     and self.pending_module[1] != "startup"):
@@ -489,7 +490,7 @@ class Desktop(Gtk.Application):
     def module_result(self, name, action, body, accepted, result):
         if self.quitting:
             return GLib.SOURCE_REMOVE
-        label = "Crop" if name == "crop" else "D&B"
+        label = "AI Fill" if name == "crop" else "Skin Tools"
         if not accepted and result.get("code") == "confirmation" and not body["confirm"]:
             self.dialog_open = True
             self.show()
@@ -561,7 +562,7 @@ class Desktop(Gtk.Application):
             return GLib.SOURCE_REMOVE
         dialog = Gtk.MessageDialog(transient_for=self.window, modal=True,
                                    message_type=Gtk.MessageType.WARNING,
-                                   text="Force restart Tools?" if force else "Restart Tools?" if restart else "Reload Tools UI?" if self.pending_action == "reload" else "Quit SHP PhotoCraft Tools?")
+                                   text="Force restart Tools?" if force else "Restart Tools?" if restart else "Reload Tools UI?" if self.pending_action == "reload" else "Quit SHP Portrait Tools?")
         dialog.format_secondary_text(
             ("Force Restart interrupts processing and discards unsaved previews/variations in ALL Tools windows. "
              "Interrupted Send may leave scratch documents or exchange remnants. PhotoCraft is never terminated. "

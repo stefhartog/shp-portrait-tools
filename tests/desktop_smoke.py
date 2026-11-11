@@ -148,8 +148,8 @@ class Smoke(module.Desktop):
                 """, self.ready)
         elif self.phase == "load":
             self.evaluate("""
-                const c=document.querySelector('iframe[title="SHP PhotoCraft Crop"]');
-                const d=document.querySelector('iframe[title="SHP PhotoCraft D&B"]');
+                const c=document.querySelector('#panel-crop iframe');
+                const d=document.querySelector('#panel-dnb iframe');
                 return {loaded:c.contentWindow.eval('!!X.img')&&d.contentWindow.eval('state.version>0&&!state.busy'),
                         error:c.contentDocument.getElementById('status').textContent};
                 """, self.loaded)
@@ -215,9 +215,9 @@ class Smoke(module.Desktop):
                 self.expect(self.second.returncode == 0, f"Remote activation failed: {out} {err}")
                 self.expect(self.activations == 2 and self.window.get_visible(), "Second launch did not present same instance")
                 self.evaluate("""
-                    return {crop:fixtureCrop===document.querySelector('iframe[title="SHP PhotoCraft Crop"]')
+                    return {crop:fixtureCrop===document.querySelector('#panel-crop iframe')
                       &&beforeHide.crop===fixtureCrop.contentWindow.eval('JSON.stringify({seq:X.seq,rv:X.rv,view:X.view})'),
-                      dnb:fixtureDnb===document.querySelector('iframe[title="SHP PhotoCraft D&B"]')
+                      dnb:fixtureDnb===document.querySelector('#panel-dnb iframe')
                       &&beforeHide.dnb===fixtureDnb.contentWindow.eval('JSON.stringify({view,version:state.version})'),
                       local:localStorage.getItem('native-fixture')};
                     """, self.reopened)
@@ -442,8 +442,8 @@ class Smoke(module.Desktop):
             return
         self.phase = "load"
         self.evaluate("""
-            window.fixtureCrop=document.querySelector('iframe[title="SHP PhotoCraft Crop"]');
-            window.fixtureDnb=document.querySelector('iframe[title="SHP PhotoCraft D&B"]');
+            window.fixtureCrop=document.querySelector('#panel-crop iframe');
+            window.fixtureDnb=document.querySelector('#panel-dnb iframe');
             fixtureDnb.contentWindow.eval(`{
               const original=getSettings(),check=(ok,msg)=>{if(!ok)throw Error(msg);};
               check(sliders.tau.num.value==='1','tau default not shown');

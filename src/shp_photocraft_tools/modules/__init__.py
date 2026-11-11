@@ -1,1 +1,1 @@
-"""Independently runnable SHP PhotoCraft tools."""
+"""Independently runnable SHP Portrait Tools modules."""

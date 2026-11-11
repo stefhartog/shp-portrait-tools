@@ -1,4 +1,4 @@
-"""SHP PhotoCraft D&B: local web UI for the dodge & burn prototype.
+"""SHP Portrait Tools Skin Tools: local skin-mask, FS/tone, dodge & burn and Combine UI.
 
 Run: uv run shp-photocraft-dnb [--port 8765] [--dir pictures ...]
 Then open http://127.0.0.1:8765 in a browser. The server only listens on 127.0.0.1.
@@ -1304,7 +1304,7 @@ def api_pc_status(req):
         st = bridge().status()
         return {"connected": True, "doc": st["doc"], "fetched": BRIDGE["doc"], "headless": st["headless"]}
     except PCB.ControlError as e:
-        return {"connected": False, "message": str(e), "fetched": BRIDGE["doc"]}
+        return {"connected": False, "message": str(e), "code": e.code, "fetched": BRIDGE["doc"]}
 
 
 def api_pc_fetch(req):
@@ -1796,7 +1796,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="SHP PhotoCraft D&B web UI")
+    ap = argparse.ArgumentParser(description="SHP Portrait Tools — Skin Tools web UI")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--dir", nargs="+", default=[])
@@ -1805,7 +1805,7 @@ def main():
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
     srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")
-    print(f"SHP PhotoCraft D&B: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
+    print(f"SHP Portrait Tools — Skin Tools: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

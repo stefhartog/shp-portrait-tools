@@ -7,10 +7,10 @@
   let retry;
   let generation = 0;
   const report = error => {
-    console.error('SHP PhotoCraft Tools tab connection:', error);
+    console.error('SHP Portrait Tools tab connection:', error);
     const status = document.getElementById('status');
     if (status) {
-      status.textContent = 'Server connection lost. Reopen SHP PhotoCraft Tools if it does not reconnect.';
+      status.textContent = 'Server connection lost. Reopen SHP Portrait Tools if it does not reconnect.';
       status.classList.add('err');
     }
   };

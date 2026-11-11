@@ -5,7 +5,9 @@ D&B models or Crop/ComfyUI models. The desktop installer only validates/referenc
 files; it does not fetch them. rtmlib is the exception: it downloads pose weights lazily on
 first D&B analysis. Starting an HTTP UI or running synthetic tests does not download weights.
 
-Skin Mask, FS + Skintone, D&B and Combine share this same source analysis and model set.
+**Skin Tools** tabs Skin Mask, FS & Tone, Dodge & Burn and Combine share this same
+source analysis and model set. The separate **AI Fill** module contains Crop & Expand
+and Patch Fill and uses ComfyUI; it does not use this D&B model set.
 Directional Blur reuses the selected subject's existing pose coordinates; its per-region
 controls and missing-geometry bypass introduce no additional inference or model weights.
 Combine reuses existing FS/D&B engines. No Blemish/ClearFrame research model is a release

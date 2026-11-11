@@ -221,7 +221,7 @@ class CropLocalResultTests(unittest.TestCase):
             with patch.object(C, "STATE", state):
                 loaded = C.api_load({"path": str(source)})
                 self.assertEqual(loaded["source_kind"], "local")
-                with self.assertRaisesRegex(ValueError, "expand the picture first"):
+                with self.assertRaisesRegex(ValueError, "generate a result first"):
                     C.api_send_result({})
                 results = [{"canvas": Image.new("RGB", (240, 260), colour),
                             "layer": Image.new("RGBA", (240, 260)), "margins": (20, 30, 20, 30)}

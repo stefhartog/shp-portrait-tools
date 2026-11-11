@@ -605,7 +605,7 @@ def main():
     threads = [threading.Thread(target=modules.start_all), threading.Thread(target=modules.monitor, daemon=True)]
     for thread in threads:
         thread.start()
-    print(f"SHP PhotoCraft Tools: http://127.0.0.1:{server.server_port}/", flush=True)
+    print(f"SHP Portrait Tools: http://127.0.0.1:{server.server_port}/", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

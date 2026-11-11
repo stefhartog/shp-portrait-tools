@@ -22,6 +22,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import cv2
+import numpy as np
 from PIL import Image, ImageCms, ImageOps
 
 COMFY_URL = os.environ.get("SHPC_COMFY", "http://127.0.0.1:8188")
@@ -57,8 +59,11 @@ SETTINGS = {
     "fill_unet": (str, 0, 0, "flux1-fill-dev.safetensors"),
     "fill_clip_device": (str, 0, 0, "cpu"),
     "fill_upscale": (str, 0, 0, "lanczos"),
+    "prompt": (str, 0, 0, ""),
 }
 DEFAULTS = {k: v[3] for k, v in SETTINGS.items()}
+PATCH_DEFAULTS = {"patch_context": 100}
+SETTINGS["patch_context"] = (int, 0, 100, 100)
 REQUIRED_NODES = ["UnetLoaderGGUF", "CLIPLoader", "VAELoader", "LoraLoaderModelOnly", "ImagePadForOutpaint",
                   "ImageScaleToTotalPixels", "ReferenceLatent", "EmptyFlux2LatentImage", "Flux2Scheduler",
                   "SamplerCustomAdvanced", "INPAINT_ColorMatch", "UpscaleModelLoader", "ImageUpscaleWithModel",
@@ -151,13 +156,14 @@ class Job:
 
 # ---------------------------------------------------------------- settings
 
-def load_settings(path):
+def load_settings(path, defaults=None):
     """Saved settings merged over the defaults."""
     try:
         saved = json.loads(Path(path).read_text())
     except (OSError, ValueError):
         saved = {}
-    cur = {k: saved[k] if isinstance(saved.get(k), type(d)) else d for k, d in DEFAULTS.items()}
+    defaults = DEFAULTS if defaults is None else defaults
+    cur = {k: saved[k] if isinstance(saved.get(k), type(d)) else d for k, d in defaults.items()}
     if cur["method"] not in ("flux2", "flux1_fill"):
         raise ExpandError(f"unknown generation method: {cur['method']}")
     if cur["fill_clip_device"] not in ("cpu", "default"):
@@ -165,9 +171,10 @@ def load_settings(path):
     return cur
 
 
-def fill_settings(path, values=None, reset=False):
+def fill_settings(path, values=None, reset=False, defaults=None):
     """Read (and, given {name: value} or reset=True, validate and save) the settings."""
-    cur = dict(DEFAULTS) if reset else load_settings(path)
+    defaults = DEFAULTS if defaults is None else defaults
+    cur = dict(defaults) if reset else load_settings(path, defaults)
     for k, v in (values or {}).items():
         if k not in SETTINGS:
             raise ExpandError(f"unknown setting: {k}")
@@ -178,7 +185,7 @@ def fill_settings(path, values=None, reset=False):
             raise ExpandError(f"bad value for {k}") from e
         if kind in (int, float) and not lo <= v <= hi:
             raise ExpandError(f"{k} must be between {lo} and {hi}")
-        if kind is str and not v.strip():
+        if kind is str and k != "prompt" and not v.strip():
             raise ExpandError(f"{k} must not be empty")
         if k == "method" and v not in ("flux2", "flux1_fill"):
             raise ExpandError(f"unknown generation method: {v}")
@@ -309,6 +316,138 @@ def build_fill_graph(image_name, margins, prompt, seed, s):
             "upscale_model": ["22", 0], "image": ["21", 0]}}
         g["25"]["inputs"]["image"] = ["23", 0]
     return g
+
+
+def build_patch_graph(image_name, mask_name, prompt, seed, settings):
+    """Reuse native Fill conditioning/correction; final masked paste is enforced locally."""
+    graph = build_fill_graph(image_name, (0, 0, 0, 0), prompt, seed, settings)
+    del graph["2"]
+    graph["patch_image"] = {"class_type": "LoadImage", "inputs": {"image": mask_name}}
+    graph["patch_mask"] = {"class_type": "ImageToMask", "inputs": {"image": ["patch_image", 0], "channel": "red"}}
+    for node in graph.values():
+        for key, value in node["inputs"].items():
+            if value == ["2", 0]:
+                node["inputs"][key] = ["1", 0]
+            elif value == ["2", 1]:
+                node["inputs"][key] = ["patch_mask", 0]
+    graph["11"]["inputs"]["text"] = (
+        "Fill the masked patch in this photograph with realistic content matching its surroundings, "
+        "lighting, perspective and detail." + (f" {prompt.strip()}" if prompt.strip() else ""))
+    graph["out"]["inputs"]["images"] = ["27", 0]
+    # Do not blend twice: the local full-resolution paste below owns feathering.
+    for key in ("26", "28"):
+        del graph[key]
+    return graph
+
+
+def patch_mask(data, size):
+    """Validate a browser PNG mask in source pixels before starting any job."""
+    if not isinstance(data, str) or not data.startswith("data:image/png;base64,") or len(data) > 32 * 1024 * 1024:
+        raise ExpandError("paint a PNG patch mask first (maximum encoded size 32 MiB)")
+    try:
+        raw = base64.b64decode(data.split(",", 1)[1], validate=True)
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format != "PNG" or image.size != size:
+                raise ExpandError("patch mask must match the full-resolution loaded image")
+            mask = image.getchannel("A") if image.mode == "RGBA" else image.convert("L")
+    except (ValueError, OSError) as error:
+        raise ExpandError("invalid patch mask PNG") from error
+    if mask.getextrema()[1] == 0:
+        raise ExpandError("paint a patch before generating")
+    return mask
+
+
+def patch_alpha(mask, feather):
+    """Feather inward only: zero mask pixels always remain exactly untouched."""
+    values = np.asarray(mask, np.uint8)
+    if not values.any():
+        raise ExpandError("paint a patch before generating")
+    if feather:
+        support = np.pad((values > 0).astype(np.uint8), 1)
+        distance = cv2.distanceTransform(support, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]
+        values = np.round(values.astype(np.float32) * np.minimum(distance / feather, 1)).astype(np.uint8)
+    return Image.fromarray(values)
+
+
+def patch_bounds(mask, context=100):
+    """Interpolate from a padded all-stroke bounding box to the exact full source."""
+    if isinstance(context, bool) or not isinstance(context, int) or not 0 <= context <= 100:
+        raise ExpandError("patch context must be between 0 and 100")
+    bounds = mask.getbbox()
+    if bounds is None:
+        raise ExpandError("paint a patch before generating")
+    left, top, right, bottom = bounds
+    pad_x = max(64, (right - left + 3) // 4)
+    pad_y = max(64, (bottom - top + 3) // 4)
+    left, top = max(0, left - pad_x), max(0, top - pad_y)
+    right, bottom = min(mask.width, right + pad_x), min(mask.height, bottom + pad_y)
+    return (left * (100 - context) // 100, top * (100 - context) // 100,
+            mask.width - (mask.width - right) * (100 - context) // 100,
+            mask.height - (mask.height - bottom) * (100 - context) // 100)
+
+
+def patch_variations(picture, mask, prompt, job, seed=-1, settings=None, variations=1, url=None, on_result=None):
+    """Generate same-size editable patches using the existing Fill settings and Comfy client."""
+    if mask.size != picture.size or mask.mode != "L" or not mask.getextrema()[1]:
+        raise ExpandError("paint a full-resolution patch mask before generating")
+    n = int(variations)
+    if not 1 <= n <= MAX_VARIATIONS:
+        raise ExpandError(f"variations must be between 1 and {MAX_VARIATIONS}")
+    settings = {**DEFAULTS, **(settings or {}), "method": "flux1_fill"}
+    alpha = patch_alpha(mask, settings["fill_feathering"])
+    if not alpha.getextrema()[1]:
+        raise ExpandError("patch is too faint for this feathering; paint a larger patch or reduce feather px")
+    bounds = patch_bounds(mask, settings.get("patch_context", 100))
+    region, region_mask, region_alpha = picture.crop(bounds), mask.crop(bounds), alpha.crop(bounds)
+    if job.cancel:
+        raise Cancelled()
+    readiness = status(settings, url)
+    if not readiness["ok"]:
+        raise ExpandError(readiness["message"])
+    comfy = Comfy(url)
+    job.count = n
+    job.progress(0, f"Sending {region.width} x {region.height} context and patch mask to ComfyUI")
+    identifier = uuid.uuid4().hex
+    image_name = comfy.upload(_png(region), f"shppatch_{identifier}.png")
+    mask_name = comfy.upload(_png(region_mask), f"shppatch_mask_{identifier}.png")
+    base = int(seed) if int(seed) >= 0 else random.randrange(2 ** 31 - MAX_VARIATIONS)
+    results = []
+    for index in range(n):
+        if job.cancel:
+            raise Cancelled()
+        job.index = index
+        graph = build_patch_graph(image_name, mask_name, prompt, base + index, settings)
+        client = uuid.uuid4().hex
+        prompt_id = comfy.queue(graph, client)
+        outputs = comfy.wait(prompt_id, client, graph, job)
+        if job.cancel:
+            raise Cancelled()
+        try:
+            with Image.open(io.BytesIO(comfy.view(outputs["out"]["images"][0]))) as output:
+                if output.size != region.size:
+                    raise ExpandError("ComfyUI patch result dimensions differ from the context region")
+                generated = output.convert("RGB")
+        except (KeyError, IndexError, OSError) as error:
+            raise ExpandError("ComfyUI returned no valid patch picture") from error
+        patch_layer = generated.convert("RGBA")
+        patch_layer.putalpha(region_alpha)
+        layer = picture.convert("RGBA")
+        layer.putalpha(0)
+        layer.paste(patch_layer, bounds[:2])
+        canvas = picture.copy()
+        canvas.paste(Image.composite(generated, region, region_alpha), bounds[:2])
+        result = {"canvas": canvas, "layer": layer,
+                  "margins": (0, 0, 0, 0), "mode": "patch"}
+        if job.cancel:
+            raise Cancelled()
+        if on_result is not None:
+            on_result(index, result)
+        with job.lock:
+            job.results.append(result)
+            if job.result is None:
+                job.selected, job.result = 0, result
+        results.append(result)
+    return results
 
 
 STAGES = {"UnetLoaderGGUF": "Loading the model", "CLIPLoader": "Loading the text encoder", "CLIPTextEncode": "Reading the prompt",

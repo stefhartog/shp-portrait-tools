@@ -68,7 +68,7 @@ class BrowserLifetime:
     def work(self):
         with self.lock:
             if self.stopping:
-                raise RuntimeError("Server is shutting down; reopen SHP PhotoCraft Tools")
+                raise RuntimeError("Server is shutting down; reopen SHP Portrait Tools")
             self.active += 1
         try:
             yield

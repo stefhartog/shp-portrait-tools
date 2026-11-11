@@ -1,4 +1,4 @@
-"""SHP PhotoCraft Crop: local web UI that grows a picture and lets your ComfyUI fill the new area.
+"""SHP Portrait Tools AI Fill: local Crop & Expand and Patch Fill through ComfyUI.
 
 Run: uv run shp-photocraft-crop [--port 8768] [--comfy URL] [--dir pictures ...]
 Then open http://127.0.0.1:8768. The server only listens on 127.0.0.1.
@@ -39,6 +39,68 @@ WATCH_DIRECTORY = Path("/home/stef/shp-photocraft-tools/watchfolder_crop")
 DIRS = []
 BRIDGE = {"b": None}
 STATE = {"img": None, "name": None, "doc": None, "job": X.Job(), "thread": None, "seq": 0, "imgs": {}}
+PATCH_KEYS = ({key for key in X.DEFAULTS if key.startswith("fill_")} - {"fill_clip_device"}) | {"prompt", "patch_context"}
+PATCH_DEFAULTS = {**X.DEFAULTS, **X.PATCH_DEFAULTS, "method": "flux1_fill"}
+
+
+def crop_mode(req):
+    mode = req.get("mode", "expand")
+    if mode not in ("expand", "patch"):
+        raise ValueError("unknown Crop mode")
+    return mode
+
+
+def patch_settings(values):
+    return {**{key: values.get(key, PATCH_DEFAULTS[key]) for key in PATCH_KEYS}, "method": "flux1_fill"}
+
+
+def initialize_patch():
+    """Snapshot pre-separation Fill values once, before either mode can edit them."""
+    path = SETTINGS_FILE.with_name("patch-settings.json")
+    if not path.exists():
+        X.fill_settings(path, patch_settings(X.load_settings(SETTINGS_FILE)), defaults=PATCH_DEFAULTS)
+
+
+def initialize_patch_presets():
+    presets_path = PRESETS_FILE.with_name("patch-presets.json")
+    if not presets_path.exists():
+        old = read_presets()
+        write_presets({"presets": {name: patch_settings(values) for name, values in old["presets"].items()},
+                       "last": old["last"]}, presets_path)
+
+
+def mode_settings(req, values=None, reset=False):
+    mode = crop_mode(req)
+    if mode == "patch" or values or reset:
+        initialize_patch()
+    path = SETTINGS_FILE.with_name("patch-settings.json") if mode == "patch" else SETTINGS_FILE
+    shared = X.load_settings(SETTINGS_FILE)["fill_clip_device"]
+    values = dict(values or {})
+    if mode == "patch":
+        if values.keys() - PATCH_KEYS - {"fill_clip_device", "method"}:
+            raise X.ExpandError("Patch Fill accepts only Fill settings")
+        if "method" in values and values["method"] != "flux1_fill":
+            raise X.ExpandError("Patch Fill requires FLUX.1 Fill")
+        if reset:
+            values["method"] = "flux1_fill"
+    elif values.keys() & X.PATCH_DEFAULTS.keys():
+        raise X.ExpandError("patch context is only available in Patch Fill")
+    result = X.fill_settings(path, values or None, reset, defaults=PATCH_DEFAULTS if mode == "patch" else None)
+    if mode == "patch" and "fill_clip_device" in values:
+        X.fill_settings(SETTINGS_FILE, {"fill_clip_device": result["fill_clip_device"]})
+        shared = result["fill_clip_device"]
+    if mode == "patch":
+        result.update(method="flux1_fill", fill_clip_device=shared)
+    elif reset:
+        result = X.fill_settings(SETTINGS_FILE, {"fill_clip_device": shared})
+    return result
+
+
+def mode_presets_path(req):
+    initialize_patch_presets()
+    if crop_mode(req) == "patch":
+        return PRESETS_FILE.with_name("patch-presets.json")
+    return PRESETS_FILE
 
 
 def bridge():
@@ -121,18 +183,25 @@ def api_run(req):
     if STATE["img"] is None:
         raise ValueError("load a picture first")
     if running():
-        raise ValueError("an expansion is already running")
+        raise ValueError("Crop generation is already running")
     img = STATE["img"]
-    margins, size = X.frame_margins(img.width, img.height, req.get("ratio"), req["x"], req["y"], req["w"], req.get("h"))
+    if "seq" in req and req["seq"] != STATE["seq"]:
+        raise ValueError("the loaded image changed; paint the patch again")
+    mode = crop_mode(req)
+    if mode == "patch" and req.get("seq") != STATE["seq"]:
+        raise ValueError("the loaded image changed; paint the patch again")
+    mask = X.patch_mask(req.get("mask"), img.size) if mode == "patch" else None
+    margins, size = ((0, 0, 0, 0), img.size) if mask is not None else X.frame_margins(
+        img.width, img.height, req.get("ratio"), req["x"], req["y"], req["w"], req.get("h"))
+    settings = mode_settings(req)
+    prompt, seed = str(req.get("prompt", settings["prompt"])), int(req.get("seed", -1))
+    variations = int(req.get("variations", 1))
+    if not 1 <= variations <= X.MAX_VARIATIONS:
+        raise ValueError(f"variations must be between 1 and {X.MAX_VARIATIONS}")
     job = X.Job()
     job.state, job.text = "running", "Contacting ComfyUI..."
     STATE["job"] = job
     STATE["imgs"].pop("xresult", None)
-    prompt, seed = str(req.get("prompt", "")), int(req.get("seed", -1))
-    settings = X.load_settings(SETTINGS_FILE)
-    variations = int(req.get("variations", 1))
-    if not 1 <= variations <= X.MAX_VARIATIONS:
-        raise ValueError(f"variations must be between 1 and {X.MAX_VARIATIONS}")
     for k in [k for k in STATE["imgs"] if k.startswith("xvar")]:
         del STATE["imgs"][k]
 
@@ -144,7 +213,10 @@ def api_run(req):
 
     def work():
         try:
-            X.expand_variations(img, margins, prompt, job, seed, settings, variations, on_result=publish)
+            if mask is not None:
+                X.patch_variations(img, mask, prompt, job, seed, settings, variations, on_result=publish)
+            else:
+                X.expand_variations(img, margins, prompt, job, seed, settings, variations, on_result=publish)
             with job.lock:
                 job.state, job.fraction, job.text, job.message = "done", 1.0, "Done", ""
         except Exception as e:  # shown on the page
@@ -190,9 +262,11 @@ def api_select(req):
 def api_send(req):
     res = STATE["job"].result
     if res is None:
-        raise ValueError("expand the picture first")
+        raise ValueError("generate a result first")
     if STATE["doc"] is None:
         raise ValueError("get a picture from PhotoCraft first")
+    if res.get("mode") == "patch":
+        return {"sent": True, **bridge().send_patch(np.asarray(res["layer"], np.uint8), STATE["doc"])}
     return {"sent": True, **bridge().send_expand(np.asarray(res["layer"], np.uint8), STATE["doc"], res["margins"])}
 
 
@@ -200,7 +274,7 @@ def api_pc_status(req):
     try:
         return bridge().status()
     except PCB.ControlError as error:
-        return {"connected": False, "message": str(error)}
+        return {"connected": False, "message": str(error), "code": error.code}
 
 
 def api_send_result(req):
@@ -210,7 +284,7 @@ def api_send_result(req):
         raise ValueError("the loaded image changed; select its result again before sending")
     res = STATE["job"].result
     if res is None:
-        raise ValueError("expand the picture first")
+        raise ValueError("generate a result first")
     if STATE.get("source_kind") == "photocraft":
         if not api_pc_status({})["connected"]:
             raise ValueError("PhotoCraft is disconnected; reconnect to send this PhotoCraft source")
@@ -226,8 +300,9 @@ def api_send_result(req):
 def api_save(req):
     res = STATE["job"].result
     if res is None:
-        raise ValueError("expand the picture first")
-    out = DATA / "results" / f"{Path(STATE['name']).stem}_expand_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
+        raise ValueError("generate a result first")
+    mode = "patch" if res.get("mode") == "patch" else "expand"
+    out = DATA / "results" / f"{Path(STATE['name']).stem}_{mode}_{datetime.datetime.now():%Y%m%d_%H%M%S}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     res["canvas"].save(out)
     return {"path": str(out)}
@@ -235,8 +310,9 @@ def api_save(req):
 
 def api_status(req):
     """Is ComfyUI reachable and complete; plus the settings and the model lists for the page."""
-    settings = X.load_settings(SETTINGS_FILE)
-    return {**X.status(settings), "settings": settings, "defaults": X.DEFAULTS, "comfy": X.COMFY_URL}
+    settings = mode_settings(req)
+    defaults = PATCH_DEFAULTS if crop_mode(req) == "patch" else X.DEFAULTS
+    return {**X.status(settings), "settings": settings, "defaults": defaults, "comfy": X.COMFY_URL}
 
 
 def api_comfy_free(req):
@@ -288,12 +364,12 @@ def api_comfy_start(req):
 def api_settings(req):
     if (req.get("values") or req.get("reset")) and running():
         raise ValueError("wait for the running expansion to finish or cancel it")
-    return X.fill_settings(SETTINGS_FILE, req.get("values") or None, bool(req.get("reset")))
+    return mode_settings(req, req.get("values") or None, bool(req.get("reset")))
 
 
-def read_presets():
+def read_presets(path=None):
     try:
-        d = json.loads(PRESETS_FILE.read_text())
+        d = json.loads((path or PRESETS_FILE).read_text())
     except (OSError, ValueError):
         d = {}
     presets = d.get("presets") if isinstance(d.get("presets"), dict) else {}
@@ -301,15 +377,16 @@ def read_presets():
     return {"presets": presets, "last": last}
 
 
-def write_presets(d):
-    PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PRESETS_FILE.with_suffix(".tmp")
+def write_presets(d, path=None):
+    path = path or PRESETS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=2))
-    tmp.replace(PRESETS_FILE)
+    tmp.replace(path)
 
 
 def api_presets(req):
-    return read_presets()
+    return read_presets(mode_presets_path(req))
 
 
 def api_preset_save(req):
@@ -317,10 +394,13 @@ def api_preset_save(req):
     name = str(req.get("name", "")).strip()
     if not name or len(name) > 60:
         raise ValueError("give the preset a name (1-60 characters)")
-    d = read_presets()
-    d["presets"][name] = X.load_settings(SETTINGS_FILE)
+    path = mode_presets_path(req)
+    settings = mode_settings(req)
+    d = read_presets(path)
+    d["presets"][name] = patch_settings(settings) if crop_mode(req) == "patch" else settings
+    d["presets"][name].pop("fill_clip_device", None)
     d["last"] = name
-    write_presets(d)
+    write_presets(d, path)
     return d
 
 
@@ -328,27 +408,32 @@ def api_preset_load(req):
     """Make a saved preset the current settings (None = factory settings)."""
     if running():
         raise ValueError("wait for the running expansion to finish or cancel it")
-    d = read_presets()
+    initialize_patch()
+    path = mode_presets_path(req)
+    d = read_presets(path)
     name = req.get("name")
     if name is None:
-        X.fill_settings(SETTINGS_FILE, reset=True)
+        mode_settings(req, reset=True)
     elif name in d["presets"]:
-        X.fill_settings(SETTINGS_FILE, {**X.DEFAULTS, **d["presets"][name]})
+        values = patch_settings(d["presets"][name]) if crop_mode(req) == "patch" else {**X.DEFAULTS, **d["presets"][name]}
+        values.pop("fill_clip_device", None)
+        mode_settings(req, values)
     else:
         raise ValueError("no such preset")
     d["last"] = name
-    write_presets(d)
+    write_presets(d, path)
     return d
 
 
 def api_preset_delete(req):
-    d = read_presets()
+    path = mode_presets_path(req)
+    d = read_presets(path)
     if req.get("name") not in d["presets"]:
         raise ValueError("no such preset")
     del d["presets"][req["name"]]
     if d["last"] == req["name"]:
         d["last"] = None
-    write_presets(d)
+    write_presets(d, path)
     return d
 
 
@@ -429,7 +514,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="SHP PhotoCraft Crop web UI")
+    ap = argparse.ArgumentParser(description="SHP Portrait Tools — AI Fill web UI")
     ap.add_argument("--port", type=int, default=8768)
     ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--comfy", default=None, help="ComfyUI address (default http://127.0.0.1:8188 or $SHPC_COMFY)")
@@ -441,7 +526,7 @@ def main():
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         busy=running, loaded=lambda: STATE["img"] is not None)
     srv.watch_folder = WatchFolder(WATCH_DIRECTORY, DATA / "inbox")
-    print(f"SHP PhotoCraft Crop: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
+    print(f"SHP Portrait Tools — AI Fill: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

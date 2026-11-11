@@ -152,6 +152,8 @@ class StatusLayoutTests(unittest.TestCase):
                 self.check_panel_graph_geometry(command, root, profile)
                 self.check_stretch_removed(command, root, profile)
                 self.check_crop_setting_queue(command, root)
+                self.check_patch_fill(command, root, profile)
+                self.check_patch_shell(command, root, profile)
                 self.check_general_settings(command, root, profile)
                 command("WebDriver:DeleteSession")
             finally:
@@ -915,17 +917,28 @@ class StatusLayoutTests(unittest.TestCase):
         command("WebDriver:Navigate", url=page.as_uri())
         helper = "function showImages() {" + html.split("function showImages() {", 1)[1].split("function layout()", 1)[0]
         command("WebDriver:ExecuteScript", script="""
-          const state={version:1,avers:0},landmarkEdit=null;
+          const state={version:1,avers:0,loaded:true,mode:'dnb'},landmarkEdit=null;
           const pans=[document.getElementById('p0'),document.getElementById('p1')];
           let selection=['result','directional_region'];
-          const paneKinds=()=>selection,layout=()=>{},setStatus=()=>{};
+          const errors=[],paneKinds=()=>selection,layout=()=>{},setStatus=message=>errors.push(message);
+          const delayed=[];
+          const decodes=[],nativeDecode=HTMLImageElement.prototype.decode;
+          HTMLImageElement.prototype.decode=function(){
+            if(window.delayDecode)return new Promise((resolve,reject)=>{
+              decodes.push(()=>nativeDecode.call(this).then(resolve,reject));});
+            return nativeDecode.call(this);
+          };
+          window.delayPreview=false;
           const nativeSrc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
           // Map only test requests to disposable local images; no Tools/API requests.
           Object.defineProperty(HTMLImageElement.prototype,'src',{
             get:nativeSrc.get,
-            set(value){nativeSrc.set.call(this,value.replace(/^img\\/(\\w+)\\?.*$/,'$1.svg'));}});
+            set(value){
+              const load=()=>nativeSrc.set.call(this,value.replace(/^img\\/(\\w+)\\?.*$/,'$1.svg'));
+              if(window.delayPreview)delayed.push({image:this,load});else load();
+            }});
         """ + helper + """
-          window.previewTest={pans,showImages,select:kinds=>{selection=kinds;}};
+          window.previewTest={pans,showImages,errors,delayed,decodes,state,select:kinds=>{selection=kinds;}};
         """, args=[], sandbox=None)
         def load():
             return command("WebDriver:ExecuteAsyncScript", script="""
@@ -933,29 +946,481 @@ class StatusLayoutTests(unittest.TestCase):
               previewTest.showImages().then(done);
             """, args=[], sandbox=None)
         self.assertTrue(load())
+        self.assertTrue(command("WebDriver:ExecuteAsyncScript", script="""
+          const done=arguments[arguments.length-1],test=previewTest;
+          window.delayDecode=true;test.state.version++;
+          test.beforeDecode=test.pans.map(p=>p.querySelector('img'));
+          test.select(['result','directional_region']);
+          test.decodeFinished=test.showImages();
+          const deadline=Date.now()+5000;
+          const wait=()=>test.decodes.length===2?done(true):Date.now()>deadline?done(false):setTimeout(wait,10);
+          wait();
+        """, args=[], sandbox=None))
+        self.assertTrue(command("WebDriver:ExecuteScript", script="""
+          const test=previewTest;
+          const retained=test.pans.every((p,i)=>p.querySelector('img')===test.beforeDecode[i]&&!test.beforeDecode[i].hidden);
+          window.delayDecode=false;test.decodes.splice(0).forEach(decode=>decode());
+          return retained;
+        """, args=[], sandbox=None))
+        self.assertTrue(command("WebDriver:ExecuteAsyncScript", script="""
+          previewTest.decodeFinished.then(arguments[arguments.length-1]);
+        """, args=[], sandbox=None))
         self.assertTrue(command("WebDriver:ExecuteScript", script="""
           return previewTest.pans.every(p=>!p.querySelector('img').hidden && p.querySelector('img').naturalWidth===2);
         """, args=[], sandbox=None))
         pending = command("WebDriver:ExecuteScript", script="""
           previewTest.select(['orig','mask']);
+          window.delayPreview=true;
           const previous=previewTest.pans.map(p=>p.querySelector('img').src);
           previewTest.showImages();
           return {previous,hidden:previewTest.pans.map(p=>p.querySelector('img').hidden)};
         """, args=[], sandbox=None)
         self.assertIn("result.svg", pending["previous"][0])
         self.assertIn("directional_region.svg", pending["previous"][1])
-        self.assertEqual(pending["hidden"], [True, True])
+        self.assertEqual(pending["hidden"], [False, False])
+        self.assertTrue(command("WebDriver:ExecuteScript", script="""
+          const test=previewTest;
+          const retained=test.pans[0].querySelector('img').src.endsWith('result.svg')&&
+            test.pans.every(p=>p.querySelector('img').naturalWidth===2);
+          window.delayPreview=false;test.delayed.splice(0).forEach(item=>item.load());
+          return retained;
+        """, args=[], sandbox=None))
         self.assertTrue(load())
         result = command("WebDriver:ExecuteScript", script="""
-          previewTest.select(['orig','directional_region']);previewTest.showImages();
-          const img=previewTest.pans[1].querySelector('img'),oldLoad=img.onload,oldError=img.onerror;
-          previewTest.select(['orig','mask']);previewTest.showImages();
-          oldLoad();oldError();
-          return {hidden:img.hidden,src:img.src};
+          const test=previewTest,img=test.pans[1].querySelector('img');
+          test.state.version++;window.delayPreview=true;
+          test.select(['orig','directional_region']);test.showImages();
+          const old=test.delayed.at(-1).image;
+          test.select(['orig','mask']);test.showImages();
+          old.onerror();
+          test.delayed.splice(0).forEach(item=>item.load());
+          window.delayPreview=false;
+          return {hidden:img.hidden,src:img.src,errors:test.errors.length};
         """, args=[], sandbox=None)
-        self.assertTrue(result["hidden"])
+        self.assertFalse(result["hidden"])
+        self.assertEqual(result["errors"], 0)
         self.assertIn("mask.svg", result["src"])
         self.assertTrue(load())
+        self.assertTrue(command("WebDriver:ExecuteScript", script="""
+          const test=previewTest,old=test.pans[0].querySelector('img');
+          test.select(['orig','mask']);test.showImages();
+          const cached=test.pans[0].querySelector('img')===old;
+          test.state.version++;window.delayPreview=true;
+          test.select(['missing','mask']);test.showImages();
+          test.delayed.at(-2).image.onerror();
+          window.delayPreview=false;test.delayed.length=0;
+          return cached&&test.pans[0].querySelector('img')===old&&!old.hidden&&test.errors.length===1;
+        """, args=[], sandbox=None))
+        gestures = "let previewCompare" + html.split("let previewCompare", 1)[1].split(
+            "$('p0').addEventListener('keydown'", 1)[0]
+        initial = "const tabSel =" + html.split("const tabSel =", 1)[1].split("function rightPreviewKinds", 1)[0]
+        loaded = "function applyLoaded(r) {" + html.split("function applyLoaded(r) {", 1)[1].split(
+            "state.imageGeneration =", 1)[0] + "}"
+        result = command("WebDriver:ExecuteScript", script="""
+          const $=id=>document.getElementById(id),state=previewTest.state,pans=previewTest.pans;
+          const landmarkEdit=null,pickingColor=null,view={z:1,tx:0,ty:0};
+          const layout=()=>{},syncTabs=()=>{},showImages=()=>{
+              previewTest.select([state.mode==='mask'?'orig':tabSel.A,'mask']);return previewTest.showImages();},
+            updateCursor=()=>{},imagePoint=()=>null,closeLandmarks=()=>{};
+          localStorage.setItem('dnb-tabA','orig');
+        """ + initial + gestures + loaded + """
+          const startup=tabSel.A==='result';
+          tabSel.A='orig';applyLoaded({});
+          const newSource=tabSel.A==='result';
+          const captures=new Set();
+          pans.forEach(p=>{
+            p.setPointerCapture=id=>captures.add(id);
+            p.hasPointerCapture=id=>captures.has(id);
+            p.releasePointerCapture=id=>captures.delete(id);
+          });
+          state.version=2;
+          const press=(pane=pans[0],extra={})=>pane.dispatchEvent(new PointerEvent('pointerdown',{
+            bubbles:true,cancelable:true,pointerId:41,button:0,ctrlKey:true,...extra}));
+          const release=(type='pointerup',target=window)=>target.dispatchEvent(new PointerEvent(type,{
+            bubbles:true,pointerId:41,button:0,ctrlKey:false}));
+          press();const held=tabSel.A==='orig'&&captures.has(41);
+          window.dispatchEvent(new KeyboardEvent('keyup',{key:'Control'}));
+          const ctrlReleasedFirst=tabSel.A==='orig';
+          window.dispatchEvent(new PointerEvent('pointerup',{pointerId:99}));
+          const unrelatedRelease=tabSel.A==='orig'&&captures.has(41);
+          release();const restored=tabSel.A==='result'&&!captures.size;
+          tabSel.A='orig';press(pans[1]);const reverse=tabSel.A==='result';
+          release('pointercancel');const cancelled=tabSel.A==='orig'&&!captures.size;
+          press();release('lostpointercapture',pans[0]);const lost=tabSel.A==='orig'&&!captures.size;
+          press();window.dispatchEvent(new Event('blur'));const blurred=tabSel.A==='orig'&&!captures.size;
+          press(pans[0],{ctrlKey:false});release();const ordinary=tabSel.A==='orig';
+          press(pans[0],{shiftKey:true});release();const modifiers=tabSel.A==='orig';
+          state.mode='mask';press();release();const mask=tabSel.A==='orig';
+          return {startup,newSource,held,ctrlReleasedFirst,unrelatedRelease,restored,reverse,cancelled,lost,blurred,ordinary,modifiers,mask,
+            preference:localStorage.getItem('dnb-tabA')==='orig',view:view.z===1&&view.tx===0&&view.ty===0};
+        """, args=[], sandbox=None)
+        self.assertTrue(all(result.values()), result)
+
+    def check_patch_fill(self, command, root, profile):
+        from shp_photocraft_tools.modules.crop import expand
+        html = (root / "modules/crop/ui/index.html").read_text()
+        html = re.sub(r'<script src="[^"]+"[^>]*></script>', '', html)
+        html = html.replace('<link rel="stylesheet" href="static/shp-ui.css">',
+                            '<style>' + stylesheet().decode() + '</style>')
+        html = html.replace("loadList().catch(e => setStatus(e.message, true)); initializeCrop();", """
+          window.patchTest={X,setCropMode,patchClear,patchContextBounds,xToImg,patchChanged,xRun,xPoll,xRefresh,xLoaded,
+            setApi:fn=>api=fn};
+        """)
+        html = html.replace("pollCropWatchFolder.timer = setTimeout(pollCropWatchFolder, 1000);", "")
+        fixture = profile / "patch-fill.html"
+        fixture.write_text(html)
+        command("WebDriver:Navigate", url=fixture.as_uri())
+        result = command("WebDriver:ExecuteAsyncScript", script="""
+          const done=arguments[arguments.length-1];
+          (async()=>{
+            const test=window.patchTest,X=test.X,$=id=>document.getElementById(id);
+            const defaults=DEFAULTS,requests=[];
+            test.setApi(async(path,body)=>{
+              requests.push({path,body});
+              if(path==='/api/status')return {ok:true,reachable:true,settings:defaults,
+                unets:[defaults.fill_unet],upscalers:[]};
+              if(path==='/api/job')return {state:'running',count:0,fraction:0,text:'test'};
+              return {};
+            });
+            X.W=400;X.H=200;X.img=true;X.seq=5;X.modeLoading=false;
+            X.el=document.createElement('canvas');X.el.width=400;X.el.height=200;
+            test.patchClear();
+            await test.setCropMode('patch');
+            const canvas=$('xCanvas'),rect=canvas.getBoundingClientRect();
+            canvas.setPointerCapture=()=>{};
+            $('xBrush').value=20;
+            const point=(x,y)=>({clientX:rect.left+X.v.ox+x*X.v.k,
+              clientY:rect.top+X.v.oy+y*X.v.k,pointerId:1,button:0,bubbles:true});
+            const cursor=$('xBrushCursor'),near=(a,b)=>Math.abs(a-b)<.05;
+            const cursorMatches=(position=point(150,50))=>{
+              const circle=cursor.getBoundingClientRect();
+              return !cursor.hidden&&near(circle.width,+$('xBrush').value*X.v.k)&&
+                near(circle.height,circle.width)&&
+                near(circle.x+circle.width/2,position.clientX)&&
+                near(circle.y+circle.height/2,position.clientY);
+            };
+            canvas.dispatchEvent(new PointerEvent('pointermove',point(150,50)));
+            const paintCursor=cursorMatches()&&getComputedStyle(cursor).pointerEvents==='none';
+            $('xBrush').value=40;$('xBrush').dispatchEvent(new Event('input'));
+            const resizedCursor=cursorMatches();
+            $('xBrush').value=20;$('xBrush').dispatchEvent(new Event('input'));
+            canvas.dispatchEvent(new PointerEvent('pointerdown',point(100,50)));
+            canvas.dispatchEvent(new PointerEvent('pointermove',point(200,50)));
+            canvas.dispatchEvent(new PointerEvent('pointerup',point(200,50)));
+            const alpha=(x,y)=>X.mask.getContext('2d').getImageData(x,y,1,1).data[3];
+            const painted=alpha(150,50)>0&&alpha(150,80)===0;
+            const middlePan=(end='pointerup')=>{
+              const before=X.mask.toDataURL(),frame=[X.fx,X.fy,X.fw,X.fh],view=X.view==='result'?X.rv:X.v;
+              const ox=view.ox,oy=view.oy,position=point(150,50);
+              let capture=null;
+              canvas.setPointerCapture=id=>capture=id;
+              canvas.hasPointerCapture=id=>capture===id;
+              canvas.releasePointerCapture=id=>{if(capture===id)capture=null;};
+              const down=new PointerEvent('pointerdown',{...position,button:1,cancelable:true});
+              canvas.dispatchEvent(down);
+              const held=capture===1&&X.drag?.kind==='viewport-pan'&&cursor.hidden;
+              canvas.dispatchEvent(new PointerEvent('pointermove',{...position,button:1,
+                clientX:position.clientX+30,clientY:position.clientY-20}));
+              canvas.dispatchEvent(new PointerEvent(end,{...position,button:1}));
+              const moved=near(view.ox,ox+30)&&near(view.oy,oy-20);
+              canvas.dispatchEvent(new PointerEvent('pointermove',{...position,clientX:position.clientX+90}));
+              const aux=new MouseEvent('auxclick',{button:1,cancelable:true});
+              canvas.dispatchEvent(aux);
+              return held&&moved&&near(view.ox,ox+30)&&near(view.oy,oy-20)&&!X.drag&&capture===null&&
+                down.defaultPrevented&&aux.defaultPrevented&&X.mask.toDataURL()===before&&
+                JSON.stringify(frame)===JSON.stringify([X.fx,X.fy,X.fw,X.fh]);
+            };
+            const patchMiddle=middlePan(),patchCancel=middlePan('pointercancel');
+            const selectedSource=X.el;
+            await test.setCropMode('expand');
+            const expansionRetained=X.el===selectedSource&&alpha(150,50)>0&&cursor.hidden;
+            const cropMiddle=middlePan(),captureLost=middlePan('lostpointercapture');
+            X.running=true;
+            canvas.dispatchEvent(new PointerEvent('pointerdown',{...point(150,50),button:1,cancelable:true}));
+            const busyMiddleBlocked=!X.drag;
+            X.running=false;
+            await test.setCropMode('patch');
+            const ratioHidden=getComputedStyle($('xRatios')).display==='none';
+            const fillSelected=$('smethod').value==='flux1_fill'&&$('smethod').disabled;
+            const labels=document.querySelector('label[for=xBrush]').textContent==='brush size'&&
+              document.querySelector('label[for=xContext]').textContent==='context';
+            const helpTooltips=['xBrush','xContext','sfeathering','smethod'].every(id=>
+              document.querySelector(`label[for=${id}]`).title.length>30)&&
+              document.querySelector('label[for=xBrush]').title.includes('pixels')&&
+              document.querySelector('label[for=xContext]').title.includes('64')&&
+              $('xPaint').title.includes('pan')&&$('xErase').title.includes('source');
+            const helpRemoved=$('xInfo').textContent==='Processing 400 x 200 of 400 x 200 px'&&
+              document.querySelectorAll('aside p').length===0;
+            const divider=getComputedStyle(document.querySelector('details.crop-section')).borderTopWidth==='1px'&&
+              getComputedStyle(document.querySelector('details.crop-section')).borderTopStyle==='solid';
+            const selectedGray=['#xRatios .on','#xVariations .on','#xPatchControls .on'].every(selector=>{
+              const e=document.querySelector(selector);
+              const reference=document.createElement('span');reference.style.background='var(--line)';document.body.append(reference);
+              const matches=e&&getComputedStyle(e).backgroundColor===getComputedStyle(reference).backgroundColor;
+              reference.remove();return matches;
+            });
+            const style=e=>getComputedStyle(e);
+            const standard=document.createElement('details');standard.className='grp';
+            standard.innerHTML='<summary>Standard</summary>';document.querySelector('aside').append(standard);
+            const header=style(document.querySelector('details.crop-section > summary')),
+              reference=style(standard.querySelector('summary'));
+            const headerMatch=['color','fontSize','fontWeight','letterSpacing','paddingTop','paddingBottom'].every(k=>
+              header[k]===reference[k]);
+            standard.remove();
+            const readouts=['xBrushValue','xContextValue'].every(id=>{
+              const e=$(id),s=style(e),reference=style(document.querySelector('#xAdv .val'));
+              return e.readOnly&&e.tabIndex===-1&&e.classList.contains('val')&&
+                ['fontSize','color','width','textAlign','backgroundColor'].every(k=>s[k]===reference[k]);
+            });
+            const wheel=new WheelEvent('wheel',{clientX:rect.left+X.v.ox+150*X.v.k,
+              clientY:rect.top+X.v.oy+50*X.v.k,deltaY:-150,cancelable:true});
+            canvas.dispatchEvent(wheel);
+            const mapped=test.xToImg(X.v.ox+250*X.v.k,X.v.oy+100*X.v.k);
+            const correctZoom=Math.abs(mapped[0]-250)<1e-8&&Math.abs(mapped[1]-100)<1e-8;
+            const zoomCursor=cursorMatches(wheel);
+            const oldOx=X.v.ox,oldOy=X.v.oy;
+            canvas.dispatchEvent(new KeyboardEvent('keydown',{code:'Space',bubbles:true}));
+            const panCursorHidden=cursor.hidden;
+            canvas.dispatchEvent(new PointerEvent('pointerdown',point(150,50)));
+            canvas.dispatchEvent(new PointerEvent('pointermove',{...point(150,50),
+              clientX:rect.left+oldOx+150*X.v.k+25,clientY:rect.top+oldOy+50*X.v.k+15}));
+            canvas.dispatchEvent(new PointerEvent('pointerup',point(150,50)));
+            canvas.dispatchEvent(new KeyboardEvent('keyup',{code:'Space',bubbles:true}));
+            const panned=Math.abs(X.v.ox-oldOx-25)<1e-8&&Math.abs(X.v.oy-oldOy-15)<1e-8;
+            X.view='result';X.rv={k:1,ox:40,oy:30};test.xRefresh();
+            const resultMiddle=middlePan();
+            X.view='frame';test.xRefresh();
+            Object.defineProperty(window,'devicePixelRatio',{value:2});
+            test.xRefresh();
+            canvas.dispatchEvent(new PointerEvent('pointermove',point(150,50)));
+            $('xErase').click();
+            const eraseCursor=cursorMatches();
+            canvas.dispatchEvent(new PointerEvent('pointermove',point(-10,-10)));
+            const outsideCursorHidden=cursor.hidden;
+            canvas.dispatchEvent(new PointerEvent('pointermove',point(150,50)));
+            canvas.dispatchEvent(new PointerEvent('pointerleave',point(150,50)));
+            const leaveCursorHidden=cursor.hidden;
+            canvas.dispatchEvent(new PointerEvent('pointerdown',point(150,50)));
+            canvas.dispatchEvent(new PointerEvent('pointerup',point(150,50)));
+            const erased=alpha(150,50)===0&&alpha(110,50)>0;
+            await test.xRun();
+            await new Promise(resolve=>setTimeout(resolve,0));
+            clearInterval(X.poll);
+            const request=requests.find(r=>r.path==='/api/run')?.body;
+            const locked=$('xGet').disabled&&$('xBrush').disabled&&cursor.hidden;
+            test.setApi(async()=>({state:'cancelled',count:0,message:'Cancelled'}));
+            await test.xPoll();
+            const unlocked=!$('xGet').disabled&&!$('xBrush').disabled;
+            $('xClearPatch').click();
+            const emptyBlocked=$('xRun').disabled;
+            done({painted,paintCursor,resizedCursor,zoomCursor,eraseCursor,panCursorHidden,outsideCursorHidden,
+              labels,helpTooltips,helpRemoved,headerMatch,readouts,divider,selectedGray,
+              patchMiddle,patchCancel,cropMiddle,captureLost,busyMiddleBlocked,resultMiddle,
+              leaveCursorHidden,expansionRetained,ratioHidden,fillSelected,correctZoom,panned,erased,locked,unlocked,
+              emptyBlocked,mode:request?.mode,seq:request?.seq,png:request?.mask.startsWith('data:image/png;base64,')});
+          })().catch(error=>done({error:error.stack}));
+        """.replace("DEFAULTS", json.dumps(expand.DEFAULTS)), args=[], sandbox=None)
+        self.assertTrue(all(result.get(key) for key in ("labels","helpTooltips","helpRemoved","headerMatch","readouts")), result)
+        self.assertEqual(result, {"painted":True, "expansionRetained":True, "ratioHidden":True,
+                                 "paintCursor":True, "resizedCursor":True, "zoomCursor":True, "eraseCursor":True,
+                                 "labels":True, "helpTooltips":True, "helpRemoved":True, "headerMatch":True, "readouts":True,
+                                 "divider":True, "selectedGray":True,
+                                 "patchMiddle":True, "patchCancel":True, "cropMiddle":True, "captureLost":True,
+                                 "busyMiddleBlocked":True, "resultMiddle":True,
+                                 "panCursorHidden":True, "outsideCursorHidden":True, "leaveCursorHidden":True,
+                                 "fillSelected":True, "correctZoom":True, "panned":True, "erased":True, "locked":True,
+                                 "unlocked":True, "emptyBlocked":True, "mode":"patch", "seq":5, "png":True})
+        cases = []
+        from PIL import Image
+        for size, boxes in (((3072, 4608), [(700, 900, 920, 980)]),
+                            ((777, 513), [(0, 0, 1, 1), (500, 300, 503, 301)]),
+                            ((777, 513), [(776, 512, 777, 513)])):
+            mask = Image.new("L", size)
+            for box in boxes:
+                mask.paste(255, box)
+            for context in (0, 1, 25, 50, 99, 100):
+                bounds = expand.patch_bounds(mask, context)
+                cases.append({"size": size, "boxes": boxes, "context": context, "bounds": bounds,
+                              "text": f"Processing {bounds[2]-bounds[0]} x {bounds[3]-bounds[1]} of {size[0]} x {size[1]} px"})
+        self.assertTrue(command("WebDriver:ExecuteScript", script="""
+          const test=window.patchTest,X=test.X,$=id=>document.getElementById(id);
+          for(const row of arguments[0]){
+            [X.W,X.H]=row.size;test.patchClear();
+            const g=X.mask.getContext('2d');
+            for(const [l,t,r,b] of row.boxes)g.fillRect(l,t,r-l,b-t);
+            $('xContext').value=row.context;test.patchChanged();
+            const support=[Math.min(...row.boxes.map(b=>b[0])),Math.min(...row.boxes.map(b=>b[1])),
+              Math.max(...row.boxes.map(b=>b[2])),Math.max(...row.boxes.map(b=>b[3]))];
+            if(JSON.stringify(test.patchContextBounds(support,X.W,X.H,row.context))!==JSON.stringify(row.bounds)||
+              $('xInfo').textContent!==row.text)return false;
+          }
+          test.patchClear();test.patchChanged();
+          return $('xInfo').textContent===`Processing 0 x 0 of ${X.W} x ${X.H} px`;
+        """, args=[cases], sandbox=None))
+
+    def check_patch_shell(self, command, root, profile):
+        from shp_photocraft_tools.modules.crop import expand
+        crop = (root / "modules/crop/ui/index.html").read_text()
+        crop = re.sub(r'<script src="[^"]+"[^>]*></script>', '', crop)
+        crop = crop.replace("<script>", "<script>window.addEventListener('error',e=>parent.fixtureErrors.push(e.message));")
+        crop = crop.replace('<link rel="stylesheet" href="static/shp-ui.css">',
+                            '<style>' + stylesheet().decode() + '</style>')
+        fixture = """
+          window.testRequests=[];
+          const settings={expand:{...DEFAULTS,prompt:'expand prompt'},patch:{...DEFAULTS,
+            method:'flux1_fill',fill_steps:39,patch_context:100,prompt:'patch prompt'}};
+          let watchReady=false;
+          api=async(path,body={})=>{
+            testRequests.push({path,body});
+            const mode=body.mode || 'expand';
+            if(path==='/api/status')return {ok:true,reachable:true,settings:settings[mode],
+              unets:[settings[mode].unet,settings[mode].fill_unet],upscalers:[]};
+            if(path==='/api/settings'){Object.assign(settings[mode],body.values);return settings[mode];}
+            if(path==='/api/presets')return {presets:{[mode+' preset']:settings[mode]},last:mode+' preset'};
+            if(path==='/api/watch-folder')return {ready:watchReady,token:'synthetic'};
+            if(path==='/api/watch-folder/load'){watchReady=false;return {width:400,height:200,
+              limit:999,seq:6,name:'synthetic.png',source_kind:'photocraft',pc_doc:{index:1}};}
+            throw Error('Unexpected fixture request '+path);
+          };
+          X.W=400;X.H=200;X.img=true;X.seq=5;
+          X.el=document.createElement('canvas');X.el.width=400;X.el.height=200;
+          window.testPicture=X.el.toDataURL();
+          patchClear();xResetFrame();X.resEl=X.el;X.hasResult=true;xTab('result');
+          window.cropTest={X,settings,watch:async()=>{watchReady=true;await pollCropWatchFolder();},
+            markBusy:value=>{setBusy(value);xButtons();}};
+          initializeCrop();
+        """.replace("DEFAULTS", json.dumps(expand.DEFAULTS))
+        crop = crop.replace("loadList().catch(e => setStatus(e.message, true)); initializeCrop();", fixture)
+        crop = crop.replace("pollCropWatchFolder.timer = setTimeout(pollCropWatchFolder, 1000);", "")
+        crop = crop.replace("el.src = 'img/xorig?' + r.seq;", "el.src = window.testPicture;")
+        crop = crop.replace("location.origin", "parent.location.origin")
+        shell = (root / "shell/index.html").read_text().split("<body>", 1)[1].split("</body>", 1)[0]
+        shell_js = (root / "shell/shell.js").read_text()
+        setup = """
+          window.fixtureErrors=[];
+          window.addEventListener('error',e=>fixtureErrors.push(e.message));
+          window.moduleStates={crop:{phase:'running',instance:'crop-fixture',startup_enabled:true},
+            dnb:{phase:'stopped',startup_enabled:false}};
+          const create=document.createElement.bind(document);
+          document.createElement=tag=>{
+            const node=create(tag);
+            if(tag==='iframe')node.srcdoc=CHILD;
+            return node;
+          };
+          window.fetch=async()=>({ok:true,json:async()=>({modules:moduleStates})});
+          const realTimeout=window.setTimeout.bind(window);
+          window.setTimeout=(fn,delay,...args)=>{
+            if(fn.name==='poll'){window.nextShellPoll=fn;return 0;}
+            return realTimeout(fn,delay,...args);
+          };
+        """.replace("CHILD", json.dumps(crop))
+        page = profile / "patch-shell.html"
+        page.write_text('<!doctype html><meta charset="utf-8"><title>SHP Portrait Tools</title><style>' + stylesheet().decode()
+                        + (root / "shell/shell.css").read_text() + '</style>' + shell + '<script>'
+                        + setup.replace("</script>", "<\\/script>") + shell_js + '</script>')
+        server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(profile)))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        command("WebDriver:Navigate", url=f"http://127.0.0.1:{server.server_port}/{page.name}")
+        result = command("WebDriver:ExecuteAsyncScript", script="""
+          const done=arguments[arguments.length-1];
+          (async()=>{
+            const $=id=>document.getElementById(id);
+            const wait=async check=>{
+              for(let i=0;i<100;i++){if(check())return;await new Promise(r=>setTimeout(r,25));}
+              throw Error('Timed out: '+JSON.stringify({errors:window.fixtureErrors,
+                selected:document.querySelector('nav [aria-selected=true]')?.id,locked:window.__shpNavigationLocked,
+                frames:[...document.querySelectorAll('iframe')].map(f=>({body:f.contentDocument?.body?.textContent?.slice(-200),src:f.src})),
+                child:document.querySelector('#panel-crop iframe')?.contentWindow.cropTest?.X,
+                status:document.getElementById('status').textContent},(key,value)=>
+                  ['el','resEl','mask','modeViews'].includes(key)?undefined:value));
+            };
+            const frame=()=>document.querySelector('#panel-crop iframe');
+            await wait(()=>frame()?.contentWindow.cropTest?.X.initialized&&!window.__shpNavigationLocked);
+            const child=frame().contentWindow,test=child.cropTest,source=test.X.el,preview=test.X.resEl;
+            const tabs=[...document.querySelectorAll('nav [role=tab]')].map(e=>e.dataset.view);
+            const names=[...document.querySelectorAll('nav [role=tab]')].map(e=>e.textContent.trim());
+            const branding=document.title==='SHP Portrait Tools'&&
+              frame().title==='SHP Portrait Tools — AI Fill'&&
+              frame().contentDocument.title==='SHP Portrait Tools — AI Fill';
+            const viewRetained=()=>test.X.view==='result'&&test.X.el===source&&test.X.resEl===preview;
+            $('tab-crop').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+            await wait(()=>test.X.mode==='patch'&&!test.X.modeLoading&&!window.__shpNavigationLocked);
+            const cd=frame().contentDocument;
+            const patchLoaded=$('tab-patch').getAttribute('aria-selected')==='true'&&
+              !document.querySelector('#panel-crop').inert&&cd.getElementById('presetSel').value==='p:patch preset'&&
+              cd.getElementById('xPrompt').value==='patch prompt'&&viewRetained()&&
+              !cd.getElementById('xModePatch');
+            const mask=test.X.mask;
+            mask.getContext('2d').fillRect(50,50,20,20);
+            const context=cd.getElementById('xContext');
+            const contextDefaults=context.value==='100'&&context.min==='0'&&context.max==='100'&&
+              context.getAttribute('aria-describedby')==='xInfo';
+            context.value='25';context.dispatchEvent(new Event('input'));
+            const contextReadout=cd.getElementById('xContextValue').value==='25%';
+            context.dispatchEvent(new Event('change'));
+            await wait(()=>!test.X.settingsSaving&&!window.__shpNavigationLocked);
+            const contextSaved=test.settings.patch.patch_context===25&&
+              child.testRequests.some(r=>r.path==='/api/settings'&&r.body.mode==='patch'&&r.body.values.patch_context===25)&&
+              !('patch_context' in test.settings.expand);
+            test.markBusy(true);
+            await wait(()=>window.__shpNavigationLocked);
+            const allLocked=[...document.querySelectorAll('nav button')].every(e=>e.disabled)&&context.disabled;
+            $('tab-crop').click();$('tab-settings').click();
+            const unchanged=$('tab-patch').getAttribute('aria-selected')==='true'&&test.X.mode==='patch';
+            test.markBusy(false);
+            await wait(()=>!window.__shpNavigationLocked);
+            cd.getElementById('xPrompt').value='patch edited';
+            cd.getElementById('xPrompt').dispatchEvent(new Event('change'));
+            await wait(()=>!test.X.settingsSaving);
+            $('tab-crop').click();
+            await wait(()=>test.X.mode==='expand'&&!test.X.modeLoading&&!window.__shpNavigationLocked);
+            const cropLoaded=cd.getElementById('presetSel').value==='p:expand preset'&&
+              cd.getElementById('xPrompt').value==='expand prompt'&&viewRetained()&&
+              getComputedStyle(cd.getElementById('xPatchControls')).display==='none';
+            $('tab-patch').click();
+            await wait(()=>test.X.mode==='patch'&&!test.X.modeLoading&&!window.__shpNavigationLocked);
+            const patchRetained=cd.getElementById('xPrompt').value==='patch edited'&&
+              context.value==='25'&&!context.disabled&&
+              test.X.mask===mask&&mask.getContext('2d').getImageData(55,55,1,1).data[3]>0&&viewRetained();
+            window.dispatchEvent(new MessageEvent('message',{source:child,origin:location.origin,
+              data:{type:'shp-crop-mode',mode:'expand',request:9999}}));
+            const staleIgnored=$('tab-patch').getAttribute('aria-selected')==='true';
+            await test.watch();
+            child.clearTimeout(child.pollCropWatchFolder.timer);
+            await wait(()=>test.X.mode==='expand'&&!window.__shpNavigationLocked&&
+              $('tab-crop').getAttribute('aria-selected')==='true');
+            const watchRouted=test.X.seq===6&&test.X.mask.getContext('2d').getImageData(55,55,1,1).data[3]===0;
+            moduleStates.crop={phase:'stopping',instance:'crop-fixture'};
+            await nextShellPoll();
+            const stoppingVisible=!$('tab-crop').hidden&&!$('tab-patch').hidden;
+            moduleStates.crop={phase:'stopped',startup_enabled:false};await nextShellPoll();
+            const stoppedHidden=$('tab-crop').hidden&&$('tab-patch').hidden&&!frame()&&
+              $('tab-settings').getAttribute('aria-selected')==='true';
+            moduleStates.crop={phase:'starting',startup_enabled:true};await nextShellPoll();
+            const startingVisible=!$('tab-crop').hidden&&!$('tab-patch').hidden;
+            moduleStates.crop={phase:'running',instance:'crop-reloaded'};await nextShellPoll();
+            await wait(()=>frame()?.contentWindow.cropTest?.X.initialized&&!window.__shpNavigationLocked);
+            $('tab-patch').click();
+            await wait(()=>frame().contentWindow.cropTest.X.mode==='patch'&&!window.__shpNavigationLocked);
+            const restarted=$('tab-patch').getAttribute('aria-selected')==='true'&&
+              document.querySelectorAll('#panel-crop iframe').length===1;
+            done({tabs,names,branding,patchLoaded,cropLoaded,patchRetained,contextDefaults,contextReadout,contextSaved,
+              allLocked,unchanged,staleIgnored,watchRouted,
+              stoppingVisible,stoppedHidden,startingVisible,restarted,errors:fixtureErrors});
+          })().catch(e=>done({error:String(e),errors:window.fixtureErrors}));
+        """, args=[], sandbox=None)
+        self.assertNotIn("error", result, result.get("error"))
+        self.assertEqual(result, {"tabs":["mask","frequency","dnb","combine","crop","patch","settings"],
+                                 "names":["Skin Mask","FS & Tone","Dodge & Burn","Combine","Crop & Expand","Patch Fill","Settings & Info"],
+                                 "branding":True,
+                                 "patchLoaded":True, "cropLoaded":True, "patchRetained":True, "allLocked":True,
+                                 "contextDefaults":True, "contextReadout":True, "contextSaved":True,
+                                 "unchanged":True, "staleIgnored":True, "watchRouted":True,
+                                 "stoppingVisible":True, "stoppedHidden":True, "startingVisible":True,
+                                 "restarted":True, "errors":[]})
 
     def check_general_settings(self, command, root, profile):
         html = (root / "modules/dnb/ui/index.html").read_text()
@@ -1017,6 +1482,10 @@ class StatusLayoutTests(unittest.TestCase):
                 self.fail("General settings did not mount: " + str(evaluate(
                     "return {errors:window.fixtureErrors,status:document.getElementById('status').textContent,frames:document.querySelectorAll('iframe').length};")))
             time.sleep(.1)
+        self.assertEqual(evaluate("""
+          return {mask:document.getElementById('tab-mask').getAttribute('aria-selected'),
+            visible:!document.getElementById('panel-dnb').inert};
+        """), {"mask":"true","visible":True})
         result = evaluate("""
           document.getElementById('tab-settings').click();
           const frame=document.querySelector('#panel-dnb iframe'),child=frame.contentWindow;
@@ -1089,6 +1558,27 @@ class StatusLayoutTests(unittest.TestCase):
             skinVisible:!document.getElementById('tab-mask').hidden,
             settingsVisible:!document.getElementById('tab-settings').hidden};
         """), {"hidden":True, "space":0, "skinVisible":True, "settingsVisible":True})
+        self.assertEqual(evaluate("""
+          const tabs=[...document.querySelectorAll('nav [role=tab]')],crop=document.getElementById('tab-crop'),
+            patch=document.getElementById('tab-patch'),settings=document.getElementById('tab-settings');
+          const original=tabs.map(t=>t.hidden),margin=e=>parseFloat(getComputedStyle(e).marginInlineStart),
+            divider=(tab=settings)=>getComputedStyle(tab,'::after').content!=='none';
+          tabs.forEach(t=>t.hidden=false);
+          const both=margin(crop)===9&&margin(settings)===9&&divider()&&divider(crop);
+          const line=getComputedStyle(settings,'::after');
+          const cropLine=getComputedStyle(crop,'::after');
+          const dividerStyle=line.width==='1px'&&line.pointerEvents==='none'&&
+            ['width','top','bottom','left','backgroundColor','pointerEvents'].every(key=>line[key]===cropLine[key]);
+          tabs.filter(t=>t.dataset.service==='dnb').forEach(t=>t.hidden=true);
+          const aiOnly=margin(crop)===0&&divider()&&!divider(crop);
+          tabs.filter(t=>t.dataset.service==='dnb').forEach(t=>t.hidden=false);
+          crop.hidden=patch.hidden=true;
+          const skinOnly=divider()&&margin(settings)===9&&!divider(crop);
+          tabs.filter(t=>t.dataset.service).forEach(t=>t.hidden=true);
+          const none=margin(settings)===0&&!divider()&&!divider(crop);
+          tabs.forEach((t,i)=>t.hidden=original[i]);
+          return {both,dividerStyle,aiOnly,skinOnly,none};
+        """), {"both":True,"dividerStyle":True,"aiOnly":True,"skinOnly":True,"none":True})
 
     def check_analysis_controls(self, command, html, profile):
         # Run only control initialization and mocked overlay requests, never the application.

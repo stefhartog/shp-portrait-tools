@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SHP PhotoCraft Tools</title>
+<title>SHP Portrait Tools</title>
 <link rel="stylesheet" href="static/shp-ui.css">
 <script src="static/theme.js"></script>
 <link rel="stylesheet" href="static/shell.css">
@@ -13,32 +13,33 @@
 <body>
 <header class="shell-header">
   <nav aria-label="Modules" role="tablist">
-    <button id="tab-mask" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="Skin Mask: Starting" title="Starting" data-service="dnb" data-view="mask" tabindex="-1">Skin Mask</button>
-    <button id="tab-frequency" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="FS + Skintone: Starting" title="Starting" data-service="dnb" data-view="frequency" tabindex="-1">FS + Skintone</button>
-    <button id="tab-dnb" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="D&amp;B: Starting" title="Starting" data-service="dnb" data-view="dnb" tabindex="-1">D&amp;B</button>
+    <button id="tab-mask" role="tab" aria-selected="true" aria-controls="panel-dnb" aria-busy="true" aria-label="Skin Mask: Starting" title="Starting" data-service="dnb" data-view="mask">Skin Mask</button>
+    <button id="tab-frequency" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="FS &amp; Tone: Starting" title="Starting" data-service="dnb" data-view="frequency" tabindex="-1">FS &amp; Tone</button>
+    <button id="tab-dnb" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="Dodge &amp; Burn: Starting" title="Starting" data-service="dnb" data-view="dnb" tabindex="-1">Dodge &amp; Burn</button>
     <button id="tab-combine" role="tab" aria-selected="false" aria-controls="panel-dnb" aria-busy="true" aria-label="Combine: Starting" title="Starting" data-service="dnb" data-view="combine" tabindex="-1">Combine</button>
-    <button id="tab-crop" role="tab" aria-selected="true" aria-controls="panel-crop" aria-busy="true" aria-label="Crop: Starting" title="Starting" data-service="crop" data-view="crop">Crop</button>
-    <button id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-view="settings" tabindex="-1">Settings / Info</button>
+    <button id="tab-crop" role="tab" aria-selected="false" aria-controls="panel-crop" aria-busy="true" aria-label="Crop &amp; Expand: Starting" title="Starting" data-service="crop" data-view="crop" tabindex="-1">Crop &amp; Expand</button>
+    <button id="tab-patch" role="tab" aria-selected="false" aria-controls="panel-crop" aria-busy="true" aria-label="Patch Fill: Starting" title="Starting" data-service="crop" data-view="patch" tabindex="-1">Patch Fill</button>
+    <button id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-view="settings" tabindex="-1">Settings &amp; Info</button>
   </nav>
 </header>
 <div id="status" role="status" aria-live="polite"></div>
 <main id="workspace">
-  <section id="panel-crop" class="module-panel" role="tabpanel" aria-labelledby="tab-crop">
-    <div class="placeholder">Starting Crop. Use the Tools tray menu for service controls.</div>
+  <section id="panel-crop" class="module-panel inactive" role="tabpanel" aria-labelledby="tab-crop" aria-hidden="true" inert>
+    <div class="placeholder">Starting AI Fill. Use the Tools tray menu for service controls.</div>
   </section>
-  <section id="panel-dnb" class="module-panel inactive" role="tabpanel" aria-labelledby="tab-dnb" aria-hidden="true" inert>
-    <div class="placeholder">Starting D&amp;B. Use the Tools tray menu for service controls.</div>
+  <section id="panel-dnb" class="module-panel" role="tabpanel" aria-labelledby="tab-mask">
+    <div class="placeholder">Starting Skin Tools. Use the Tools tray menu for service controls.</div>
   </section>
   <section id="panel-settings" class="module-panel inactive" role="tabpanel" aria-labelledby="tab-settings" aria-hidden="true" inert>
     <div class="settings-page">
-      <h1>Settings / Info</h1>
+      <h1>Settings &amp; Info</h1>
       <section class="settings-card"><h2>Appearance</h2><div id="themeSettings"></div></section>
       <section class="settings-card"><h2>Processing and transfer</h2>
         <p id="settingsAvailability">Start the skin-tools service to access these settings.</p>
         <div id="generalSettingsHost"></div>
       </section>
       <section class="settings-card"><h2>About</h2>
-        <p><strong>SHP PhotoCraft Tools</strong> provides Crop, Skin Mask, FS + Skintone, D&amp;B and Combine in one local workspace.</p>
+        <p><strong>SHP Portrait Tools</strong> provides Skin Mask, FS &amp; Tone, Dodge &amp; Burn and Combine through Skin Tools, plus Crop &amp; Expand and Patch Fill through AI Fill.</p>
         <p>Image processing runs locally. PhotoCraft integration is optional; Combine batch processing is local-only and never runs Crop.</p>
         <p>Theme is saved in this browser. Transfer options remain in the existing settings/preset bundle; skin-mask precache uses its existing browser preference. Calculation timings are temporary and clear when the skin-tools view reloads.</p>
       </section>

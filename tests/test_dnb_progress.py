@@ -67,23 +67,24 @@ class ProgressTests(unittest.TestCase):
           (() => {
             const state={version:1,avers:0},landmarkEdit=null;
             let selection=['result','directional_region'];
-            const paneKinds=()=>selection,layout=()=>{},setStatus=()=>{};
+            let errors=0;
+            const paneKinds=()=>selection,layout=()=>{},setStatus=()=>errors++;
             const images=selection.map(kind=>({hidden:false,src:'img/'+kind+'?old',
               displayed:kind,finishDisplay:null}));
             const pans=images.map(img=>({querySelector:q=>q==='img'?img:null}));
-            function check(ok){if(!ok)throw Error('Stale preview is visible under the newly selected tab');}
+            const requests=[],document={createElement:()=>{const image={};requests.push(image);return image;}};
+            function check(ok){if(!ok)throw Error('Preview frame retention or stale request guard');}
         """ + display_helper + """
             selection=['orig','mask'];
             showImages();
-            // Requests are still pending: old Result/Region pixels must not remain visible.
-            check(images.every(img=>img.hidden));
-            check(images[0].src.startsWith('img/orig?') && images[1].src.startsWith('img/mask?'));
-            const staleLoad=images[1].onload,staleError=images[1].onerror;
-            selection=['orig','directional_region'];showImages();
-            staleLoad();staleError();
-            check(images[1].hidden);
-            images.forEach(img=>img.onload());
             check(images.every(img=>!img.hidden));
+            check(requests[0].src.startsWith('img/orig?') && requests[1].src.startsWith('img/mask?'));
+            const staleError=requests[1].onerror;
+            selection=['orig','directional_region'];showImages();
+            staleError();
+            check(images.every(img=>!img.hidden)&&errors===0);
+            requests.at(-1).onerror();
+            check(images.every(img=>!img.hidden)&&errors===1);
           })();
         """
         right_tabs = html.split("function rightPreviewKinds(mode) {", 1)[1].split("function paneKinds()", 1)[0]
@@ -125,7 +126,7 @@ class ProgressTests(unittest.TestCase):
               for(const previous of ['orig','result']) {
                 state.mode=mode;tabSel.A=previous;syncLeftTabs();
                 if(left.filter(t=>!t.hidden).map(t=>t.dataset.k).join(',')!==(mode==='mask'?'orig':'orig,result'))throw Error('Left previews');
-                if(tabSel.A!==(mode==='mask'?'orig':previous))throw Error('Left fallback');
+                if(tabSel.A!==previous||paneKinds()[0]!==(mode==='mask'?'orig':previous))throw Error('Left fallback');
               }
             }
           })();
@@ -230,7 +231,7 @@ class ProgressTests(unittest.TestCase):
               updateLayerBlurTip=noop, setToneSwatch=noop, syncStructureControls=noop,
               setColorSwatch=noop, syncColorControls=noop, syncCropButtons=noop,
               renderBands=noop, drawTone=noop, announceMode=noop;
-            const closeLandmarks=noop,setPickingColor=noop,clearTimeout=noop,apply=noop;
+            const closeLandmarks=noop,endPreviewCompare=noop,setPickingColor=noop,clearTimeout=noop,apply=noop;
             function slider(parent,label,min,max,step,value,change) {
               return {set:noop,change,rng:{min,max},num:{}};
             }
@@ -471,7 +472,8 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('.crop-section > summary:focus-visible { outline:2px solid var(--acc);', crop)
         self.assertIn('padding-inline:clamp(16px, 10%, 40px)', crop)
         self.assertNotIn('#xInfo:empty', crop)
-        self.assertIn('xButtons(); xSyncSize(); xInfo(); xDraw();\nloadList()', crop)
+        self.assertIn('X.modeLoading=true;xButtons(); xSyncSize(); xInfo(); xDraw();', crop)
+        self.assertIn('loadList().catch(e => setStatus(e.message, true)); initializeCrop();', crop)
         self.assertIn('". bottom ."; margin-top:16px;', crop)
         self.assertNotIn('id="xVar"', crop)
         self.assertNotIn('fillInfo', crop)
@@ -500,11 +502,13 @@ class ProgressTests(unittest.TestCase):
             X.running=true;buttons[2].onclick();check(variations===2);
             X.running=false;setVariations(3);check(variations===3);
             const xRatio=()=>[4,3], xMargins=()=>[0,0,10,10], fH=()=>100;
+            const setBusy=value=>busy=value,xButtons=()=>{};
             let payload=null;
             const api=(path,body)=>{payload=body;return new Promise(()=>{});};
         """ + run_code + """
             xRun();check(payload.variations===3);
-            setVariations(4);xRun();check(payload.variations===4);
+            setVariations(4);xRun();check(payload.variations===3);
+            busy=false;xRun();check(payload.variations===4);
           })();
         """
         info_code = "function xInfo() {" + crop.split("function xInfo() {", 1)[1].split("function xButtons()", 1)[0]
@@ -540,7 +544,7 @@ class ProgressTests(unittest.TestCase):
           (async () => {
             const state={busy:false,loaded:true,sourceKind:'photocraft',imageGeneration:42,mode:'dnb'};
             const original=state.sourceKind, calls=[],statuses=[],notes=[];
-            let loadProgress=null,connected=true,selected=null,applied=0,failure=null;
+            let loadProgress=null,connected=true,selected=null,applied=0,failure=null,authFailure=false;
             const window={__shpNativeFileDialog:true,prompt:()=>{calls.push('chooser');return selected;}};
             const performance={now:()=>1},temporaryLog={send:null};
             const syncTransferTitles=()=>{},setBusy=b=>state.busy=b,setStatus=t=>statuses.push(t);
@@ -549,7 +553,7 @@ class ProgressTests(unittest.TestCase):
             const initializeHueCenter=async()=>{},apply=()=>applied++;
             const params=()=>({S:181}),logNote=t=>notes.push(t),finishProcessing=()=>{};
             const renderTemporaryLog=()=>{},recordCalculation=()=>{},watchMaskPrecache=()=>{},invalidateMaskCacheStatus=()=>{};
-            const api=async()=>({connected});
+            const api=async()=>({connected,code:authFailure?'authentication':'control',message:'PhotoCraft authentication refused'});
             const operationApi=async(path,payload)=>{
               calls.push(path);
               if(failure)throw Error(failure);
@@ -564,6 +568,9 @@ class ProgressTests(unittest.TestCase):
             await pcGet();check(!calls.includes('chooser')&&calls.includes('/api/pc/fetch')&&applied===1);
             connected=false;calls.length=0;selected=null;await pcGet();
             check(calls.join(',')==='chooser'&&state.sourceKind===original&&!state.busy&&applied===1);
+            authFailure=true;calls.length=0;await pcGet();
+            check(!calls.length&&statuses.at(-1)==='PhotoCraft authentication refused'&&!state.busy);
+            authFailure=false;
             selected='/chosen/source.png';calls.length=0;await pcGet();
             check(calls.includes('/api/load')&&state.sourceKind==='local'&&applied===2&&!state.busy);
             calls.length=0;await pcSend();
@@ -617,15 +624,19 @@ class ProgressTests(unittest.TestCase):
         variation_harness += """
           (async()=>{
             const X={running:false},document={hidden:false,createElement:()=>({})},window={},location={origin:'http://local'},messages=[];
+            const cropSliderDrag=null,queuedSettings={};
             const $=()=>({after(){}});
             const parent={__shpNavigationLocked:true,postMessage:message=>messages.push(message)},setTimeout=()=>0;
             let busy=false,loaded=0,fail=false,calls=0;
             const xTransferBusy=value=>busy=value,xLoaded=()=>loaded++,setStatus=()=>{};
+            const setCropMode=async mode=>{if(mode!=='expand')throw Error('Watch opened Patch instead of Crop');};
             const api=async(path)=>{calls++;if(path==='/api/watch-folder')return {ready:true,token:'crop-token'};
               if(fail)throw Error('wrong target');return {source_kind:'photocraft'};};
         """ + crop_watcher + """
             await pollCropWatchFolder();if(calls!==1||cropWatchPending.hidden)throw Error('Crop pending status missing');
-            parent.__shpNavigationLocked=false;await pollCropWatchFolder();
+            parent.__shpNavigationLocked=false;queuedSettings.fill_steps=31;
+            await pollCropWatchFolder();if(loaded!==0||cropWatchPending.hidden)throw Error('Crop watch ignored pending settings');
+            delete queuedSettings.fill_steps;await pollCropWatchFolder();
             if(loaded!==1||!messages.some(m=>m.type==='shp-crop-watch-loaded')||busy)throw Error('Crop watch routing');
             const selected=messages.filter(m=>m.type==='shp-crop-watch-loaded').length;
             fail=true;await pollCropWatchFolder();
@@ -722,7 +733,7 @@ class ProgressTests(unittest.TestCase):
         crop_send_code = "async function xSend() {" + crop.split("async function xSend() {", 1)[1].split("$('xSend').onclick", 1)[0]
         self.assertIn('id="xFreeMemory"', crop.split("<summary>AI SETTINGS</summary>", 1)[1])
         self.assertIn("The next generation reloads models; not all RAM/VRAM can be freed", crop)
-        self.assertIn("$('xFreeMemory').disabled = X.running || busy || X.settingsSaving;", crop)
+        self.assertIn("$('xFreeMemory').disabled = blocked;", crop)
         free_code = "async function xFreeMemory() {" + crop.split("async function xFreeMemory() {", 1)[1].split("$('xFreeMemory').onclick", 1)[0]
         variation_harness += """
           (async () => {
@@ -754,7 +765,7 @@ class ProgressTests(unittest.TestCase):
         variation_harness += """
           (async () => {
             const X={running:false,hasResult:true,sourceKind:'photocraft',seq:7};
-            let busy=false,connected=false,selected=null,error=null;
+            let busy=false,connected=false,selected=null,error=null,authFailure=false;
             const calls=[],statuses=[],elements={};
             const $=id=>elements[id]||={};
             const window={__shpNativeFileDialog:true,prompt:()=>{calls.push('chooser');return selected;}};
@@ -763,13 +774,16 @@ class ProgressTests(unittest.TestCase):
             const api=async(path,payload)=>{
               calls.push(path);
               if(error)throw Error(error);
-              if(path==='/api/pc/status')return {connected};
+              if(path==='/api/pc/status')return {connected,code:authFailure?'authentication':'control',message:'PhotoCraft authentication refused'};
               if(path==='/api/send-result'){check(payload.seq===7);return {saved:true,path:'/chosen/image_shpcrop_001.png'};}
               return {source_kind:path==='/api/load'?'local':'photocraft'};
             };
             function check(ok){if(!ok)throw Error('Crop local routing: '+calls.join(','));}
         """ + crop_get_code + crop_send_code + """
             await xGet();check(X.sourceKind==='photocraft'&&!busy&&!X.transferring&&!calls.includes('loaded'));
+            authFailure=true;calls.length=0;await xGet();
+            check(!calls.includes('chooser')&&!calls.includes('/api/load')&&statuses.at(-1)==='PhotoCraft authentication refused'&&!busy);
+            authFailure=false;
             selected='/chosen/image.png';calls.length=0;await xGet();
             check(X.sourceKind==='local'&&calls.includes('/api/load')&&!busy);
             connected=true;calls.length=0;await xSend();
@@ -971,12 +985,12 @@ class ProgressTests(unittest.TestCase):
             "function select(name, notify = true, internal = false) {", 1)[1].split("function mountGeneralSettings", 1)[0]
         navigation_harness = """
           (() => {
-            const views=['mask','frequency','dnb','combine','crop','settings'],modes=['mask','frequency','dnb','combine'];
+            const views=['mask','frequency','dnb','combine','crop','patch','settings'],modes=['mask','frequency','dnb','combine'],cropViews=['crop','patch'];
             const names={crop:'Crop',dnb:'D&B'};
             const window={};
             let modules={dnb:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
             const tabs=views.map(view=>({dataset:{view},setAttribute(k,v){this[k]=v;}}));
-            const document={querySelectorAll:()=>tabs},requestMode=()=>{};
+            const document={querySelectorAll:()=>tabs},requestMode=()=>{},requestCropMode=()=>{};
             const $=()=>({setAttribute(){},focus(){},classList:{toggle(){}}});
         """ + availability + navigation + "document.querySelectorAll('[role=\"tab\"]').forEach(button => {" + shell_js.split(
             "document.querySelectorAll('[role=\"tab\"]').forEach(button => {", 1)[1].split("function render()", 1)[0] + """
@@ -997,13 +1011,20 @@ class ProgressTests(unittest.TestCase):
             if(tabs.some(tab=>tab.disabled))throw Error('Tabs did not unlock');
             if(active!=='dnb')throw Error('Busy clicks were queued');
             select('settings');if(active!=='settings')throw Error('Normal navigation did not restore');
+            cropBusy=true;syncNavigation();select('patch');
+            if(active!=='settings'||!tabs.every(tab=>tab.disabled))throw Error('Crop UI busy lock');
+            cropBusy=false;modules.crop={phase:'running',busy:true};syncNavigation();select('patch');
+            if(active!=='settings')throw Error('Crop backend busy lock');
+            modules.crop.busy=false;syncNavigation();select('patch');
+            if(active!=='patch'||tabs.some(tab=>tab.disabled))throw Error('Patch tab did not unlock');
+            select('settings');
             modules.crop={phase:'stopped'};
             select('crop');if(active!=='settings')throw Error('Hidden tab accepted selection');
             modules.dnb.phase='stopped';
-            tabs[5].onkeydown({key:'ArrowRight',preventDefault(){}});
+            tabs[6].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='settings')throw Error('Keyboard selected unloaded module');
             modules.dnb.phase='starting';
-            tabs[5].onkeydown({key:'ArrowRight',preventDefault(){}});
+            tabs[6].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='mask')throw Error('Starting tabs not available');
           })();
         """
@@ -1038,8 +1059,8 @@ class ProgressTests(unittest.TestCase):
         isolation_harness = """
           (async () => {
             const names={crop:'Crop',dnb:'D&B'},frames=new Map(),reports=[],placeholders={crop:{},dnb:{}};
-            let skinBusy=false,cropWatchBusy=false;const syncNavigation=()=>{};
-            let modules={},pending=null,initialSelection=true,active='crop';
+            let skinBusy=false,cropWatchBusy=false,cropBusy=false;const syncNavigation=()=>{};
+            let modules={},pending=null,cropPending=null,initialSelection=true,active='crop';
             const select=name=>{active=name;initialSelection=false;};
             const tabs={crop:{},dnb:{}};
             const document={querySelectorAll:selector=>selector.includes('="crop"')?[tabs.crop]:
@@ -1058,10 +1079,13 @@ class ProgressTests(unittest.TestCase):
             frames.set('crop',crop);frames.set('dnb',skin);
             const check=ok=>{if(!ok)throw Error('Shell module isolation');};
         """ + availability + render_code + poll_code + """
-            modules={crop:{phase:'stopping',instance:'crop'},dnb:{phase:'running',instance:'skin'}};
+            modules={crop:{phase:'running',instance:'crop'},dnb:{phase:'running',instance:'skin'}};
+            await poll();check(active==='mask'&&!initialSelection);
+            active='combine';await poll();check(active==='combine');
+            modules.crop={phase:'stopping',instance:'crop'};
             await poll();check(crop.removed&&!frames.has('crop')&&frames.get('dnb')===skin&&!skin.removed);
             modules.crop={phase:'stopped',instance:'crop'};await poll();
-            check(active==='dnb');
+            check(active==='combine');
             check(placeholders.crop.textContent.includes('unloaded')&&!placeholders.crop.hidden);
             check(placeholders.dnb.hidden&&tabs.dnb.phase==='running'&&reports.at(-1)[0]==='');
             modules.crop={phase:'error',instance:'crop',error:'Child failed'};await poll();
@@ -1072,18 +1096,21 @@ class ProgressTests(unittest.TestCase):
             check(skin.removed&&placeholders.dnb.textContent.includes('share this service'));
             initialSelection=true;modules.crop={phase:'stopped',startup_enabled:false};
             modules.dnb={phase:'running',instance:'skin-new',startup_enabled:true};await poll();
-            check(active==='dnb'&&placeholders.crop.textContent.includes('startup is disabled'));
-            active='crop';await poll();check(active==='dnb');
+            check(active==='mask'&&placeholders.crop.textContent.includes('startup is disabled'));
+            active='crop';await poll();check(active==='mask');
             initialSelection=true;modules.dnb={phase:'stopped',startup_enabled:false};await poll();
             check(active==='settings'&&!placeholders.crop.hidden&&!placeholders.dnb.hidden);
             modules.crop={phase:'starting',startup_enabled:true};await poll();
             check(active==='settings');
             modules.crop={phase:'running',instance:'crop-reloaded'};await poll();
             check(active==='settings'&&frames.get('crop').dataset.instance==='crop-reloaded');
+            initialSelection=true;await poll();check(active==='crop');
+            modules.dnb={phase:'running',instance:'skin-late'};await poll();
+            check(active==='crop');
           })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
         """
-        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop', 'settings'])
-        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'settings'];", shell_js)
+        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop', 'patch', 'settings'])
+        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'patch', 'settings'];", shell_js)
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
@@ -1092,8 +1119,29 @@ class ProgressTests(unittest.TestCase):
         self.assertIn("#g-bands, #g-mask, #g-frequency { border-top:0; }",html)
         self.assertIn("['mask','skintone','frequency','dnb','combine'].includes(data.mode)", html)
         self.assertIn("const modes = ['mask', 'frequency', 'dnb', 'combine'];", shell_js)
+        self.assertIn("let active = 'mask';", shell_js)
+        self.assertIn("let skinMode = 'mask';", shell_js)
+        self.assertIn("mode: parent === window ? 'dnb' : 'mask'", html)
+        startup_code = "async function loadPresets() {" + html.split(
+            "async function loadPresets() {", 1)[1].split("$('presetSel').onchange", 1)[0]
+        startup_harness = """
+          (async()=>{
+            const window={},events=[],state={},TRANSFER_DEFAULTS={},presets={};
+            let parent={postMessage:message=>events.push(message.type)},maskPlacement,shellUiReady=false;
+            const location={origin:'http://local'},syncTransfer=()=>{},presetErr=e=>{throw e;},
+              fillPresetList=()=>{},snapNow=()=>events.push('snapshot'),
+              presetSettings=()=>presets.default,applySettings=settings=>{state.mode=settings.mode;events.push(state.mode);},
+              api=async path=>path==='/api/global-settings'?{}:{default:{mode:'dnb',strength:0.6}};
+        """ + startup_code + """
+            await loadPresets();
+            if(state.mode!=='mask'||!shellUiReady||presets.default.mode!=='dnb'||
+                events.join(',')!=='mask,snapshot,shp-skin-ready')throw Error('Embedded startup mode');
+            parent=window;events.length=0;await loadPresets();
+            if(state.mode!=='dnb'||events.join(',')!=='dnb,snapshot')throw Error('Standalone startup changed');
+          })().then(()=>globalThis.skinStartupCheck='ok',e=>globalThis.skinStartupCheck=e.message);
+        """
         self.assertNotIn('class="badge"', shell_page)
-        self.assertEqual(shell_page.count('title="Starting" data-service='), 5)
+        self.assertEqual(shell_page.count('title="Starting" data-service='), 6)
         self.assertIn('[role="tab"]:where(:not(:disabled)):hover', shell_css)
         self.assertNotIn('[role="tab"]:hover', shell_css)
         self.assertNotIn("border-color:var(--acc)", shell_css)
@@ -1112,13 +1160,13 @@ class ProgressTests(unittest.TestCase):
                 send.assert_called_once_with(200, theme_script(), "text/javascript; charset=utf-8")
         context = js.JSGlobalContextCreate(None)
         try:
-            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.cropWatchCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check]:
+            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.cropWatchCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:
                     self.assertTrue(js.JSCheckScriptSyntax(context, source, None, 1, ctypes.byref(error)))
-                    if script in (harness, theme_harness, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, routing_check):
+                    if script in (harness, theme_harness, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check):
                         js.JSEvaluateScript(context, source, None, None, 1, ctypes.byref(error))
                         if error.value:
                             message = js.JSValueToStringCopy(context, error, None)

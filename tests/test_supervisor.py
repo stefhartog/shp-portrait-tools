@@ -103,7 +103,7 @@ class SupervisorTests(unittest.TestCase):
                             dict(instance=self.manager.modules[name].instance, **kwargs))
 
     def test_packaged_assets_relative_api_image_routes_and_fixed_proxy(self):
-        self.assertIn(b"SHP PhotoCraft Tools", self.request("/"))
+        self.assertIn(b"SHP Portrait Tools", self.request("/"))
         for path in ("/static/shell.js", "/static/shell.css", "/static/lifecycle.js", "/static/shp-ui.css"):
             self.assertTrue(self.request(path))
         for name in ("crop", "dnb"):

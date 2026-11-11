@@ -13,6 +13,10 @@ body { display:flex; flex-direction:column; background:var(--bg, #17191c); color
 .shell-header [role="tab"][aria-selected="false"]:disabled { color:color-mix(in srgb, var(--dim) 50%, black); }
 .shell-header [role="tab"]:disabled:active { background:var(--input); border-bottom-color:var(--line); }
 .shell-header [role="tab"][aria-selected="true"]:disabled { opacity:1; background:var(--panel); border-bottom-color:var(--panel); }
+.shell-header nav:has([data-service="dnb"]:not([hidden])) #tab-crop:not([hidden]) { margin-inline-start:9px; }
+.shell-header nav:has([data-service]:not([hidden])) #tab-settings { margin-inline-start:9px; }
+.shell-header nav:has([data-service="dnb"]:not([hidden])) #tab-crop:not([hidden])::after,
+.shell-header nav:has([data-service]:not([hidden])) #tab-settings::after { content:""; position:absolute; inset-block:7px; inset-inline-start:-7px; width:1px; background:var(--line); pointer-events:none; }
 #status:empty { display:none; }
 #status { padding:7px 16px; background:#253e32; overflow-wrap:anywhere; flex:none; max-height:15vh; overflow:auto; }
 #status.err { background:#56302d; color:#ffcbc6; }

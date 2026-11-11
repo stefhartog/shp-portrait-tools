@@ -29,11 +29,11 @@ aside :is(button, select, input:not([type=checkbox]), textarea):is(:disabled,.pa
 aside :is(label, .val).panel-disabled { opacity:.5; }
 details.grp:has(.gbody .panel-disabled) > summary,
 details:not(.grp):has(.panel-disabled) > summary,
-details.crop-section:has(#xRatios button:disabled, #xPrompt:disabled, #xAdv :is(input:not([type=checkbox]),select):disabled, #xFreeMemory:disabled) > summary {
+details.crop-section:has(#xRatios button:disabled, #xPrompt:disabled, #xAdv :is(input:not([type=checkbox]),select:not(#smethod)):disabled, #xFreeMemory:disabled) > summary {
   color:color-mix(in srgb, var(--heading) 60%, var(--panel));
 }
 details.grp:has(.gbody .panel-disabled) .gbody label,
-details.crop-section:has(#xRatios button:disabled, #xPrompt:disabled, #xAdv :is(input:not([type=checkbox]),select):disabled, #xFreeMemory:disabled) .gbody label {
+details.crop-section:has(#xRatios button:disabled, #xPrompt:disabled, #xAdv :is(input:not([type=checkbox]),select:not(#smethod)):disabled, #xFreeMemory:disabled) .gbody label {
   color:color-mix(in srgb, var(--dim) 60%, var(--panel));
 }
 input[type=checkbox] { appearance:none; flex:none; width:32px; height:24px; vertical-align:middle; border:4px solid transparent; border-inline-width:2px; border-radius:12px; background-clip:padding-box; background-origin:padding-box; background-color:var(--line); background-image:radial-gradient(circle closest-side, var(--text) 98%, transparent 100%); background-size:12px 12px; background-position:1px center; background-repeat:no-repeat; cursor:pointer; transition:background-color .12s, background-position .12s; }

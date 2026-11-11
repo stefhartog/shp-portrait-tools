@@ -94,6 +94,19 @@ class BridgeTests(unittest.TestCase):
         b.client = FakePhotoCraft(b, **fake_options)
         return b
 
+    def test_status_preserves_authentication_failure_code(self):
+        from shp_photocraft_tools.modules.crop import server as crop
+        from shp_photocraft_tools.modules.dnb import ui_server as skin
+        from shp_photocraft_tools.shared.photocraft.bridge import AuthenticationError
+
+        for module in (crop, skin):
+            with self.subTest(module=module.__name__), patch.object(module, "bridge") as bridge:
+                bridge.return_value.status.side_effect = AuthenticationError("test authentication refused")
+                result = module.api_pc_status({})
+                self.assertFalse(result["connected"])
+                self.assertEqual(result["code"], "authentication")
+                self.assertEqual(result["message"], "test authentication refused")
+
     def test_config_compatible_aliases_and_precedence(self):
         shared = {"SHP_PC_PORT": "1234", "SHP_PC_TOKEN_FILE": str(self.root / "token"),
                   "SHP_PC_EXCHANGE": str(self.root / "exchange"), "SHP_PC_READ_ROOT": str(self.root)}
@@ -265,8 +278,9 @@ class TransportTests(unittest.TestCase):
                     client.call("refuse")
                 client.close()
                 token.write_text("wrong")
-                with self.assertRaisesRegex(ControlError, "refused the control token"):
+                with self.assertRaisesRegex(ControlError, "refused the control token") as refused:
                     client.call("anything")
+                self.assertEqual(refused.exception.code, "authentication")
                 self.assertIsNone(client._sock)
                 token.unlink()
                 with self.assertRaisesRegex(ControlError, "no control token"):

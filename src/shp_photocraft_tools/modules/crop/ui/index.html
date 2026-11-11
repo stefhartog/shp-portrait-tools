@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SHP PhotoCraft Crop</title>
+<title>SHP Portrait Tools — AI Fill</title>
 <link rel="stylesheet" href="static/shp-ui.css">
 <script src="static/theme.js"></script>
 <script src="static/lifecycle.js" defer></script>
@@ -20,21 +20,27 @@
   #xGenerate { display:flex; align-items:center; gap:4px; margin:0 0 6px; }
   #xVariations { display:flex; flex:1; min-width:0; gap:4px; }
   #xVariations button { flex:1; min-width:0; padding:6px 2px; font-weight:600; }
-  #xVariations button.on { background:var(--acc); border-color:var(--acc); color:var(--primary-text); }
+  #xVariations button.on, #xRatios button.on, #xPatchControls button.on { background:var(--line); border-color:var(--dim); color:var(--text); }
+  #xVariations button.on:not(:disabled):hover, #xRatios button.on:not(:disabled):hover, #xPatchControls button.on:not(:disabled):hover { background:var(--button-hover); }
   #xAdv .toggle-row { padding:2px 0; }
   #xAdv .toggle-row > label { width:auto; flex:1; }
   #xAdv .toggle-row > input { margin:0; }
   #xAdv .toggle-row + .toggle-row { margin-top:6px; }
   #xAdv .model-row { padding:4px 0; }
   #xAdv .row[hidden] { display:none; }
+  aside.patch-mode .row > label[title] { cursor:help; }
+  aside.patch-mode #xInfo { padding-inline:0; margin:8px 0; }
+  aside.patch-mode details.grp > summary::after { display:none; }
+  aside > details.crop-section, aside.patch-mode > details.crop-section { border-top:1px solid var(--line); }
   .ratios { display:grid; grid-template-columns:repeat(6, 1fr); gap:4px; margin:6px 0; }
+  #xRatios[hidden], #xPatchControls[hidden] { display:none; }
   .ratios button, .seg button { padding:5px 2px; font-size:12px; white-space:nowrap; }
-  .ratios button.on, .seg button.on { background:var(--acc); border-color:var(--acc); color:#fff; }
   .seg { display:flex; gap:4px; margin:6px 0; } .seg button { flex:1; }
   #xPrompt { width:100%; min-height:54px; resize:vertical; background:var(--input); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:4px 6px; font:inherit; }
   main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:6px; }
   #xStage { position:relative; flex:1; min-height:0; background:var(--workspace); border:1px solid var(--line); border-top:0; overflow:hidden; }
   #xCanvas { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+  #xBrushCursor { position:absolute; pointer-events:none; box-sizing:border-box; border:1px solid #fff; box-shadow:0 0 0 1px #000; border-radius:50%; transform:translate(-50%, -50%); }
   #xInfo { color:var(--dim); font-size:12px; margin:8px 0 20px; padding-inline:clamp(16px, 10%, 40px); }
   .crop-resolution, .crop-shifts { display:grid; grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr); gap:4px; }
   .crop-resolution > span { min-width:0; overflow-wrap:anywhere; }
@@ -58,9 +64,14 @@
 <div id="bar"><div id="barActions"><button class="workflow" id="xGet" title="Take the active document in PhotoCraft (merged) to expand.">Get Image</button><button class="workflow" id="xSend" title="Grow the canvas of that document and add the generated area as a layer, as one undo step." disabled>Send Result</button><select id="xFiles" title="Open a picture from the --dir folders." hidden></select></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar" style="margin-left:auto;display:flex;gap:6px;align-items:center"><select id="presetSel" title="Choose a saved set of Advanced settings. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
   <section class="crop-section">
-    <h2>Crop</h2>
+    <h2 id="xModeHeading">Crop &amp; Expand</h2>
     <div class="gbody">
       <div class="ratios" id="xRatios"></div>
+      <div id="xPatchControls" hidden>
+        <div class="seg"><button id="xPaint" class="on" aria-pressed="true" title="Paint the area to replace. Wheel to zoom; middle-drag or Space+drag to pan.">Paint</button><button id="xErase" aria-pressed="false" title="Erase painted mask without changing the source image.">Erase</button><button id="xClearPatch" title="Remove all painted mask strokes.">Clear mask</button></div>
+        <div class="row"><label for="xBrush" title="Brush diameter in original image pixels (1–512), independent of zoom. The circular cursor shows its displayed size for Paint and Erase.">brush size</label><input id="xBrush" type="range" min="1" max="512" value="80"><input id="xBrushValue" class="val" type="text" readonly tabindex="-1" aria-label="Brush size in pixels" value="80"></div>
+        <div class="row"><label for="xContext" title="0%: Local context enclosing all painted strokes plus at least 64 source pixels or 25% of their bounding width/height on each side, clipped to the image. 100%: Whole image. Higher values expand those bounds toward the whole image. Megapixels applies to this region; less context gives small patches more model detail, not necessarily faster generation.">context</label><input id="xContext" type="range" min="0" max="100" step="1" value="100" aria-describedby="xInfo"><input id="xContextValue" class="val" type="text" readonly tabindex="-1" aria-label="Selected context percentage" value="100%"></div>
+      </div>
       <div id="xInfo"></div>
       <div id="xGenerate"><button class="primary" id="xRun" disabled title="Generate the new area with ComfyUI. The picture itself is not changed.">Generate</button><div id="xVariations" role="group" aria-label="Number of variations"><button data-count="1" class="on" aria-pressed="true">1</button><button data-count="2" aria-pressed="false">2</button><button data-count="3" aria-pressed="false">3</button></div></div>
       <div id="xVariationNote" class="hint" hidden></div>
@@ -77,7 +88,7 @@
 </aside>
 <main>
   <div class="tabs pane-header"><button class="tab on" id="xTabFrame" title="Place the frame">Frame</button><span id="xResTabs" style="display:contents"></span></div>
-  <div id="xStage"><canvas id="xCanvas"></canvas></div>
+  <div id="xStage"><canvas id="xCanvas"></canvas><div id="xBrushCursor" hidden aria-hidden="true"></div></div>
 </main>
 </div>
 
@@ -90,10 +101,99 @@ async function api(path, body) {
   return j;
 }
 let busy = false;
-function setBusy(b) { busy = b; $('status').classList.toggle('busy', b); $('status').setAttribute('aria-busy', String(b)); }
+function setBusy(b) { busy = b; $('status').classList.toggle('busy', b); $('status').setAttribute('aria-busy', String(b)); patchCursor(); reportCropBusy(); }
 function setStatus(msg, err=false, ok=false) { const s=$('status'); s.textContent = msg; s.className = err ? 'err' : busy ? 'busy' : ok ? 'ok' : ''; s.setAttribute('aria-busy', String(busy)); }
 
 const X = {ready:false, img:null, el:null, resEl:null, W:0, H:0, ratio:[4,3], land:true, fx:0, fy:0, fw:0, view:'frame', free:false, fh:0, aspect:1, running:false, hasResult:false, hasDoc:false, limit:999, seq:0, v:null, drag:null};
+X.mode = 'expand';
+X.modeViews = {};
+X.mask = document.createElement('canvas');
+let patchErasing = false, patchHasMask = false, patchSpace = false;
+let patchSupport = null;
+function patchContextBounds(support, width, height, context) {
+  if(!support)return null;
+  const [l,t,r,b]=support,px=Math.max(64,Math.ceil((r-l)/4)),py=Math.max(64,Math.ceil((b-t)/4));
+  const left=Math.max(0,l-px),top=Math.max(0,t-py),right=Math.min(width,r+px),bottom=Math.min(height,b+py);
+  return [Math.floor(left*(100-context)/100),Math.floor(top*(100-context)/100),
+    width-Math.floor((width-right)*(100-context)/100),height-Math.floor((height-bottom)*(100-context)/100)];
+}
+let patchPointer = null;
+function patchCursor() {
+  const canvas=$('xCanvas'),cursor=$('xBrushCursor'),rect=canvas.getBoundingClientRect();
+  cursor.hidden=true;
+  if(X.drag?.kind==='viewport-pan'){canvas.style.cursor='grabbing';return;}
+  if(X.mode!=='patch'||X.view!=='frame'){if(canvas.style.cursor==='none')canvas.style.cursor='default';return;}
+  canvas.style.cursor=patchSpace?'grab':'crosshair';
+  if(!patchPointer||!X.img||!X.v||X.running||busy||X.settingsSaving||X.modeLoading||patchSpace)return;
+  const px=patchPointer[0]-rect.left,py=patchPointer[1]-rect.top,[x,y]=xToImg(px,py);
+  if(px<0||py<0||px>=rect.width||py>=rect.height||x<0||y<0||x>=X.W||y>=X.H)return;
+  const diameter=+$('xBrush').value*X.v.k;
+  cursor.style.left=px+'px';cursor.style.top=py+'px';
+  cursor.style.width=cursor.style.height=diameter+'px';
+  cursor.hidden=false;canvas.style.cursor='none';
+}
+function patchStroke(from, to) {
+  const g = X.mask.getContext('2d'), width = +$('xBrush').value;
+  g.globalCompositeOperation = patchErasing ? 'destination-out' : 'source-over';
+  g.strokeStyle = g.fillStyle = '#ff3c5a'; g.lineWidth = width; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(...from); g.lineTo(...to); g.stroke();
+  g.beginPath(); g.arc(...to, width/2, 0, Math.PI*2); g.fill();
+}
+function patchChanged() {
+  const pixels = X.mask.getContext('2d').getImageData(0,0,X.W,X.H).data;
+  let l=X.W,t=X.H,r=0,b=0;
+  for(let i=3;i<pixels.length;i+=4)if(pixels[i]){
+    const p=(i-3)/4,x=p%X.W,y=Math.floor(p/X.W);
+    l=Math.min(l,x);t=Math.min(t,y);r=Math.max(r,x+1);b=Math.max(b,y+1);
+  }
+  patchSupport=r>l?[l,t,r,b]:null;patchHasMask=!!patchSupport;
+  xInfo(); xDraw();
+}
+function patchClear() {
+  X.mask.width=X.W; X.mask.height=X.H; patchHasMask=false;patchSupport=null;
+}
+async function setCropMode(mode, watchImport=false) {
+  if ((busy&&!watchImport) || X.running || X.settingsSaving || X.modeLoading || Object.keys(queuedSettings).length || !['expand','patch'].includes(mode)) return;
+  if(X.mode===mode)return;
+  xEnd();patchPointer=null;
+  X.modeViews[X.mode]={v:X.v};
+  X.mode=mode; X.v=X.modeViews[mode]?.v || null;
+  X.modeLoading=true;X.presetsReady=false;
+  $('xModeHeading').textContent=mode==='patch'?'Patch Fill':'Crop & Expand';
+  document.querySelector('aside').classList.toggle('patch-mode',mode==='patch');
+  document.querySelector('details.crop-section').classList.toggle('grp',mode==='patch');
+  $('xTabFrame').textContent=mode==='patch'?'Paint patch':'Frame';
+  $('xTabFrame').title=mode==='patch'?'Paint the patch mask':'Place the frame';
+  $('xRatios').hidden=mode==='patch';$('xPatchControls').hidden=mode!=='patch';
+  setVariations(localStorage.getItem(mode==='patch'?'shppatch-var':'shpx-var') || 1);
+  X.ready=false; xRefresh(!X.v); xTransferTitles();
+  try { await loadPresets(); }
+  finally {X.modeLoading=false;xButtons();xInfo();}
+}
+function reportCropBusy() {
+  const value=!!(busy||X.running||X.settingsSaving||X.modeLoading);
+  if(parent!==window && value!==X.reportedBusy){
+    X.reportedBusy=value;parent.postMessage({type:'shp-crop-busy',busy:value},location.origin);
+  }
+}
+window.addEventListener('message',async event=>{
+  if(parent===window||event.source!==parent||event.origin!==location.origin)return;
+  const data=event.data;
+  if(data?.type==='shp-tools-crop-probe'){
+    if(X.initialized)parent.postMessage({type:'shp-crop-ready'},location.origin);
+    return;
+  }
+  if(data?.type!=='shp-tools-crop-mode'||!['expand','patch'].includes(data.mode)||!Number.isSafeInteger(data.request))return;
+  await setCropMode(data.mode);
+  parent.postMessage({type:'shp-crop-mode',mode:X.mode,request:data.request},location.origin);
+});
+$('xPaint').onclick=()=>{patchErasing=false;$('xPaint').classList.add('on');$('xErase').classList.remove('on');$('xPaint').setAttribute('aria-pressed','true');$('xErase').setAttribute('aria-pressed','false');};
+$('xErase').onclick=()=>{patchErasing=true;$('xErase').classList.add('on');$('xPaint').classList.remove('on');$('xPaint').setAttribute('aria-pressed','false');$('xErase').setAttribute('aria-pressed','true');};
+$('xClearPatch').onclick=()=>{if(!busy&&!X.running){patchClear();xInfo();xDraw();}};
+$('xBrush').oninput=()=>{$('xBrushValue').value=$('xBrush').value;patchCursor();};
+window.addEventListener('keydown',e=>{if(e.code==='Space' && !e.target.matches('input,textarea,select,button')){patchSpace=true;patchCursor();e.preventDefault();}});
+window.addEventListener('keyup',e=>{if(e.code==='Space'){patchSpace=false;patchCursor();}});
+window.addEventListener('blur',()=>{patchSpace=false;patchPointer=null;xEnd();patchCursor();});
 const BASE_RATIOS = [[1,1],[4,3],[3,2],[16,9],[5,4]];
 function xRatio() { if (X.free) return [X.aspect, 1]; const [a,b] = X.ratio; return X.land ? [a,b] : [b,a]; }
 function fH() { return X.free ? X.fh : xH(X.fw); }
@@ -122,20 +222,34 @@ function xResetFrame(w) { if (X.free) { X.fw = X.W; X.fh = X.H; X.aspect = X.W/X
 function xMargins() { const h = fH(); return [-X.fx, -X.fy, X.fx + X.fw - X.W, X.fy + h - X.H]; }
 function xSyncSize() {}
 function xInfo() {
+  if (X.mode === 'patch') {
+    const bounds=X.img?patchContextBounds(patchSupport,X.W,X.H,+$('xContext').value):null;
+    $('xInfo').textContent = `Processing ${bounds?bounds[2]-bounds[0]:0} x ${bounds?bounds[3]-bounds[1]:0} of ${X.W} x ${X.H} px`;
+    $('xInfo').title='Source-pixel context region before model megapixel resizing. Paint a mask to select a processing region.';
+    if (!X.running) $('xRun').disabled = !X.img || !patchHasMask || !X.ready || X.settingsSaving || X.modeLoading || busy;
+    return;
+  }
   const [l,t,r,b] = X.img ? xMargins() : [0,0,0,0], h = X.img ? fH() : 0, [a,bb] = xRatio();
   const width = X.img ? X.W : 0, height = X.img ? X.H : 0, newWidth = X.img ? X.fw : 0;
   const added = Math.max(l, t, r, b) > 0, sg = v => v > 0 ? '+' + v : v < 0 ? '\u2212' + (-v) : '0';
   const shift = (side, value) => `<span data-side="${side}" title="${side} shift: ${sg(value)} px" aria-label="${side} shift: ${sg(value)} pixels">${sg(value)}</span>`;
   $('xInfo').innerHTML = `<div class="crop-resolution"><span title="Original resolution">${width} \u00d7 ${height}</span><span aria-label="to">\u2192</span><span title="New resolution (${X.free ? 'free' : a + ':' + bb})">${newWidth} \u00d7 ${h}</span></div><div class="crop-shifts">${shift('top', t)}${shift('left', l)}${shift('right', r)}${shift('bottom', b)}</div>` + (!X.img || added ? '' : '<div>Nothing to generate: drag a corner outwards to add space.</div>');
-  if (!X.running) $('xRun').disabled = !X.img || !added || !X.ready || X.settingsSaving || busy;
+  if (!X.running) $('xRun').disabled = !X.img || !added || !X.ready || X.settingsSaving || X.modeLoading || busy;
 }
 function xButtons() {
+  reportCropBusy();
+  patchCursor();
+  const blocked=X.running||busy||X.settingsSaving||X.modeLoading;
+  document.querySelectorAll('#xPatchControls button,#xBrush').forEach(e=>e.disabled=blocked||!X.img);
+  $('xContext').disabled=blocked;
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => b.classList.toggle('on', !X.free && b.dataset.i === String(BASE_RATIOS.findIndex(r => r[0]===X.ratio[0] && r[1]===X.ratio[1])))); $('xFree').classList.toggle('on', X.free);
   document.querySelectorAll('#xRatios button[data-i]').forEach(b => { const [a,c] = BASE_RATIOS[+b.dataset.i]; b.textContent = X.land || a === c ? `${a}:${c}` : `${c}:${a}`; });
-  $('xSend').disabled = !(X.hasResult && X.sourceKind) || X.running || busy;
-  $('xGet').disabled = X.running || busy; $('xFiles').disabled = X.running || busy; document.querySelectorAll('#xVariations button').forEach(e => e.disabled = X.running || busy); document.querySelectorAll('#xAdv input:not([type=checkbox]),#xAdv select').forEach(e => e.disabled = X.running || busy || X.settingsSaving);
-  document.querySelectorAll('#xRatios button,#xPrompt').forEach(e=>e.disabled=X.running || busy);
-  $('xFreeMemory').disabled = X.running || busy || X.settingsSaving;
+  $('xSend').disabled = !(X.hasResult && X.sourceKind) || blocked;
+  $('xGet').disabled = blocked; $('xFiles').disabled = blocked; document.querySelectorAll('#xVariations button').forEach(e => e.disabled = blocked); document.querySelectorAll('#xAdv input,#xAdv select').forEach(e => e.disabled = blocked);
+  document.querySelectorAll('#xRatios button,#xPrompt').forEach(e=>e.disabled=blocked);
+  $('xFreeMemory').disabled = blocked;
+  if ($('smethod')) $('smethod').disabled = blocked || X.mode==='patch';
+  if($('presetSel')){$('presetSel').disabled=blocked||!X.presetsReady;$('presetNew').disabled=blocked||!X.presetsReady;presetButtons();}
 }
 BASE_RATIOS.forEach((r, i) => { const b = document.createElement('button'); b.dataset.i = i; b.title = 'Click again to flip it (landscape / portrait).';
   b.onclick = () => { if (!X.free && X.ratio === r) { xSetOrientation(!X.land); return; } X.free = false; X.ratio = r; if (X.img) xResetFrame(); xRefresh(true); }; $('xRatios').append(b); });
@@ -153,9 +267,9 @@ function setVariations(value, persist=false) {
     const selected = +button.dataset.count === variations;
     button.classList.toggle('on', selected); button.setAttribute('aria-pressed', String(selected));
   });
-  $('xVariationNote').hidden = variations <= 3;
+  $('xVariationNote').hidden = X.mode==='patch' || variations <= 3;
   $('xVariationNote').textContent = variations > 3 ? 'Saved selection: 4 variations. Choose 1, 2 or 3 to change.' : '';
-  if (persist) localStorage.setItem('shpx-var', String(variations));
+  if (persist) localStorage.setItem(X.mode==='patch'?'shppatch-var':'shpx-var', String(variations));
 }
 document.querySelectorAll('#xVariations button').forEach(button => button.onclick = () => {
   if (!X.running) setVariations(button.dataset.count, true);
@@ -166,6 +280,10 @@ setVariations(localStorage.getItem('shpx-var') || 1);
    so changing the size never zooms. Only if the frame is moved outside that box does the view grow to keep it in sight. */
 function xFit() {
   const c = $('xCanvas'), r = c.getBoundingClientRect(); if (!X.img || !r.width) return;
+  if (X.mode==='patch') {
+    const k=Math.min((r.width-56)/X.W,(r.height-56)/X.H);
+    X.v={k,ox:(r.width-X.W*k)/2,oy:(r.height-X.H*k)/2};return;
+  }
   const mw = X.free ? xFreeMax(X.W) : xSizeMax(), mh = X.free ? xFreeMax(X.H) : xH(mw), mx = -(mw - X.W)/2, my = -(mh - X.H)/2;
   const x0 = Math.min(0, mx, X.fx), y0 = Math.min(0, my, X.fy);
   const x1 = Math.max(X.W, mx + mw, X.fx + X.fw), y1 = Math.max(X.H, my + mh, X.fy + fH());
@@ -174,6 +292,7 @@ function xFit() {
 }
 const xp = (x, y) => [X.v.ox + x*X.v.k, X.v.oy + y*X.v.k];
 function xDraw() {
+  patchCursor();
   const c = $('xCanvas'), r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
   c.width = Math.round(r.width*dpr); c.height = Math.round(r.height*dpr);
   const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, r.width, r.height);
@@ -184,6 +303,11 @@ function xDraw() {
     const rw = X.resEl.naturalWidth, rh = X.resEl.naturalHeight;
     if (!X.rv) { const k = Math.min((r.width - 48)/rw, (r.height - 48)/rh); X.rv = {k, ox: (r.width - rw*k)/2, oy: (r.height - rh*k)/2}; }
     g.imageSmoothingQuality = 'high'; g.drawImage(X.resEl, X.rv.ox, X.rv.oy, rw*X.rv.k, rh*X.rv.k);
+    return;
+  }
+  if (X.mode==='patch') {
+    g.drawImage(X.el,ix,iy,iw,ih);
+    g.globalAlpha=.4;g.drawImage(X.mask,ix,iy,iw,ih);g.globalAlpha=1;
     return;
   }
   g.fillStyle = 'rgba(76,141,255,.10)'; g.fillRect(fx, fy, fw, fh);
@@ -205,6 +329,12 @@ const HCURSOR = ['nwse-resize', 'nesw-resize', 'nesw-resize', 'nwse-resize', 'ns
 function xPointer(e) { const r = $('xCanvas').getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 function xToImg(px, py) { return [(px - X.v.ox)/X.v.k, (py - X.v.oy)/X.v.k]; }
 $('xCanvas').addEventListener('wheel', e => {
+  if(X.mode==='patch' && X.view==='frame' && X.v && !X.running && !busy) {
+    e.preventDefault();
+    patchPointer=[e.clientX,e.clientY];
+    const [px,py]=xPointer(e),k=Math.min(16,Math.max(.002,X.v.k*Math.exp(-e.deltaY*.0015))),s=k/X.v.k;
+    X.v={k,ox:px-(px-X.v.ox)*s,oy:py-(py-X.v.oy)*s};xDraw();return;
+  }
   if (X.view !== 'result' || !X.rv) return;
   e.preventDefault();
   const [px, py] = xPointer(e), f = Math.exp(-e.deltaY*0.0015), k = Math.min(16, Math.max(0.02, X.rv.k*f)), s = k/X.rv.k;
@@ -212,6 +342,26 @@ $('xCanvas').addEventListener('wheel', e => {
 }, {passive: false});
 $('xCanvas').addEventListener('dblclick', () => { if (X.view === 'result') { X.rv = null; xDraw(); } });
 $('xCanvas').addEventListener('pointerdown', e => {
+  patchPointer=[e.clientX,e.clientY];patchCursor();
+  if(e.button===1) {
+    e.preventDefault();
+    if(!X.img||X.running||busy||X.settingsSaving||X.modeLoading||X.drag)return;
+    const view=X.view==='result'?X.rv:X.v;
+    if(!view)return;
+    const [px,py]=xPointer(e);
+    X.drag={kind:'viewport-pan',view,px,py,ox:view.ox,oy:view.oy,pointerId:e.pointerId};
+    $('xCanvas').setPointerCapture(e.pointerId);patchCursor();return;
+  }
+  if(X.mode==='patch' && X.view==='frame') {
+    if(!X.img||X.running||busy||!X.v||e.button!==0)return;
+    const [px,py]=xPointer(e),point=xToImg(px,py);
+    if(patchSpace)X.drag={kind:'patch-pan',px,py,ox:X.v.ox,oy:X.v.oy};
+    else {
+      if(point[0]<0||point[1]<0||point[0]>=X.W||point[1]>=X.H)return;
+      X.drag={kind:'paint',point};patchStroke(point,point);xDraw();
+    }
+    $('xCanvas').setPointerCapture(e.pointerId);return;
+  }
   if (X.view === 'result' && X.rv) { const [px, py] = xPointer(e); X.drag = {kind:'pan', px, py, ox:X.rv.ox, oy:X.rv.oy}; $('xCanvas').setPointerCapture(e.pointerId); $('xCanvas').style.cursor = 'grabbing'; return; }
   if (!X.img || X.running || X.view !== 'frame') return;
   const [px, py] = xPointer(e), cs = xCorners();
@@ -225,7 +375,18 @@ $('xCanvas').addEventListener('pointerdown', e => {
   $('xCanvas').setPointerCapture(e.pointerId);
 });
 $('xCanvas').addEventListener('pointermove', e => {
+  patchPointer=[e.clientX,e.clientY];patchCursor();
   const [px, py] = xPointer(e);
+  if(X.drag?.kind==='viewport-pan') {
+    if(e.pointerId!==X.drag.pointerId)return;
+    X.drag.view.ox=X.drag.ox+px-X.drag.px;X.drag.view.oy=X.drag.oy+py-X.drag.py;
+    xDraw();return;
+  }
+  if(X.mode==='patch' && X.view==='frame') {
+    if(X.drag?.kind==='paint') {const point=xToImg(px,py);patchStroke(X.drag.point,point);X.drag.point=point;xDraw();}
+    else if(X.drag?.kind==='patch-pan'){X.v.ox=X.drag.ox+px-X.drag.px;X.v.oy=X.drag.oy+py-X.drag.py;xDraw();}
+    return;
+  }
   if (X.drag && X.drag.kind === 'pan') { X.rv.ox = X.drag.ox + px - X.drag.px; X.rv.oy = X.drag.oy + py - X.drag.py; xDraw(); return; }
   if (!X.drag) {
     if (X.view === 'result') { $('xCanvas').style.cursor = X.rv ? 'grab' : 'default'; return; }
@@ -268,12 +429,27 @@ $('xCanvas').addEventListener('pointermove', e => {
   }
   xButtons(); xSyncSize(); xInfo(); xDraw();
 });
-const xEnd = () => { if (X.drag) { const pan = X.drag.kind === 'pan'; X.drag = null; if (pan) $('xCanvas').style.cursor = 'grab'; else xRefresh(true); } };
+const xEnd = event => { if (X.drag) {
+  if(X.drag.kind==='viewport-pan'){
+    const {pointerId}=X.drag;
+    if(event?.pointerId!==undefined&&event.pointerId!==pointerId)return;
+    X.drag=null;
+    if($('xCanvas').hasPointerCapture(pointerId))$('xCanvas').releasePointerCapture(pointerId);
+    $('xCanvas').style.cursor=X.view==='result'?'grab':'default';patchCursor();return;
+  }
+  const kind=X.drag.kind;X.drag=null;if(kind==='paint'){patchChanged();return;}if(kind==='patch-pan')return;if(kind==='pan')$('xCanvas').style.cursor='grab';else xRefresh(true);
+} };
 $('xCanvas').addEventListener('pointerup', xEnd); $('xCanvas').addEventListener('pointercancel', xEnd);
+$('xCanvas').addEventListener('lostpointercapture', xEnd);
+$('xCanvas').addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();});
+$('xCanvas').addEventListener('pointerleave',()=>{patchPointer=null;patchCursor();});
+window.addEventListener('scroll',()=>{patchPointer=null;patchCursor();},true);
 window.addEventListener('resize', () => { xFit(); X.rv = null; xDraw(); });
 
 function xLoaded(r) {
+  X.img=false;X.drag=null;X.modeViews={};
   X.W = r.width; X.H = r.height; X.limit = Math.min(999, r.limit); X.seq = r.seq; X.hasResult = false; xClearTabs(); X.resEl = null; X.hasDoc = !!r.pc_doc; X.view = 'frame';
+  patchClear();
   X.sourceKind = r.source_kind || (r.pc_doc ? 'photocraft' : 'local'); xTransferTitles();
   X.land = X.W >= X.H; localStorage.setItem('shpx-land', X.land ? '1' : '0');
   const el = new Image(); el.onload = () => { X.img = true; X.el = el; xResetFrame(); xTab('frame'); xRefresh(true); };
@@ -318,6 +494,7 @@ async function xGet() {
     X.pcConnected = connection.connected; xTransferTitles();
     let path = null;
     if (!connection.connected) {
+      if (connection.code === 'authentication') throw new Error(connection.message);
       if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the --dir file list; Send Result then saves beside that source.');
       path = window.prompt('SHP_OPEN_IMAGE_V1');
       if (!path) return;
@@ -339,7 +516,8 @@ async function pollCropWatchFolder() {
       cropWatchPending.className = 'hint';
       $('bar').after(cropWatchPending);
     }
-    const waiting = busy || X.running || (parent !== window && parent.__shpNavigationLocked);
+    const waiting = busy || X.running || X.settingsSaving || X.modeLoading || cropSliderDrag!==null ||
+      Object.keys(queuedSettings).length>0 || (parent !== window && parent.__shpNavigationLocked);
     cropWatchPending.hidden = !inbox.ready || !waiting;
     cropWatchPending.textContent = 'Crop watch-folder image pending; waiting for processing to finish.';
     const error = [inbox.error,...(inbox.errors || [])].filter(Boolean).join('\n');
@@ -352,6 +530,7 @@ async function pollCropWatchFolder() {
       const result = await api('/api/watch-folder/load', {token:inbox.token});
       if (result.skipped) return;
       xLoaded(result);
+      await setCropMode('expand',true);
       if (parent !== window) parent.postMessage({type:'shp-crop-watch-loaded'}, location.origin);
       if (result.watch_error) setStatus(result.watch_error, true);
       cropWatchError = '';
@@ -369,13 +548,16 @@ async function pollCropWatchFolder() {
 }
 function xTransferTitles() {
   $('xGet').title = X.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
-  $('xSend').title = X.sourceKind === 'local' ? 'Save the selected full-resolution result as a numbered PNG beside the source; never overwrite.' : 'Grow the PhotoCraft document canvas and add the selected generated area as a layer, as one undo step.';
+  $('xSend').title = X.sourceKind === 'local' ? 'Save the selected full-resolution result as a numbered PNG beside the source; never overwrite.' : 'Send the selected generated layer to PhotoCraft; only expansion results resize its canvas.';
 }
 async function xRun() {
-  if (X.running || busy || !X.img) return;
+  if (X.running || busy || X.settingsSaving || X.modeLoading || !X.img) return;
+  if(X.mode==='patch' && !patchHasMask){setStatus('Paint a patch before generating.',true);return;}
   const [a, b] = xRatio(); X.res = xMargins();
-  try { await api('/api/run', {ratio:X.free ? null : [a, b], x:X.fx, y:X.fy, w:X.fw, h:fH(), prompt:$('xPrompt').value.trim(), variations}); }
-  catch (e) { setStatus(e.message, true); return; }
+  const request = X.mode==='patch' ? {mode:'patch',mask:X.mask.toDataURL('image/png'),seq:X.seq} : {ratio:X.free ? null : [a,b],x:X.fx,y:X.fy,w:X.fw,h:fH()};
+  setBusy(true);xButtons();
+  try { await api('/api/run', {...request,prompt:$('xPrompt').value.trim(),variations}); }
+  catch (e) { setBusy(false);xButtons();xInfo();setStatus(e.message, true); return; }
   X.running = true; X.hasResult = false; xClearTabs(); xTab('frame'); xRunMode(true); busy = true; xButtons();
   X.poll = setInterval(xPoll, 600); xPoll();
 }
@@ -387,7 +569,7 @@ async function xPoll() {
   xMakeTabs(j.count);
   if (first) xPick(j.selected || 0, false);
   if (j.state === 'running') { setStatus(`Generating ${Math.round(j.fraction*100)}%${j.text ? ': ' + j.text : ''}`); $('status').classList.add('busy'); return; }
-  clearInterval(X.poll); X.running = false; busy = false; xRunMode(false); xInfo();
+  clearInterval(X.poll); X.running = false; busy = false; xRunMode(false); xButtons(); xInfo();
   if (j.state === 'done') {
     setStatus(`Done. ${j.count} result(s) available.`, false, true);
   } else { setStatus(j.message || j.state, j.state === 'error'); xRefresh(false); }
@@ -403,7 +585,7 @@ $('xRun').onclick = async () => {
 $('xGet').onclick = xGet;
 async function xSend() {
   if (X.running || busy || !X.hasResult) return;
-  xTransferBusy(true); setStatus(X.sourceKind === 'local' ? 'Saving selected result beside source...' : 'Sending the expanded canvas to PhotoCraft...');
+  xTransferBusy(true); setStatus(X.sourceKind === 'local' ? 'Saving selected result beside source...' : 'Sending the selected result to PhotoCraft...');
   try {
     const r = await api('/api/send-result', {seq:X.seq});
     setBusy(false);
@@ -439,7 +621,7 @@ async function loadList() {
 const SETKEYS = ['guidance','steps','megapixels','feathering','unet','upscale','lora','seam_correction'];
 const FILLKEYS = ['guidance','steps','megapixels','feathering','unet','upscale'];
 let savedSettings = {};
-const isFill = () => $('smethod').value === 'flux1_fill';
+const isFill = () => X.mode === 'patch' || $('smethod').value === 'flux1_fill';
 const settingKey = k => isFill() && FILLKEYS.includes(k) ? 'fill_' + k : k;
 const SL = {};
 function slider(parent, key, label, min, max, step, tip) {
@@ -463,7 +645,7 @@ function slider(parent, key, label, min, max, step, tip) {
     <div class="row toggle-row"><label for="sseam_correction">seam colour correction</label><input type="checkbox" id="sseam_correction"></div>
     <div class="row model-row"><label for="sunet" id="sunetLabel" title="GGUF diffusion model." style="cursor:help">model</label><select id="sunet" style="flex:1"></select></div>
     <div class="row model-row"><label for="supscale" id="supscaleLabel" title="Upscale model for the generated area." style="cursor:help">upscaler</label><select id="supscale" style="flex:1"></select></div>
-    <div class="row model-row" id="fillDeviceRow" hidden><label for="sfill_clip_device" title="Default lets ComfyUI choose GPU/offloading according to available memory. CPU uses less VRAM." style="cursor:help">text encoding</label><select id="sfill_clip_device" style="flex:1"><option value="cpu">CPU</option><option value="default">Default (GPU / auto)</option></select></div>`);
+    <div class="row model-row" id="fillDeviceRow" hidden><label for="sfill_clip_device" title="Shared by Crop and Patch Fill, outside presets. Default lets ComfyUI choose GPU/offloading according to available memory. CPU uses less VRAM." style="cursor:help">text encoding</label><select id="sfill_clip_device" style="flex:1"><option value="cpu">CPU</option><option value="default">Default (GPU / auto)</option></select></div>`);
   const firstSlider = root.querySelector('input[type="range"]').closest('.row');
   root.querySelectorAll('.model-row').forEach(row => root.insertBefore(row, firstSlider));
 })();
@@ -474,11 +656,16 @@ function fillSelect(id, options, value) {
 }
 function showSettings(v) {
   savedSettings = {...v};
-  $('smethod').value = v.method || 'flux2';
+  $('xPrompt').value=v.prompt || '';
+  $('xContext').value=v.patch_context ?? 100;
+  contextReadout();
+  $('smethod').value = X.mode==='patch'?'flux1_fill':v.method || 'flux2';
   const fill = isFill();
+  $('smethod').closest('.row').querySelector('label').title = X.mode==='patch' ? 'Patch Fill uses FLUX.1 Fill with its own saved settings and presets, through the shared ComfyUI connection.' : 'Generation model family for expansion.';
   $('sguidance').max = fill ? 100 : 10;
   $('sguidance').step = fill ? 1 : 0.5;
   $('ssteps').closest('.row').querySelector('label').title = fill ? 'Native Fill sampling steps (default 28).' : 'Sampling steps: 8 with the Turbo LoRA, about 20 without.';
+  $('sfeathering').closest('.row').querySelector('label').title = X.mode==='patch' ? 'Feather inward from the painted boundary in source pixels; unpainted pixels stay untouched.' : 'How far the original fades into the new area at the seam.';
   $('sunetLabel').title = fill ? 'Full FLUX.1 Fill safetensors weights, loaded FP8. Not FLUX dev, Kontext or Nunchaku.' : 'GGUF diffusion model.';
   ['lora','seam_correction'].forEach(k => { $('s' + k).closest('.row').hidden = fill; });
   $('supscaleLabel').title = 'Lanczos only, or a neural upscale model followed by exact-size Lanczos resizing. Neural upscale uses additional time and VRAM.';
@@ -496,7 +683,7 @@ async function loadStatus() {
   clearTimeout(statusRetry);
   const request = ++statusRequest;
   let r;
-  try { r = await api('/api/status', {}); } catch (e) {
+  try { r = await api('/api/status', {mode:X.mode}); } catch (e) {
     if (request !== statusRequest) return;
     X.ready = false; setStatus(e.message, true); xInfo(); return;
   }
@@ -513,10 +700,11 @@ async function loadStatus() {
     setStatus(r.message, true);
   }
   xInfo();
+  xButtons();
 }
 let cropSliderDrag = null;
 document.addEventListener('pointerdown',event=>{
-  if(event.target.matches?.('#xAdv input[type=range]:not(:disabled)')) cropSliderDrag=event.pointerId;
+  if(event.target.matches?.('#xAdv input[type=range]:not(:disabled),#xContext:not(:disabled)')) cropSliderDrag=event.pointerId;
 },true);
 function finishCropSliderDrag(event) {
   if(cropSliderDrag===null || (event?.pointerId!==undefined && event.pointerId!==cropSliderDrag)) return;
@@ -539,20 +727,29 @@ async function saveSettings(values) {
     return;
   }
   ++statusRequest; X.settingsSaving = true; X.ready = false; xButtons(); xInfo();
-  try { await api('/api/settings', {values}); await loadStatus(); setStatus('Settings saved', false, true); }
+  try { await api('/api/settings', {mode:X.mode,values}); await loadStatus(); setStatus('Settings saved', false, true); }
   catch (e) { setStatus(e.message, true); }
   finally { X.settingsSaving = false; xButtons(); xInfo(); updateStar(); }
 }
 SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[settingKey(k)]: e.type === 'checkbox' ? e.checked : e.value}); });
 $('smethod').onchange = () => saveSettings({method: $('smethod').value});
 $('sfill_clip_device').onchange = () => saveSettings({fill_clip_device: $('sfill_clip_device').value});
+$('xPrompt').onchange = () => saveSettings({prompt:$('xPrompt').value});
+function contextReadout() {
+  const value=+$('xContext').value;
+  $('xContextValue').value=value+'%';
+  xInfo();
+}
+$('xContext').oninput = () => {contextReadout();updateStar();};
+$('xContext').onchange = () => saveSettings({patch_context:+$('xContext').value});
 
 /* ---------- presets ---------- */
 const presets = {presets: {}, last: null};
 let presetSnap = '';
 const curSettings = () => {
-  const o = {...savedSettings, method: $('smethod').value};
-  if (isFill()) o.fill_clip_device = $('sfill_clip_device').value;
+  const o = {...savedSettings, prompt:$('xPrompt').value, method: X.mode==='patch'?savedSettings.method:$('smethod').value};
+  if(X.mode==='patch')o.patch_context=+$('xContext').value;
+  delete o.fill_clip_device;
   SETKEYS.filter(k => !isFill() || FILLKEYS.includes(k)).forEach(k => {
     const e = $('s' + k);
     o[settingKey(k)] = e.type === 'checkbox' ? e.checked : (e.tagName === 'SELECT' || isNaN(+e.value) ? e.value : +e.value);
@@ -563,7 +760,7 @@ function updateStar() {
   const o = $('presetSel').selectedOptions[0]; if (!o) return;
   o.textContent = o.dataset.label + (curSettings() !== presetSnap ? ' *' : '');
 }
-function presetButtons() { const v = $('presetSel').value; $('presetSave').disabled = v === 'builtin'; $('presetRemove').disabled = v === 'builtin'; }
+function presetButtons() { const v = $('presetSel').value,blocked=busy||X.running||X.settingsSaving||X.modeLoading||!X.presetsReady; $('presetSave').disabled = blocked || v === 'builtin'; $('presetRemove').disabled = blocked || v === 'builtin'; }
 function fillPresetList() {
   const sel = $('presetSel'); sel.innerHTML = '';
   const add = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = o.dataset.label = t; sel.append(o); };
@@ -574,11 +771,18 @@ function fillPresetList() {
 }
 const presetSnapNow = () => { presetSnap = curSettings(); updateStar(); };
 async function presetCall(path, body) {
-  try { Object.assign(presets, await api(path, body)); fillPresetList(); await loadStatus(); presetSnapNow(); }
+  if(busy||X.running||X.settingsSaving||X.modeLoading||!X.presetsReady)return;
+  X.settingsSaving=true;xButtons();xInfo();
+  try { Object.assign(presets, await api(path, {...body,mode:X.mode})); fillPresetList(); await loadStatus(); presetSnapNow(); }
   catch (e) { setStatus(e.message, true); }
+  finally {X.settingsSaving=false;xButtons();xInfo();}
 }
 async function loadPresets() {
-  try { Object.assign(presets, await api('/api/presets', {})); } catch (e) { setStatus(e.message, true); }
+  try { Object.assign(presets, await api('/api/presets', {mode:X.mode}));X.presetsReady=true; }
+  catch (e) {
+    X.presetsReady=false;X.ready=false;$('presetSel').replaceChildren(new Option('Presets unavailable',''));
+    xButtons();xInfo();setStatus('Could not load presets. Reload Tools to retry: '+e.message,true);return;
+  }
   fillPresetList(); await loadStatus(); presetSnapNow();
 }
 $('presetSel').onchange = () => { const v = $('presetSel').value; presetCall('/api/presets/load', {name: v === 'builtin' ? null : v.slice(2)}); };
@@ -594,8 +798,16 @@ $('presetRemove').onclick = () => {
 };
 window.addEventListener('focus', () => { if (!X.running && !X.settingsSaving) loadStatus().then(updateStar); });
 if (localStorage.getItem('shpx-land') === '0') X.land = false;
-xButtons(); xSyncSize(); xInfo(); xDraw();
-loadList().catch(e => setStatus(e.message, true)); loadPresets();
+X.modeLoading=true;xButtons(); xSyncSize(); xInfo(); xDraw();
+async function initializeCrop() {
+  const mode=new URLSearchParams(location.search).get('mode');
+  X.modeLoading=false;
+  if(mode==='patch')await setCropMode('patch');
+  else {X.modeLoading=true;try{await loadPresets();}finally{X.modeLoading=false;xButtons();xInfo();}}
+  X.initialized=true;
+  if(parent!==window)parent.postMessage({type:'shp-crop-ready'},location.origin);
+}
+loadList().catch(e => setStatus(e.message, true)); initializeCrop();
 pollCropWatchFolder.timer = setTimeout(pollCropWatchFolder, 1000);
 window.addEventListener('pagehide', () => clearTimeout(pollCropWatchFolder.timer));
 </script>

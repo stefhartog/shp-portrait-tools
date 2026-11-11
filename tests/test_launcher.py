@@ -200,7 +200,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         paths = json.loads(first.stdout)
         self.assertEqual(Path(paths["launcher"]).parent, self.root / ".local/bin")
-        self.assertIn("Name=SHP PhotoCraft Tools", Path(paths["desktop"]).read_text())
+        self.assertIn("Name=SHP Portrait Tools", Path(paths["desktop"]).read_text())
         self.assertIn("Terminal=false", Path(paths["desktop"]).read_text())
         self.assertIn("StartupWMClass=shp-photocraft-tools\n", Path(paths["desktop"]).read_text())
         self.assertIn("StartupNotify=true\n", Path(paths["desktop"]).read_text())
@@ -215,6 +215,45 @@ class LauncherTests(unittest.TestCase):
         self.assertNotEqual(third.returncode, 0)
         self.assertIn("Refusing to overwrite", third.stderr)
         self.assertEqual(Path(paths["launcher"]).read_text(), "user-edited wrapper")
+
+    def test_display_refresh_retains_launch_identity_and_custom_fields(self):
+        repository = Path(__file__).resolve().parent.parent
+        refresh = runpy.run_path(str(repository / "scripts/install_desktop.py"))["refresh_display_metadata"]
+        template = (repository / "desktop/shp-photocraft-tools.desktop.in").read_text()
+        old = template.replace("Name=SHP Portrait Tools", "Name=SHP PhotoCraft Tools").replace(
+            "Comment=Show the Portrait Tools", "Comment=Show the PhotoCraft Tools")
+        old = old.replace("@LAUNCHER@", '"/custom/unchanged/launcher"') + "X-Custom=keep me\n"
+        paths = [self.root / "application.desktop", self.root / "shortcut.desktop"]
+        for path in paths:
+            path.write_text(old)
+            path.chmod(0o755)
+        refresh(paths)
+        for path in paths:
+            self.assertEqual(path.read_text(), old.replace("Name=SHP PhotoCraft Tools", "Name=SHP Portrait Tools").replace(
+                "Comment=Show the PhotoCraft Tools", "Comment=Show the Portrait Tools"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
+        expected = paths[0].read_bytes()
+        refresh(paths)
+        self.assertEqual(paths[0].read_bytes(), expected)
+        paths[0].write_text(old)
+        paths[1].write_text(old.replace("Name=SHP PhotoCraft Tools", "Name=Custom name"))
+        with self.assertRaisesRegex(ValueError, "Custom Name"):
+            refresh(paths)
+        self.assertEqual(paths[0].read_text(), old)
+        self.assertIn("Name=Custom name", paths[1].read_text())
+        for invalid, message in (
+                (old + "Name=SHP PhotoCraft Tools\n", "Duplicate desktop field"),
+                (old.replace("Icon=shp-photocraft-tools", "Icon=custom"), "Not a recognized"),
+                (old.replace("Comment=Show", "Comment=Custom Show"), "Custom Comment")):
+            paths[1].write_text(invalid)
+            with self.assertRaisesRegex(ValueError, message):
+                refresh(paths)
+            self.assertEqual(paths[0].read_text(), old)
+        paths[1].unlink()
+        paths[1].symlink_to(self.root / "missing.desktop")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            refresh(paths)
+        self.assertEqual(paths[0].read_text(), old)
 
     def test_desktop_trust_failure_reports_manual_action(self):
         script = Path(__file__).resolve().parent.parent / "scripts/install_desktop.py"
