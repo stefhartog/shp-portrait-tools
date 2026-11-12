@@ -84,6 +84,19 @@ models, GPU inference or offline use are ready. See [MODELS](../MODELS.md) for
 exact filenames, preparation and GPU limitations. No minimum VRAM or processing
 time is promised here.
 
+**Optional experiment:** Settings & Info now has a **Pose analysis backend** choice.
+Keep **rtmpose / rtmlib (default)** unless you deliberately want an experimental
+alternative. Google Full needs its [separate isolated runtime and model](../MODELS.md#optional-google-pose-landmarker-full-experimental),
+has a two-person cap, and runs in a network-blocked worker. Its runtime NOTICE
+discloses metrics transmission; blocking egress does not disable telemetry
+generation. OpenCV Zoo instead needs its [verified local model pair](../MODELS.md#optional-opencv-zoo-mediapipe-onnx-pose-backend-experimental)
+and uses CPU OpenCV DNN in the Tools process. Neither is known to improve
+accuracy; positive portrait quality is untested. Both omit the default model's
+whole-body eye-corner/hand observations, and neither silently falls back.
+Saving a backend applies to the next Get/load or batch, not the current image.
+The hint identifies the current image's backend. Retouching presets do not
+change this global preference.
+
 ### Opening the application
 
 Use your installed Tools launcher if available. The native window is the simplest

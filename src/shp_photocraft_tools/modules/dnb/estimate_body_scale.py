@@ -45,11 +45,17 @@ def body():
     return _body
 
 
-def detect(img):
+def detect(img, pose_config=None):
+    if pose_config is not None:
+        from . import pose_backend
+        pose_config = pose_backend.settings(pose_config)
     h, w = img.shape[:2]
     k = min(1.0, MAX_SIDE / max(h, w))
     small = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA) if k < 1 else img
-    kps, scores = body()(small)
+    if pose_config and pose_config["backend"] in pose_backend.SCORED_BACKENDS:
+        kps, scores = pose_backend.detect(small, pose_config)
+    else:
+        kps, scores = body()(small)
     return dedupe(kps / k, scores)
 
 
@@ -114,13 +120,13 @@ def extra_cues(kp, sc, use_hand=False):
     if use_hand:
         hands = []
         for side, (w, t) in HAND.items():
-            if sc[w] >= 0.4 and sc[t] >= 0.4:
+            if len(sc) > max(w, t) and sc[w] >= 0.4 and sc[t] >= 0.4:
                 hands.append(float(np.linalg.norm(kp[w] - kp[t])))
         if hands:
             cues.append(("hand", max(hands) * IPD_MM / HAND_MM, 0.18))
     a, b = EYE_CORNERS
     frontal = all(sc[B_I[n]] >= 0.5 for n in ("l_eye", "r_eye", "l_ear", "r_ear"))
-    if frontal and sc[a] >= 0.8 and sc[b] >= 0.8:
+    if len(sc) > max(a, b) and frontal and sc[a] >= 0.8 and sc[b] >= 0.8:
         d = float(np.linalg.norm(kp[a] - kp[b]))
         coco = float(np.linalg.norm(kp[B_I["l_eye"]] - kp[B_I["r_eye"]]))
         # outer-corner width / body-model eye distance is ~1.4 for a frontal face; far from that means a turned or hallucinated face

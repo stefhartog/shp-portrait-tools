@@ -306,7 +306,7 @@ Slider readouts update while dragging; image processing waits for release/cancel
 capture/blur, keyboard changes debounce. Busy/off/missing geometry gating retains settings.
 Themes Current/PhotoCraft affect UI only; PhotoCraft is default absent saved preference.
 The rightmost **Settings & Info** page contains Theme Selection, PhotoCraft layer-transfer
-options, Skin Mask precache and the temporary calculation-timings log, plus About.
+options, Skin Mask precache, optional pose backend and the temporary calculation-timings log, plus About.
 These controls are global, not module-preset settings. Layer-transfer options persist in
 `$XDG_CONFIG_HOME/shp-photocraft-tools/settings.json` (normally
 `~/.config/shp-photocraft-tools/settings.json`), migrating the old default preset's
@@ -318,6 +318,59 @@ include-alpha preferences migrate inversely without changing the resulting files
 Processing controls require the skin-tools service to be running;
 Appearance/About remain accessible when it is stopped. Switching to this page does
 not change the active skin-tool mode or clear its source/previews.
+
+### Optional Google pose backend (experimental)
+
+**RTMPose / rtmlib remains the default**, unchanged. In **Settings & Info > Pose
+analysis backend**, you can explicitly select **google full (experimental, isolated)**,
+provide a separate worker Python and official Full model path, then **Save pose
+backend**. See [model/runtime provisioning](MODELS.md#optional-google-pose-landmarker-full-experimental).
+Nothing is downloaded by selecting it. Missing runtime, wrong model/hash, unavailable
+bubblewrap/namespaces or inference errors fail explicitly; there is no silent fallback
+and no unrestricted MediaPipe execution. No system prerequisites are installed for you.
+
+The saved choice applies to the **next Get/load** (including watch imports) and is
+captured at **batch start**. The current source keeps its original pose, scale, mask
+and previews; the settings hint identifies that source's backend. Get/load again to
+reanalyze. A successful new load replaces the source generation and clears the existing
+preview/mask caches through the normal loading path. A failed analysis leaves the prior
+source intact. Backend settings are global, not retouching presets.
+
+Google runs CPU IMAGE mode with at most **two poses** in a restricted Linux worker.
+It maps the 33 observations to COCO's first 17 joints, using both visibility and
+presence >= 0.5 and in-frame finite coordinates. These are not calibrated rtmlib scores.
+Missing/low-confidence joints cannot drive Directional Blur. No equivalent whole-body
+eye-corner or hand cues are fabricated; the independent face/iris scale cues remain.
+This is not a claim of better scale, pose accuracy, multi-person recall or CPU-only
+support for the entire application: only synthetic adapters and a blank-image real
+worker smoke have been exercised, not positive portraits.
+
+**Privacy:** MediaPipe 1.2.2's supplied NOTICE discloses performance/utilization metrics
+transmission; no public opt-out is verified. The worker has no host network namespace,
+routes, inherited sockets, normal home, desktop sockets or user-photo filesystem access.
+It receives only the downscaled RGB image through stdin, sees read-only runtime/model
+mounts, uses disposable temporary storage and returns a bounded result. Its network
+boundary does **not** disable telemetry generation or prove absence of queues/retries.
+The parent app retains PhotoCraft/Comfy networking. This is Linux-only and fails closed
+if isolation cannot be created; it is not a general desktop/Flatpak privacy guarantee.
+
+### Optional OpenCV Zoo pose backend (experimental)
+
+**RTMPose / rtmlib remains the default.** Settings & Info > Pose analysis backend
+also offers **OpenCV Zoo MediaPipe (experimental, CPU)**. It uses the two pinned
+local OpenCV Zoo ONNX models through the existing OpenCV DNN dependency; no
+separate runtime is installed and selection does not download the models. The
+default pair path is `$DNB_MODELS/opencv-zoo/` or, without an override,
+`~/.local/share/shp-photocraft-tools/dnb/models/opencv-zoo/`. See
+[exact provenance, hashes and limits](MODELS.md#optional-opencv-zoo-mediapipe-onnx-pose-backend-experimental).
+
+The backend runs CPU inference in the Tools process. It maps the 33-point model
+to the first 17 COCO body joints, rejecting low-confidence or out-of-frame
+geometry; it does not fabricate eye-corner or hand cues. The adapter makes no
+model-service/network requests, but this is not a claim that the whole app has
+no network activity. Both this and Google Full are experimental options; neither
+is a silent fallback or known quality improvement. Only synthetic tests and a
+blank-image model smoke have been run, not positive portrait evaluations.
 
 Image-analysis details, the mask-cache status badge, non-timing Log notes and all existing
 operation/status messages stay in their original locations. Standalone skin-tools views

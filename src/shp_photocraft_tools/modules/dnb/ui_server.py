@@ -41,6 +41,7 @@ from shp_photocraft_tools.shared.local_output import write_local_result, batch_o
 from . import dodge_burn as D
 from . import skin_mask as K
 from . import skin_mask_compare as M
+from . import pose_backend as POSE
 from . import photocraft_bridge as PCB
 from . import frequency_separation as FS
 from . import skintone as ST
@@ -392,10 +393,11 @@ def get_region(view, S):
 def api_load(req):
     started = time.perf_counter()
     path, img, source_img, raw8, mode, icc_out, source_icc, opaque, skintone_error, colour_note = \
-        progress.call("Loading image / preparing profile", prepare_loaded_image, req)
+        progress.call("Loading image / preparing profile", prepare_loaded_image, req, set_colour=False)
     h, w = img.shape[:2]
-    return finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
-                               opaque, skintone_error, colour_note, h, w, started)
+    with D.colour_mode(mode):
+        return finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
+                                   opaque, skintone_error, colour_note, h, w, started)
 
 
 def prepare_loaded_image(req, *, set_colour=True):
@@ -438,9 +440,12 @@ def prepare_loaded_image(req, *, set_colour=True):
 
 
 def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
-                        opaque, skintone_error, colour_note, h, w, started, *, publish=True):
+                        opaque, skintone_error, colour_note, h, w, started, *, publish=True, pose_config=None):
     prepared = time.perf_counter()
-    t = progress.call("Analyzing image / estimating S", M.pick_target, path, raw8, include_unscaled=True)
+    pose_config = POSE.settings(pose_config or read_global_settings().get("pose"))
+    pose_kwargs = {"pose_config": pose_config} if pose_config["backend"] != "rtmlib" else {}
+    t = progress.call("Analyzing image / estimating S", M.pick_target, path, raw8,
+                      include_unscaled=True, **pose_kwargs)
     analyzed = time.perf_counter()
     mask_started = None
     S = centre = masks = seen = pbox = None
@@ -464,15 +469,17 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
         progress.call("Mask not generated: no usable detected scale", lambda: None)
     directory = path.parent.stat()
     loaded = dict(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
+                 pose_backend=pose_config["backend"],
                  seen=seen, pbox=pbox, last=None, struct=None, avers=0,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
                  landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={}, preview_cache={},
                  full_mask_cache=None,
                  source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
-    loaded["pose"] = ({"kp": np.array(t["kp"], copy=True),
+    loaded["pose"] = ({"kp": np.array(t["kp"], copy=True), "backend": pose_config["backend"],
                       **({"sc": np.array(t["sc"], copy=True)} if t.get("sc") is not None else {})}
                      if t is not None and t.get("kp") is not None else None)
     info = {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
+            "pose_backend": pose_config["backend"],
             "seconds": time.perf_counter() - started,
             "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
                         "mask": mask_finished - mask_started if mask_started is not None else None},
@@ -480,6 +487,7 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
             "skintone_error": skintone_error, "source_kind": "local"}
     if not publish:
         return loaded, info
+    D.set_colour_mode(mode)
     MASK_PRECACHE.reset()
     STATE.update(loaded)
     BRIDGE["doc"] = None
@@ -534,13 +542,17 @@ def api_batch(req):
     settings.pop("view", None)
     settings.pop("S", None)
     settings.pop("frequency_transfer", None)
-    transfer = read_global_settings()["layer_transfer"]
+    settings.pop("pose", None)
+    global_options = read_global_settings()
+    transfer = global_options["layer_transfer"]
+    pose_config = POSE.settings(global_options.get("pose"))
     parse_params({**settings, "S": 181})
     started = time.perf_counter()
     items = [{"name": path.name, "path": str(path), "status": "pending"} for path in sources]
     with batch_output(directory) as (folder, write, write_preset):
         preset = {**settings, "batch": {"input_folder": str(directory),
-                  "scale": "independently detected for each image", "output_settings": transfer, "items": items}}
+                  "scale": "independently detected for each image", "pose_backend": pose_config["backend"],
+                  "output_settings": transfer, "items": items}}
         preset_path = write_preset(preset)
         progress.batch_status(folder, items)
         for index, (path, item) in enumerate(zip(sources, items), 1):
@@ -554,7 +566,8 @@ def api_batch(req):
                 loaded = progress.call(f"{index}/{len(items)}: Loading {path.name}",
                                        prepare_loaded_image, {"path": str(path)}, set_colour=False)
                 progress.check_batch_cancel()
-                state, analysis = finish_loaded_image(*loaded, *loaded[1].shape[:2], image_started, publish=False)
+                state, analysis = finish_loaded_image(*loaded, *loaded[1].shape[:2], image_started,
+                                                       publish=False, pose_config=pose_config)
                 progress.check_batch_cancel()
                 if state["S"] is None:
                     raise ValueError("no usable detected scale; batch needs an independently estimated S")
@@ -964,6 +977,10 @@ def preview_key(p, view):
             else:
                 coordinates=np.asarray(pose["kp"])
                 shared["pose"]=np.where(np.isfinite(coordinates),coordinates,None).tolist()
+                if pose.get("backend") in POSE.SCORED_BACKENDS:
+                    shared["pose_backend"] = pose["backend"]
+                    scores = np.asarray(pose.get("sc", []))
+                    shared["pose_scores"] = np.where(np.isfinite(scores), scores, None).tolist()
     if p["mode"] == "combine":
         shared["combine"]=p["combine"]
     return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
@@ -1565,6 +1582,7 @@ def read_global_settings():
         else:
             migrate = "exclude_opaque_alpha" not in settings["layer_transfer"] if isinstance(settings["layer_transfer"], dict) else False
         settings["layer_transfer"] = global_transfer_settings(settings["layer_transfer"])
+        settings["pose"] = POSE.settings(settings.get("pose"))
         if "mask_placement" not in settings:
             settings["mask_placement"] = "folder"
             migrate = True
@@ -1607,12 +1625,16 @@ def write_global_settings(settings):
 def api_global_settings(req):
     transfer = global_transfer_settings(req["layer_transfer"])
     settings = read_global_settings()
+    pose_config = POSE.settings(req.get("pose", settings.get("pose")))
+    if "pose" in req and pose_config["backend"] in POSE.SCORED_BACKENDS:
+        POSE.prerequisites(pose_config)
     placement = req.get("mask_placement", settings["mask_placement"])
     if placement not in ("folder", "layers"):
         raise ValueError("mask placement must be folder or layers")
     with GLOBAL_SETTINGS_LOCK:
         settings["layer_transfer"] = transfer
         settings["mask_placement"] = placement
+        settings["pose"] = pose_config
         write_global_settings(settings)
     return settings
 
@@ -1620,7 +1642,7 @@ def api_global_settings(req):
 def module_settings(settings):
     if not isinstance(settings, dict):
         raise ValueError("preset settings must be an object")
-    return {key: value for key, value in settings.items() if key != "frequency_transfer"}
+    return {key: value for key, value in settings.items() if key not in ("frequency_transfer", "pose")}
 
 
 def write_presets(d):

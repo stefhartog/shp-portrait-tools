@@ -137,22 +137,27 @@ class BatchApiTests(unittest.TestCase):
         real_combine = U.combined_result
         transfer = {"format":"tiff", "compressed":False, "opaque_alpha":False, "parallel":False}
         U.api_global_settings({"layer_transfer": transfer})
+        pose = {"backend": U.POSE.OPENCV, "python": "", "model": "/synthetic/models/opencv-zoo"}
+        with patch.object(U.POSE, "prerequisites"):
+            U.api_global_settings({"layer_transfer": transfer, "pose": pose})
 
         def capture(*args, **kwargs):
             snapshots.append(progress.snapshot("batch-snapshot-12345"))
             settings["combine"]["fs_mix"] = 0
-            U.api_global_settings({"layer_transfer": {"format":"png"}})
+            U.api_global_settings({"layer_transfer": {"format":"png"}, "pose": U.POSE.DEFAULTS})
             self.assertEqual(args[2]["combine"]["fs_mix"], 55)
             return real_combine(*args, **kwargs)
 
         with U.LOCK, progress.operation("batch-snapshot-12345"), \
-             patch.object(U.M, "pick_target", side_effect=self.target), \
+             patch.object(U.M, "pick_target", side_effect=self.target) as analyze, \
              patch.object(U.M, "person_box", return_value=(0, 0, 128, 96)), \
              patch.object(U.K, "skin_mask", side_effect=self.components), \
              patch.object(U, "combined_result", side_effect=capture):
             result = U.api_batch({"paths": [str(self.image), str(other)], "settings": settings})
         self.assertEqual(result["succeeded"], 2)
+        self.assertEqual([call.kwargs["pose_config"] for call in analyze.call_args_list], [pose, pose])
         manifest = json.loads(Path(result["preset"]).read_text())
+        self.assertEqual(manifest["batch"]["pose_backend"], U.POSE.OPENCV)
         self.assertNotIn("frequency_transfer", manifest)
         self.assertEqual(manifest["batch"]["output_settings"], transfer)
         for item in result["items"]:

@@ -920,7 +920,7 @@ class StatusLayoutTests(unittest.TestCase):
           const state={version:1,avers:0,loaded:true,mode:'dnb'},landmarkEdit=null;
           const pans=[document.getElementById('p0'),document.getElementById('p1')];
           let selection=['result','directional_region'];
-          const errors=[],paneKinds=()=>selection,layout=()=>{},setStatus=message=>errors.push(message);
+          const errors=[],paneKinds=()=>selection,layout=()=>{},syncPose=()=>{},setStatus=message=>errors.push(message);
           const delayed=[];
           const decodes=[],nativeDecode=HTMLImageElement.prototype.decode;
           HTMLImageElement.prototype.decode=function(){
@@ -1019,7 +1019,7 @@ class StatusLayoutTests(unittest.TestCase):
         result = command("WebDriver:ExecuteScript", script="""
           const $=id=>document.getElementById(id),state=previewTest.state,pans=previewTest.pans;
           const landmarkEdit=null,pickingColor=null,view={z:1,tx:0,ty:0};
-          const layout=()=>{},syncTabs=()=>{},showImages=()=>{
+          const layout=()=>{},syncPose=()=>{},syncTabs=()=>{},showImages=()=>{
               previewTest.select([state.mode==='mask'?'orig':tabSel.A,'mask']);return previewTest.showImages();},
             updateCursor=()=>{},imagePoint=()=>null,closeLandmarks=()=>{};
           localStorage.setItem('dnb-tabA','orig');
@@ -1437,11 +1437,12 @@ class StatusLayoutTests(unittest.TestCase):
           const state={frequencyTransfer:{format:'png',compressed:true,opaque_alpha:true,parallel:true}};
           let stars=0,dirty=0;
           const updateStar=()=>stars++,markDirty=()=>dirty++;
-          const api=async(path,body)=>body,setBusy=()=>{},setStatus=()=>{};
+          const api=async(path,body)=>{if(window.rejectSettings)throw Error('synthetic settings failure');return body;},
+            setBusy=value=>{state.busy=value;},setStatus=()=>{};
         """ + lookup + transfer + precache + """
           syncTransfer();
           Object.defineProperty($('transferFormat'),'disabled',{configurable:true,get(){return false;},set(){}});
-          window.settingsTest={state,lookup:$,stars:()=>stars,dirty:()=>dirty};
+          window.settingsTest={state,lookup:$,stars:()=>stars,dirty:()=>dirty,pose:()=>poseConfig};
           window.addEventListener('message',event=>{
             if(event.source===parent&&event.data.type==='shp-tools-probe')
               parent.postMessage({type:'shp-skin-ready'},location.origin);
@@ -1515,6 +1516,27 @@ class StatusLayoutTests(unittest.TestCase):
                                  "blocked":True, "nativeSetter":True, "format":"tiff", "stars":0,
                                  "dirty":1, "precache":"0", "analysis":"Source analysis retained",
                                  "status":"Source status retained", "badge":"Cached", "originalEmpty":0})
+        pose_result = command("WebDriver:ExecuteAsyncScript", script="""
+          const done=arguments[arguments.length-1];
+          (async()=>{
+            const child=document.querySelector('#panel-dnb iframe').contentWindow,test=child.settingsTest;
+            const get=id=>document.getElementById(id);
+            test.state.imageInfo={pose_backend:'rtmlib'};test.state.preview_cache={retained:true};
+            get('poseBackend').value='google-full';
+            get('posePython').value='/isolated/runtime/bin/python';get('poseModel').value='/verified/full.task';
+            await get('poseSave').onclick();
+            const routed=test.lookup('poseHint')===get('poseHint');
+            const saved=test.pose().backend==='google-full'&&get('poseHint').textContent.includes('Current image: rtmlib');
+            test.state.busy=true;get('poseBackend').value='rtmlib';await get('poseSave').onclick();
+            const blocked=test.pose().backend==='google-full';test.state.busy=false;
+            child.rejectSettings=true;await get('poseSave').onclick();
+            const failed=test.pose().backend==='google-full'&&get('poseBackend').value==='google-full';
+            child.rejectSettings=false;
+            done({routed,saved,blocked,failed,unchanged:test.state.imageInfo.pose_backend==='rtmlib'&&
+              test.state.preview_cache.retained,notPreset:test.stars()===0});
+          })().catch(e=>done({error:String(e)}));
+        """, args=[], sandbox=None)
+        self.assertEqual(pose_result, dict.fromkeys(("routed","saved","blocked","failed","unchanged","notPreset"), True))
         result = evaluate("""
           const frame=document.querySelector('#panel-dnb iframe'),before=document.getElementById('transferFormat');
           window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,origin:location.origin,

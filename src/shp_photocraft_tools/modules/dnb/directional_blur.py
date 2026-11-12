@@ -3,6 +3,7 @@ import math
 
 import cv2
 import numpy as np
+from . import pose_backend as POSE
 
 DEFAULTS = {"on": False, "left": True, "right": True, "distance": 30,
             "strength": 100, "width": 100, "start": 0, "end": 100, "taper": 0, "feather": 3,
@@ -105,6 +106,19 @@ class GeometryUnavailable(ValueError):
     """A requested region has no usable geometry in this image."""
 
 
+def check_scores(pose, indices):
+    if pose.get("backend", "rtmlib") not in POSE.SCORED_BACKENDS:
+        return
+    scores = pose.get("sc")
+    if scores is None:
+        raise GeometryUnavailable("Directional Blur unavailable: missing experimental-backend joint confidence")
+    scores = np.asarray(scores)
+    if (scores.ndim != 1 or len(scores) <= max(indices)
+            or not np.isfinite(scores[list(indices)]).all()
+            or np.any(scores[list(indices)] < .5)):
+        raise GeometryUnavailable("Directional Blur unavailable: missing or low-confidence experimental-backend joints")
+
+
 def effective_settings(p, pose, shape):
     effective = {**p}
     unavailable = {}
@@ -129,6 +143,7 @@ def torso_geometry(p, pose, shape, *, origin=(0, 0), scale=1):
     kp = np.asarray(pose["kp"])
     if kp.ndim != 2 or kp.shape[1] != 2 or len(kp) <= 12:
         raise GeometryUnavailable("Directional Blur unavailable: invalid torso pose")
+    check_scores(pose, (5, 6, 12, 11))
     quad = kp[[5, 6, 12, 11]].astype(np.float64)
     h, w = shape[:2]
     if not np.isfinite(quad).all() or np.any(quad < 0) or np.any(quad[:, 0] >= w) or np.any(quad[:, 1] >= h):
@@ -178,6 +193,7 @@ def segments(p, pose, shape, *, origin=(0, 0), scale=1):
             continue
         if kp.ndim != 2 or kp.shape[1] != 2 or len(kp) <= max(ia, ib):
             raise GeometryUnavailable(f"Directional Blur unavailable: invalid {label.lower()} pose")
+        check_scores(pose, (ia, ib))
         points = kp[[ia, ib]].astype(np.float64)
         if not np.isfinite(points).all():
             raise GeometryUnavailable(f"Directional Blur unavailable: {label.lower()} non-finite joint coordinates")

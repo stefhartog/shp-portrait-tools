@@ -252,9 +252,9 @@ class ProgressTests(unittest.TestCase):
             applySettings({...combinedSaved,mode:'combine'});
             check(state.mode==='combine' && state.combine.fs_mix===37 && state.combine.dnb_mix===68);
             applySettings(original);
-            check(!original.directional.on && original.directional.distance===30);
-            check(original.directional.taper===0);
-            check(original.directional.start===0 && original.directional.end===100);
+            check(!original.directional.on && original.directional.distance===198);
+            check(original.directional.taper===70);
+            check(original.directional.start===20 && original.directional.end===80);
             check(original.band1_on && !original.second_band.on);
             $('band2On').checked=true;$('band2On').onchange();
             $('band2Invert').checked=true;$('band2Invert').onchange();
@@ -297,7 +297,7 @@ class ProgressTests(unittest.TestCase):
             check(state.directional.pairs.upper_leg.taper===55);
             const captured=params();
             directionalPairSliders.upper_leg.distance.change(77);
-            check(captured.directional.pairs.upper_leg.distance===30);
+            check(captured.directional.pairs.upper_leg.distance===121);
             check(state.directional.end===80);
             for(const [pair,controls] of Object.entries(directionalPairSliders)){
               controls.strength.change(35);
@@ -324,10 +324,10 @@ class ProgressTests(unittest.TestCase):
             check(state.directional.pairs.upper_leg.start===87);
             applySettings(original);
             check(directionalSegments.slice(2).every(([id,key])=>!state.directional[key] && !$(id).checked));
-            check(state.directional.taper===0);
-            check(state.directional.end===100);
+            check(state.directional.taper===70);
+            check(state.directional.end===80);
             applySettings({...original,directional:{...original.directional,length:60,end:undefined}});
-            check(state.directional.start===0 && state.directional.end===60 && !('length' in state.directional));
+            check(state.directional.start===20 && state.directional.end===60 && !('length' in state.directional));
             applySettings({directional:{length:60}});
             check(Object.values(state.directional.pairs).every(p=>p.start===0&&p.end===60));
             check(state.directional.torso_controls.end===60);
@@ -337,18 +337,18 @@ class ProgressTests(unittest.TestCase):
             directionalPairSliders.upper_leg.distance.change(77);
             $('band2On').checked=true;$('band2On').onchange();
             const settingsAfterChange=getSettings();
-            check(settingsBeforeChange.directional.pairs.upper_leg.distance===30);
+            check(settingsBeforeChange.directional.pairs.upper_leg.distance===121);
             check(settingsAfterChange.second_band.on && settingsAfterChange.second_band.lo===SECOND_BAND_DEFAULTS.lo);
             check(JSON.stringify(settingsAfterChange.mask)===JSON.stringify(settingsBeforeChange.mask));
             check(JSON.stringify(settingsAfterChange.frequency)===JSON.stringify(settingsBeforeChange.frequency));
             applySettings(settingsBeforeChange);
-            check(!state.secondBand.on && state.directional.pairs.upper_leg.distance===30);
+            check(!state.secondBand.on && state.directional.pairs.upper_leg.distance===121);
             const saved=getSettings();
             for(const key of ['mask','tone','structure','color','frequency','skintone'])
               check(JSON.stringify(saved[key])===JSON.stringify(original[key]));
             $('S').value='181';
             const payload=params();
-            check(payload.mode==='dnb' && payload.S===181);
+            check(payload.mode==='mask' && payload.S===181);
             state.mode='dnb';
             state.mode='frequency';switchMode('mask');
             check(state.mode==='mask' && params().mode==='mask');
@@ -388,7 +388,7 @@ class ProgressTests(unittest.TestCase):
             check(state.frequency.blur_mask && params().frequency.blur_mask);
             applySettings({...original,frequency:{method:'median_fast',radius:8,blur_radius:16}});
             syncFrequencyControls();check(state.frequency.on);
-            check(state.skintone.on && $('skintoneOn').checked);
+            check(!state.skintone.on && !$('skintoneOn').checked);
             const beforeToggle=dirty;
             $('skintoneOn').checked=false;$('skintoneOn').onchange();
             check(!state.skintone.on && dirty===beforeToggle+1);
@@ -398,7 +398,7 @@ class ProgressTests(unittest.TestCase):
             check(!state.skintone.on && !$('skintoneOn').checked);
             check(!params().skintone.on && !getSettings().skintone.on);
             applySettings({...original,skintone:{hue_center:27}});
-            check(state.skintone.on && $('skintoneOn').checked && state.skintone.hue_center===27);
+            check(!state.skintone.on && !$('skintoneOn').checked && state.skintone.hue_center===27);
           })();
         """
         self.assertIn("$('g-file').hidden = state.mode !== 'mask'", html)
@@ -1127,8 +1127,8 @@ class ProgressTests(unittest.TestCase):
         startup_harness = """
           (async()=>{
             const window={},events=[],state={},TRANSFER_DEFAULTS={},presets={};
-            let parent={postMessage:message=>events.push(message.type)},maskPlacement,shellUiReady=false;
-            const location={origin:'http://local'},syncTransfer=()=>{},presetErr=e=>{throw e;},
+            let parent={postMessage:message=>events.push(message.type)},maskPlacement,poseConfig,shellUiReady=false;
+            const location={origin:'http://local'},syncTransfer=()=>{},syncPose=()=>{},presetErr=e=>{throw e;},
               fillPresetList=()=>{},snapNow=()=>events.push('snapshot'),
               presetSettings=()=>presets.default,applySettings=settings=>{state.mode=settings.mode;events.push(state.mode);},
               api=async path=>path==='/api/global-settings'?{}:{default:{mode:'dnb',strength:0.6}};

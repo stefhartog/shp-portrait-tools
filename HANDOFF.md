@@ -106,6 +106,56 @@ scale S and provenance. FS/Combine retain the original native numeric samples an
 D&B retains its existing processing colour-space contract. A local load clears the
 fetched PhotoCraft identity. Mode changes do not refetch, rerun inference or reset settings.
 
+Optional Google pose implementation: global `pose` settings default to rtmlib; the
+experimental selector and separate Python/model paths live in Settings & Info and
+are excluded from presets. They apply on next source analysis, not by mutating a
+loaded source. Each source records `pose_backend`; normal load generations/cache
+clearing handle backend transitions. Batch snapshots the backend/config once, retains
+the editor state, and records the backend in its manifest. Failures do not replace
+the current source, run unrestricted, or fall back silently.
+`pose_backend.py` validates the official Full float16 v1 size/hash, rechecks a private
+snapshot and launches only a bubblewrap user/network/PID-isolated CPU worker.
+Read-only mounts contain `/usr`, runtime/interpreter, CPU topology, font config,
+worker code and the verified model; normal home/config/photos/desktop sockets are
+absent. Stdin is bounded downscaled RGB8, output is one size/shape/range-validated
+result file, inherited FDs are closed, environment is cleared and deadline is 90s.
+Parent loopback services remain usable. `google_pose_worker.py` verifies Python 3.13,
+MediaPipe 1.2.2 and isolated networking before import, uses CPU IMAGE `num_poses=2`,
+and never imports MediaPipe into the parent. See MODELS for explicit provisioning
+and the separate hash-pinned worker requirements; no default-dependency changes.
+The Google 33-to-COCO17 mapping uses min(visibility,presence), both >= .5 and finite
+in-bounds x/y. Missing joints get score zero and non-finite geometry, not invented
+whole-body observations. Length-aware eye-corner/hand cues preserve rtmlib's extras
+without indexing a 17-point Google result; independent face/iris cues remain intact.
+Google face/body assignment is one-to-one; AF and skin crop use that selected subject.
+Directional Blur checks Google joint scores in addition to geometry; legacy score
+handling is deliberately unchanged. Confidence thresholds are conservative policy,
+not calibration or portrait validation.
+MediaPipe NOTICE discloses metrics transmission, with no verified public opt-out.
+Network isolation blocks egress, not telemetry generation/queues. Real-worker
+validation is procedural non-person IMAGE inference only; adapter/multi-person/
+cropped/low-confidence/subject association tests use synthetic observations.
+No user photos, live app restart or positive portrait accuracy evaluation was performed.
+
+Optional OpenCV Zoo implementation: `opencv_zoo_pose.py` adapts the pinned
+OpenCV Zoo MediaPipe detector/pose wrappers and validates both local model files
+against exact hashes/sizes. It uses the existing OpenCV DNN package with explicit
+CPU target, in the app process; no Google Tasks runtime or new dependency is
+imported, and no model download occurs. `MODELS.md` records exact artifacts,
+directory path, current smoke-test scope and Apache attribution.
+The detector and pose outputs are matched by tensor shape, not positional order;
+the adapter uses XYWH rectangles for NMS, restores original-image coordinates,
+maps 33 landmarks to COCO17 and invalidates absent/low-confidence geometry.
+Settings use the same global `pose` object and source-generation/cache path;
+batch captures the model directory/backend once. Face/body association remains
+one-to-one, independent face/iris cues remain, and Directional Blur requires
+scores for both experimental backends. No 68-point face/21-point hand data is
+fabricated. The exact model pair is locally provisioned in this workstation's
+`DNB_MODELS/opencv-zoo`; the selected backend remains unchanged. OpenCV 5.0.0
+CPU DNN passed synthetic blank-image inference and adapter tests only. OpenCV
+4.x/ORT/CUDA and positive portrait quality/performance remain unverified; this
+family is not known to improve on either default rtmlib or Google Full.
+
 Presets save the entire bundle, including hidden mask/FS/D&B/Directional/Combine settings.
 The preset star excludes navigation mode and S-derived FS pixel radii. Legacy `skintone`
 normalizes to `frequency`; absent new controls receive defaults in memory, not file rewrites.

@@ -177,8 +177,9 @@ def mask_B(img_u8, face_info, kp, sc):
     return out
 
 
-def pick_target(path, img, include_unscaled=False):
-    subjects, bodies, af, target, faces = C.build_subjects(str(path), img)
+def pick_target(path, img, include_unscaled=False, pose_config=None):
+    subjects, bodies, af, target, faces = (C.build_subjects(str(path), img, pose_config)
+                                         if pose_config else C.build_subjects(str(path), img))
     cands = [(i, C.combine(s[5])) for i, s in enumerate(subjects)]
     cands = [(i, r) for i, r in cands if r["S"] is not None]
     if not cands and not include_unscaled:

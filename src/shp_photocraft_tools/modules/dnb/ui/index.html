@@ -132,6 +132,15 @@
     <summary>Settings &amp; Info</summary>
     <div class="gbody" id="generalSettingsContent">
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
+      <details id="g-pose">
+        <summary>Pose analysis backend</summary>
+        <div class="row"><label for="poseBackend">backend</label><select id="poseBackend"><option value="rtmlib">rtmpose / rtmlib (default)</option><option value="google-full">google full (experimental, isolated)</option><option value="opencv-zoo">opencv zoo mediapipe (experimental, cpu)</option></select></div>
+        <div class="row"><label for="posePython">worker python</label><input id="posePython" type="text" placeholder="/absolute/path/to/pose-venv/bin/python"></div>
+        <div class="row"><label for="poseModel" id="poseModelLabel">full model</label><input id="poseModel" type="text" placeholder="/absolute/path/to/pose_landmarker_full.task"></div>
+        <button id="poseSave">Save pose backend</button>
+        <p class="hint">Applies on the next Get/load and at batch start, not to the current analysis. OpenCV Zoo uses the verified local ONNX pair with OpenCV DNN on CPU; Google requires a separate pinned runtime and networkless bubblewrap worker. Neither option replaces rtmlib automatically. MediaPipe's runtime NOTICE discloses metrics transmission; network isolation blocks egress, not telemetry generation. Both experimental backends lack whole-body eye-corner/hand cues; portrait quality is not validated. See MODELS.md for prerequisites.</p>
+        <p class="hint" id="poseHint"></p>
+      </details>
       <details id="g-transfer" open>
         <summary>Result file / PhotoCraft layer-transfer options</summary>
         <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
@@ -297,7 +306,8 @@
 
 <script>
 const generalSettingIds = new Set(['maskPrecache','transferFormat','transferCompression','transferAlpha',
-  'transferParallel','transferHint','maskPlacement','calculationLogText']);
+  'transferParallel','transferHint','maskPlacement','calculationLogText',
+  'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint']);
 const $ = (id) => document.getElementById(id) ||
   (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
@@ -616,6 +626,42 @@ $('directionalOn').onclick=event=>event.stopPropagation();
   };
 });
 let maskPlacement = 'folder';
+let poseConfig = {backend:'rtmlib', python:'', model:''};
+function syncPose() {
+  $('poseBackend').value=poseConfig.backend;
+  $('posePython').value=poseConfig.python;
+  $('poseModel').value=poseConfig.model;
+  const opencv=poseConfig.backend==='opencv-zoo';
+  $('posePython').parentElement.hidden=opencv || poseConfig.backend==='rtmlib';
+  $('poseModelLabel').textContent=opencv?'models folder':'full model';
+  $('poseModel').placeholder=opencv?'Uses the verified OpenCV pair in the D&B models folder':'/absolute/path/to/pose_landmarker_full.task';
+  const current=state.imageInfo?.pose_backend;
+  $('poseHint').textContent='Saved for next source: '+poseConfig.backend+
+    (current ? '. Current image: '+current+'. Get/load again to reanalyze.' : '. No image analyzed yet.');
+}
+$('poseBackend').onchange=()=>{
+  const backend=$('poseBackend').value;
+  if(backend!==poseConfig.backend && $('poseModel').value.trim()===poseConfig.model) {
+    $('poseModel').value='';
+  }
+  if(backend==='rtmlib' || backend==='opencv-zoo') $('posePython').value='';
+  $('posePython').parentElement.hidden=backend==='rtmlib' || backend==='opencv-zoo';
+  $('poseModelLabel').textContent=backend==='opencv-zoo'?'models folder':'full model';
+  $('poseModel').placeholder=backend==='opencv-zoo'?'Uses the verified OpenCV pair in the D&B models folder':'/absolute/path/to/pose_landmarker_full.task';
+};
+$('poseSave').onclick=async()=>{
+  if(state.busy) return;
+  const next={backend:$('poseBackend').value,python:$('posePython').value.trim(),model:$('poseModel').value.trim()};
+  setBusy(true);
+  try {
+    const saved=await api('/api/global-settings',{layer_transfer:{...state.frequencyTransfer},mask_placement:maskPlacement,pose:next});
+    if(!saved.pose) throw new Error('Restart Portrait Tools normally to load the updated pose backend code.');
+    poseConfig=saved.pose;
+    syncPose();
+    setStatus('Pose backend saved for the next Get/load and batch. Current image is unchanged.',false,true);
+  } catch(e) { syncPose(); setStatus('Pose backend could not be saved: '+e.message,true); }
+  finally { setBusy(false); }
+};
 function syncTransfer() {
   const t = state.frequencyTransfer;
   $('transferFormat').value = t.format;
@@ -982,6 +1028,7 @@ async function loadList() {
 function applyLoaded(r) {
     endPreviewCompare();
     state.imageInfo = r;
+    syncPose();
     closeLandmarks(false);
     state.loadEpoch = (state.loadEpoch || 0) + 1;
     tabSel.A = 'result'; syncTabs();
@@ -1103,7 +1150,7 @@ function setBusy(b, operation=true) {
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = panelOperationBusy;
-  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache'].forEach(id => { $(id).disabled = panelOperationBusy; });
+  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache','poseBackend','posePython','poseModel','poseSave'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||state.sourceKind!=='photocraft';
@@ -1901,17 +1948,31 @@ document.querySelectorAll('details.grp').forEach(d => {
 /* ---------- presets ---------- */
 const FACTORY = {
   combine:{fs_mix:100,dnb_mix:100},
-  band1_on:true, second_band:{...SECOND_BAND_DEFAULTS},
-  mode: 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true},
-  skintone: {...SKINTONE_DEFAULTS},
-  directional: directionalSettings(),
-  bands: [{lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false}],
-  strength: 1.0, max_ev: 1.0, tau: 1.0, edge: 0.12, layer_blur_at_s181: 0,
-  tone: {on:true, mid:0.52, range:0.87, taper:0.16, strength:1},
-  mask: {on:true, features:true, colour:true, feather:1.0, inward:true},
-  structure: {on:false, protect:0, mm:4, thr:0.1},
-  color: {on:false, hue:null, saturation:null, rgb:null, hue_range:30, saturation_range:0.25, blur_mm:1, smooth_mm:0.8, strength:1},
-  view: 'crop',
+  band1_on:true,
+  second_band:{on:false,invert:false,lo:2.47013162931409,hi:8.904829094515872,taper:0.25,strength:0.34},
+  mode:'mask',
+  directional:{
+    on:false,left:true,right:true,distance:198,strength:100,width:585,
+    start:20,end:80,taper:70,feather:40,
+    left_lower_leg:false,right_lower_leg:false,left_upper_arm:false,right_upper_arm:false,
+    left_forearm:false,right_forearm:false,torso:false,
+    pairs:{
+      upper_arm:{distance:108,width:286,taper:30,strength:52,feather:14.5,start:19,end:80},
+      forearm:{distance:156,width:87,taper:47,strength:25,feather:18.5,start:45,end:83},
+      upper_leg:{distance:121,width:345,taper:20,strength:59,feather:23,start:8,end:67},
+      lower_leg:{distance:198,width:229,taper:48,strength:52,feather:18,start:27,end:82}
+    },
+    torso_controls:{distance:198,width:99,taper:7,strength:49,feather:40,start:0,end:80}
+  },
+  frequency:{on:true,blur_mask:true,blur_strength:60,method:'median_fast',radius:13,blur_radius:13,radius_at_s181:8,blur_percent:100},
+  skintone:{on:false,hue_center:22.4,hue_width:2,hue_softness:5,hue_amount:50,sat_min:45,sat_max:55,sat_softness:5,sat_amount:100},
+  bands:[{lo:0.7772368702932284,hi:9.103531073262888,gain:1,taper:1.3,linked:false}],
+  strength:2,max_ev:1,tau:0.08,edge:0.1,layer_blur_at_s181:5,
+  tone:{on:true,mid:0.402626723226731,range:0.51,taper:0.26,strength:0.8},
+  mask:{on:true,features:true,colour:true,feather:8,inward:true},
+  structure:{on:true,protect:0.8,mm:8,thr:0.05},
+  color:{on:true,hue:17.859392166137695,saturation:0.5137453079223633,rgb:[134,86,65],hue_range:10,saturation_range:0.6,blur_mm:2.7,smooth_mm:2,strength:0.29},
+  view:'whole',
 };
 function getSettings() {
   return {
@@ -1941,7 +2002,7 @@ function applySettings(o) {
   const f = JSON.parse(JSON.stringify(FACTORY));
   const v = Object.assign({}, f, o || {}, {frequency: Object.assign({}, f.frequency, (o || {}).frequency), tone: Object.assign({}, f.tone, (o || {}).tone), mask: Object.assign({}, f.mask, (o || {}).mask), structure: Object.assign({}, f.structure, (o || {}).structure), color: Object.assign({}, f.color, (o || {}).color)});
   state.mode = uiMode(v.mode);
-  state.directional = directionalSettings(o?.directional || {});
+  state.directional = directionalSettings(o?.directional ?? FACTORY.directional);
   if(o?.directional?.length!==undefined && o.directional.end===undefined) state.directional.end=o.directional.length;
   delete state.directional.length;
   if(!Number.isFinite(state.directional.start) || !Number.isFinite(state.directional.end) ||
@@ -1954,7 +2015,7 @@ function applySettings(o) {
   });
   Object.entries(directionalTorsoSliders).forEach(([key,s])=>s.set(state.directional.torso_controls[key],false));
   syncDirectionalControls();
-  state.skintone = {...SKINTONE_DEFAULTS, ...(o?.skintone || {})};
+  state.skintone = {...SKINTONE_DEFAULTS, ...FACTORY.skintone, ...(o?.skintone || {})};
   $('skintoneOn').checked = state.skintone.on;
   if (state.loaded) state.hueCenterNote = 'Hue Center restored from settings; next Load/Get will estimate it again.';
   Object.entries(skintoneSliders).forEach(([key,s]) => {
@@ -2037,6 +2098,8 @@ async function loadPresets() {
     const global = await api('/api/global-settings');
     state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...global.layer_transfer};
     maskPlacement = global.mask_placement || 'folder';
+    poseConfig = global.pose || {backend:'rtmlib',python:'',model:''};
+    syncPose();
     syncTransfer();
   } catch (e) { presetErr(e); }
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }

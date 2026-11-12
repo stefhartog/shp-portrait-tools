@@ -37,6 +37,16 @@ Tools' GPU extra provides CUDA 13/cuDNN libraries, **not the driver**. If your
 computer cannot support that combination, resolve it with the maintainer first.
 No minimum RAM/VRAM is promised; generation models are large downloads.
 
+The optional **Google Full** pose backend is experimental and needs a separately
+provisioned, network-isolated worker; it is **not** a shortcut around this setup or
+a CPU-only guarantee for Skin Tools. Keep the existing backend selected while
+following this guide. See [the optional prerequisites and privacy limits](../MODELS.md#optional-google-pose-landmarker-full-experimental)
+before considering a change; Tools does not install system isolation prerequisites.
+The optional **OpenCV Zoo MediaPipe** backend instead uses a pinned local model
+pair and OpenCV DNN on CPU; it still does not make the full Skin Tools pipeline
+a CPU-only guarantee and has no portrait-quality evaluation. See
+[its exact model requirements and limits](../MODELS.md#optional-opencv-zoo-mediapipe-onnx-pose-backend-experimental).
+
 | Part | When you need it |
 | --- | --- |
 | Python 3.13, uv, Tools source/dependencies | Required for Tools |
