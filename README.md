@@ -69,19 +69,20 @@ graphics driver. Keep ComfyUI in its own Python environment. For package details
 and other dependency options, see [pyproject.toml](pyproject.toml).
 
 Get the three Skin Tools ONNX models and their documented hashes from
-[MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files). Create a model folder
-and install the per-user desktop launcher:
+[MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files), then place them in
+the model folder:
 
 ```sh
 mkdir -p "$HOME/.local/share/shp-photocraft-tools/dnb/models"
-uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-photocraft-tools/dnb/models"
 ```
 
-Put `yunet.onnx`, `face_landmarks.onnx` and `selfie_multiclass_256x256.onnx` in that
-folder. Then launch the app:
+The required filenames are `yunet.onnx`, `face_landmarks.onnx` and
+`selfie_multiclass_256x256.onnx`. Once they are in place, install the per-user
+desktop launcher and start the app:
 
 ```sh
+uv run --no-sync python scripts/install_desktop.py \
+  --models "$HOME/.local/share/shp-photocraft-tools/dnb/models"
 "$HOME/.local/bin/shp-photocraft-tools"
 ```
 
