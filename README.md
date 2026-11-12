@@ -5,6 +5,13 @@ local skin retouching, AI-assisted canvas expansion and fill, and editable resul
 that you can return to PhotoCraft. Skin analysis runs locally; image generation uses
 your own ComfyUI installation and models.
 
+The tools estimate each subject's scale (S, in pixels per 63 mm), so size-based
+controls adapt to the subject instead of relying on fixed pixel dimensions—helping
+keep retouching behavior more consistent across close-ups, wider shots and
+resolutions. The Skin Mask focuses adjustments on detected skin and helps reduce
+changes to hair, clothing and background; check its coverage and refine it when
+needed, since automatic detection can miss or include areas.
+
 <p align="center">
   <a href="docs/images/readme/skin-mask.png"><img src="docs/images/readme/skin-mask.png" alt="Skin Mask workspace" width="31%"></a>
   <a href="docs/images/readme/fs-and-tone.png"><img src="docs/images/readme/fs-and-tone.png" alt="FS &amp; Tone retouching workspace" width="31%"></a>
