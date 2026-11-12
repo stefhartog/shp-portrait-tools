@@ -5,6 +5,12 @@ local skin retouching, AI-assisted canvas expansion and fill, and editable resul
 that you can return to PhotoCraft. Skin analysis runs locally; image generation uses
 your own ComfyUI installation and models.
 
+<p align="center">
+  <a href="docs/images/readme/skin-mask.png"><img src="docs/images/readme/skin-mask.png" alt="Skin Mask workspace" width="31%"></a>
+  <a href="docs/images/readme/fs-and-tone.png"><img src="docs/images/readme/fs-and-tone.png" alt="FS &amp; Tone retouching workspace" width="31%"></a>
+  <a href="docs/images/readme/crop-and-expand.png"><img src="docs/images/readme/crop-and-expand.png" alt="Crop &amp; Expand workspace" width="31%"></a>
+</p>
+
 ## What’s included
 
 ### Skin Tools
