@@ -17,12 +17,38 @@ your own ComfyUI installation and models.
 
 The skin tools share a source image, analysis and mask settings.
 
+<details>
+<summary>View Skin Tools screenshots (6)</summary>
+
+![Skin Mask view with portrait and mask controls](docs/images/readme/skin-mask.png)
+
+![Skin Mask analysis view](docs/images/readme/skin-mask-analysis.png)
+
+![FS & Tone retouching view](docs/images/readme/fs-and-tone.png)
+
+![Dodge & Burn controls](docs/images/readme/dodge-and-burn.png)
+
+![Combine view for retouching layers](docs/images/readme/combine.png)
+
+![Settings & Info options](docs/images/readme/settings-and-info.png)
+
+</details>
+
 ### AI Fill
 
 - **Crop & Expand** — reframe a picture and generate the surroundings with FLUX.2 dev,
   FLUX.1 Fill or FLUX.2 Klein. Klein has separate settings, a soft seam blend and
   optional compatible LoRA support.
 - **Patch Fill** — paint an area to replace with FLUX.1 Fill while retaining surrounding context.
+
+<details>
+<summary>View AI Fill screenshots (2)</summary>
+
+![Crop & Expand generation controls](docs/images/readme/crop-and-expand.png)
+
+![Patch Fill mask-painting view](docs/images/readme/patch-fill.png)
+
+</details>
 
 These features need an independently installed ComfyUI, compatible models and nodes.
 See [MODELS.md](MODELS.md) for exact requirements.
