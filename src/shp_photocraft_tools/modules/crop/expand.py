@@ -5,7 +5,8 @@ contains the picture or lies inside it) into the margins on each side: positive 
 
 Generation: `expand_variations()` uploads the picture to ComfyUI (http://127.0.0.1:8188 or SHPC_COMFY), queues the graph
 from `build_graph()` (FLUX.2 [dev] GGUF, reference-latent outpaint, colour match, upscale, seam correction, feathered paste
-of the original), or native FLUX.1 Fill with Lanczos final resizing, and reads the finished picture back.
+of the original), native FLUX.1 Fill with Lanczos final resizing, or FLUX.2 [klein] masked-latent outpainting
+(`build_klein_graph`), and reads the finished picture back.
 No external workflow JSON or other backend is involved.
 """
 import base64
@@ -14,6 +15,7 @@ import json
 import os
 import random
 import socket
+import struct
 import threading
 import time
 import urllib.error
@@ -24,7 +26,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image, ImageCms, ImageOps
+from PIL import Image, ImageCms, ImageFilter, ImageOps
 
 COMFY_URL = os.environ.get("SHPC_COMFY", "http://127.0.0.1:8188")
 # Base ratios (long side : short side); the orientation flips them to portrait. 5:4 flipped is the 4:5 Instagram ratio.
@@ -40,6 +42,8 @@ LORA_NAME = os.environ.get("SHPC_LORA", "Flux_2-Turbo-LoRA_comfyui.safetensors")
 FILL_CLIP_L = os.environ.get("SHPC_FILL_CLIP_L", "clip_l.safetensors")
 FILL_T5 = os.environ.get("SHPC_FILL_T5", "t5xxl_fp8_e4m3fn_scaled.safetensors")
 FILL_VAE = os.environ.get("SHPC_FILL_VAE", "ae.safetensors")
+KLEIN_CLIP = os.environ.get("SHPC_KLEIN_CLIP", "qwen_3_8b_fp8mixed.safetensors")
+METHODS = ("flux2", "flux1_fill", "flux2_klein")
 FILL_PROMPT = ("A realistic photograph, a natural continuation of the existing scene into the surrounding empty canvas, "
                "consistent lighting, colors, perspective, depth of field and detail. Seamless scene continuation, "
                "no frame, no border, no flat gray margins.")
@@ -47,6 +51,9 @@ BASE_PROMPT = ("Outpaint this image. The flat gray margin around the photo is em
                "entire gray margin with new realistic scene content that naturally continues the photograph in every "
                "direction, with matching lighting, colors, perspective, depth of field and detail. No gray, no border, "
                "no frame. Keep the central photo identical.")
+KLEIN_PROMPT = ("A photograph. The softly blurred areas at the edges are placeholders: paint them as a natural extension of "
+                "the scene, with the same lighting, colour, perspective, depth of field, grain and fine texture as the "
+                "photo. Keep the existing photo unchanged.")
 
 # name -> (type, min, max, default). Strings have no range; they are checked against the server when a run starts.
 SETTINGS = {
@@ -59,6 +66,11 @@ SETTINGS = {
     "fill_unet": (str, 0, 0, "flux1-fill-dev.safetensors"),
     "fill_clip_device": (str, 0, 0, "cpu"),
     "fill_upscale": (str, 0, 0, "lanczos"),
+    "klein_steps": (int, 1, 50, 4), "klein_megapixels": (float, 0.25, 2, 2.0), "klein_feathering": (int, 0, 512, 32),
+    "klein_unet": (str, 0, 0, "flux-2-klein-9b.safetensors"), "klein_upscale": (str, 0, 0, "lanczos"),
+    "klein_seam_correction": (bool, 0, 1, False),
+    "klein_lora": (bool, 0, 1, False), "klein_lora_name": (str, 0, 0, ""),
+    "klein_lora_strength": (float, 0, 2, 1.0),
     "prompt": (str, 0, 0, ""),
 }
 DEFAULTS = {k: v[3] for k, v in SETTINGS.items()}
@@ -73,6 +85,11 @@ FILL_REQUIRED_NODES = ["LoadImage", "ImagePadForOutpaint", "ImageScaleToTotalPix
                        "CLIPTextEncode", "FluxGuidance", "ConditioningZeroOut", "InpaintModelConditioning",
                        "KSampler", "VAEDecode", "INPAINT_ColorMatch", "SeamColorCorrect", "InvertMask",
                        "ImageCompositeMasked", "PreviewImage"]
+KLEIN_REQUIRED_NODES = ["LoadImage", "LoadImageMask", "ImageScaleToTotalPixels", "GetImageSize", "MaskToImage",
+                        "ImageScale", "ImageToMask", "UNETLoader",
+                        "CLIPLoader", "VAELoader", "CLIPTextEncode", "VAEEncode", "SetLatentNoiseMask", "ReferenceLatent",
+                        "ConditioningZeroOut", "CFGGuider", "Flux2Scheduler", "KSamplerSelect", "RandomNoise",
+                        "SamplerCustomAdvanced", "VAEDecode", "PreviewImage"]
 
 
 class ExpandError(RuntimeError):
@@ -164,7 +181,7 @@ def load_settings(path, defaults=None):
         saved = {}
     defaults = DEFAULTS if defaults is None else defaults
     cur = {k: saved[k] if isinstance(saved.get(k), type(d)) else d for k, d in defaults.items()}
-    if cur["method"] not in ("flux2", "flux1_fill"):
+    if cur["method"] not in METHODS:
         raise ExpandError(f"unknown generation method: {cur['method']}")
     if cur["fill_clip_device"] not in ("cpu", "default"):
         raise ExpandError(f"unknown Fill text encoding device: {cur['fill_clip_device']}")
@@ -185,9 +202,9 @@ def fill_settings(path, values=None, reset=False, defaults=None):
             raise ExpandError(f"bad value for {k}") from e
         if kind in (int, float) and not lo <= v <= hi:
             raise ExpandError(f"{k} must be between {lo} and {hi}")
-        if kind is str and k != "prompt" and not v.strip():
+        if kind is str and k not in ("prompt", "klein_lora_name") and not v.strip():
             raise ExpandError(f"{k} must not be empty")
-        if k == "method" and v not in ("flux2", "flux1_fill"):
+        if k == "method" and v not in METHODS:
             raise ExpandError(f"unknown generation method: {v}")
         if k == "fill_clip_device" and v not in ("cpu", "default"):
             raise ExpandError(f"unknown Fill text encoding device: {v}")
@@ -207,6 +224,8 @@ def build_graph(image_name, margins, prompt, seed, s):
     method = s.get("method", "flux2")
     if method == "flux1_fill":
         return build_fill_graph(image_name, margins, prompt, seed, s)
+    if method == "flux2_klein":
+        return build_klein_graph(image_name, margins, prompt, seed, s)
     if method != "flux2":
         raise ExpandError(f"unknown generation method: {method}")
     left, top, right, bottom = margins
@@ -258,6 +277,69 @@ def build_graph(image_name, margins, prompt, seed, s):
     if s["upscale"] == "lanczos":
         del g["22"], g["23"]
         g["25"]["inputs"]["image"] = ["21", 0]
+    return g
+
+
+def _scaled_mask(g, prefix, mask, size):
+    """Nodes resizing `mask` to the image size node `size`; returns the link of the resized mask."""
+    g[prefix + "i"] = {"class_type": "MaskToImage", "inputs": {"mask": mask}}
+    g[prefix + "s"] = {"class_type": "ImageScale", "inputs": {"image": [prefix + "i", 0], "upscale_method": "bilinear",
+                                                             "width": [size, 0], "height": [size, 1], "crop": "disabled"}}
+    g[prefix + "m"] = {"class_type": "ImageToMask", "inputs": {"image": [prefix + "s", 0], "channel": "red"}}
+    return [prefix + "m", 0]
+
+
+def build_klein_graph(image_name, margins, prompt, seed, s):
+    """Sample a prepared canvas and source-space overlap mask; colour correction and a single RGB blend follow locally.
+
+    The separately encoded original remains the reference: using the blurred prefill as reference previously retained blur.
+    """
+    g = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": image_name + ".klein.png"}},
+        "30": {"class_type": "LoadImageMask", "inputs": {"image": image_name + ".mask.png", "channel": "red"}},
+        "3": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["2", 0], "upscale_method": "lanczos",
+                                                                  "megapixels": float(s["klein_megapixels"]),
+                                                                  "resolution_steps": 16}},
+        "4": {"class_type": "GetImageSize", "inputs": {"image": ["3", 0]}},
+    }
+    noise = _scaled_mask(g, "34", ["30", 0], "4")
+    g.update({
+        "5": {"class_type": "UNETLoader", "inputs": {"unet_name": s["klein_unet"], "weight_dtype": "default"}},
+        "6": {"class_type": "CLIPLoader", "inputs": {"clip_name": KLEIN_CLIP, "type": "flux2", "device": "default"}},
+        "7": {"class_type": "VAELoader", "inputs": {"vae_name": VAE_NAME}},
+        "8": {"class_type": "CLIPTextEncode", "inputs": {
+            "text": KLEIN_PROMPT + (f" The new area should show: {prompt.strip()}" if prompt.strip() else ""), "clip": ["6", 0]}},
+        "9": {"class_type": "VAEEncode", "inputs": {"pixels": ["3", 0], "vae": ["7", 0]}},
+        "39": {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["9", 0], "mask": noise}},
+        "43": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["1", 0], "upscale_method": "lanczos",
+                                                                   "megapixels": float(s["klein_megapixels"]),
+                                                                   "resolution_steps": 16}},
+        "44": {"class_type": "VAEEncode", "inputs": {"pixels": ["43", 0], "vae": ["7", 0]}},
+        "10": {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["8", 0], "latent": ["44", 0]}},
+        "40": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["8", 0]}},
+        "41": {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["40", 0], "latent": ["44", 0]}},
+        "12": {"class_type": "CFGGuider", "inputs": {"model": ["5", 0], "positive": ["10", 0], "negative": ["41", 0], "cfg": 1.0}},
+        "14": {"class_type": "Flux2Scheduler", "inputs": {"steps": int(s["klein_steps"]), "width": ["4", 0], "height": ["4", 1]}},
+        "15": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+        "16": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
+        "17": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["16", 0], "guider": ["12", 0], "sampler": ["15", 0],
+                                                                 "sigmas": ["14", 0], "latent_image": ["39", 0]}},
+        "18": {"class_type": "VAEDecode", "inputs": {"samples": ["17", 0], "vae": ["7", 0]}},
+        "24": {"class_type": "GetImageSize", "inputs": {"image": ["2", 0]}},
+        "25": {"class_type": "ImageScale", "inputs": {"image": ["18", 0], "upscale_method": "lanczos", "width": ["24", 0],
+                                                      "height": ["24", 1], "crop": "disabled"}},
+        "out": {"class_type": "PreviewImage", "inputs": {"images": ["25", 0]}},
+    })
+    if s.get("klein_lora"):
+        klein_lora_check(s)
+        g["47"] = {"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": ["5", 0], "lora_name": s["klein_lora_name"], "strength_model": s["klein_lora_strength"]}}
+        g["12"]["inputs"]["model"] = ["47", 0]
+    if s["klein_upscale"] != "lanczos":
+        g["22"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": s["klein_upscale"]}}
+        g["23"] = {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["22", 0], "image": ["18", 0]}}
+        g["25"]["inputs"]["image"] = ["23", 0]
     return g
 
 
@@ -668,9 +750,11 @@ def status(settings, url=None):
         return list(first) if isinstance(first, list) else list(((spec[1] if len(spec) > 1 else {}) or {}).get("options", []))
 
     method = settings.get("method", "flux2")
-    if method not in ("flux2", "flux1_fill"):
+    if method not in METHODS:
         raise ExpandError(f"unknown generation method: {method}")
     fill = method == "flux1_fill"
+    if method == "flux2_klein":
+        return _klein_status(settings, info, options)
     unets = options("UNETLoader" if fill else "UnetLoaderGGUF", "unet_name")
     upscalers = options("UpscaleModelLoader", "model_name")
     required = list(FILL_REQUIRED_NODES if fill else REQUIRED_NODES)
@@ -704,7 +788,121 @@ def status(settings, url=None):
     return {"ok": not problems, "reachable": True, "message": "; ".join(problems), "unets": unets, "upscalers": upscalers}
 
 
+def _weight_header(roots, name):
+    for root in roots:
+        root = root.resolve()
+        path = (root / name).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            continue
+        with path.open("rb") as f:
+            length = struct.unpack("<Q", f.read(8))[0]
+            if length > 16 * 1024 * 1024:
+                raise ValueError("unsupported weights header")
+            return json.loads(f.read(length))
+    raise ValueError(f"cannot inspect local weights '{name}'")
+
+
+def klein_lora_check(settings):
+    """Conservatively check known FLUX LoRA projections without loading tensor data or allocating GPU memory."""
+    root = Path(os.environ.get("SHPC_COMFY_DIR", "~/ComfyUI")).expanduser() / "models"
+    try:
+        model = _weight_header([root / "diffusion_models", root / "unet"], settings["klein_unet"])
+        width = model["double_blocks.0.img_attn.qkv.weight"]["shape"][1]
+        lora = _weight_header([root / "loras"], settings["klein_lora_name"])
+        widths = {v["shape"][1] for k, v in lora.items()
+                  if k.endswith((".lora_A.weight", ".lora_down.weight"))
+                  and any(part in k for part in ("attn.to_q.", "img_attn.qkv.", "double_stream_modulation_img.lin."))
+                  and len(v["shape"]) == 2}
+        if not widths or widths != {width}:
+            raise ValueError(f"LoRA projection widths {sorted(widths)} do not match model width {width}")
+    except (OSError, ValueError, KeyError, IndexError, struct.error) as e:
+        raise ExpandError(f"Klein LoRA compatibility check failed: {e}. Select weights made for this Klein model "
+                          "in the local ComfyUI models/loras folder, or turn Turbo LoRA off.") from e
+
+
+def _klein_status(settings, info, options):
+    unets, upscalers = options("UNETLoader", "unet_name"), options("UpscaleModelLoader", "model_name")
+    required = list(KLEIN_REQUIRED_NODES)
+    if settings["klein_upscale"] != "lanczos":
+        required += ["UpscaleModelLoader", "ImageUpscaleWithModel"]
+    if settings.get("klein_lora"):
+        required.append("LoraLoaderModelOnly")
+    missing = [n for n in required if n not in info]
+    problems = ["ComfyUI lacks the nodes: " + ", ".join(missing)] if missing else []
+    wanted = [("FLUX.2 klein model", unets, settings["klein_unet"]),
+              ("text encoder", options("CLIPLoader", "clip_name"), KLEIN_CLIP),
+              ("VAE", options("VAELoader", "vae_name"), VAE_NAME)]
+    if settings["klein_upscale"] != "lanczos":
+        wanted.append(("upscale model", upscalers, settings["klein_upscale"]))
+    problems += [f"{label} '{want}' is not installed" for label, have, want in wanted if want not in have]
+    loras = options("LoraLoaderModelOnly", "lora_name")
+    if settings.get("klein_lora"):
+        if settings["klein_lora_name"] not in loras:
+            problems.append("Select an installed Klein-compatible LoRA, or turn Turbo LoRA off")
+        else:
+            try:
+                klein_lora_check(settings)
+            except ExpandError as e:
+                problems.append(str(e))
+    if "CLIPLoader" in info and "flux2" not in options("CLIPLoader", "type"):
+        problems.append("ComfyUI CLIPLoader lacks type 'flux2'; update the node/runtime")
+    return {"ok": not problems, "reachable": True, "message": "; ".join(problems), "unets": unets,
+            "upscalers": upscalers, "loras": loras}
+
+
 # ---------------------------------------------------------------- generation
+
+def klein_prepare(picture, margins, feather):
+    """Source-pixel overlap geometry; blurring fills only missing pixels, never the existing photograph."""
+    left, top, right, bottom = margins
+    rgb = np.asarray(picture.convert("RGB"))
+    padded = np.pad(rgb, ((top, bottom), (left, right), (0, 0)), mode="edge")
+    original = Image.fromarray(padded)
+    hard = Image.new("L", original.size, 255)
+    hard.paste(0, (left, top, left + picture.width, top + picture.height))
+    prepared = Image.composite(original.filter(ImageFilter.GaussianBlur(8)), original, hard)
+    grown = Image.fromarray(cv2.dilate(np.asarray(hard), np.ones((49, 49), np.uint8)))  # 24 source pixels
+    noise = grown.filter(ImageFilter.GaussianBlur(8))
+    blend = grown.filter(ImageFilter.GaussianBlur(feather / 3)) if feather else hard
+    # Entirely missing pixels must not mix with the placeholder when Gaussian tails reach into the margin.
+    blend = Image.fromarray(np.maximum(np.asarray(blend), np.asarray(hard)))
+    return {"prepared": prepared, "original": original, "hard": hard, "noise": noise, "blend": blend}
+
+
+def klein_colour_match(generated, prepared):
+    """Extend low-frequency seam colour error from safe original samples, without filtering generated texture."""
+    original = np.asarray(prepared["original"], dtype=np.float32)
+    generated = np.asarray(generated, dtype=np.float32)
+    hard = np.asarray(prepared["hard"])
+    noise = np.asarray(prepared["noise"])
+    near = cv2.dilate(hard, np.ones((193, 193), np.uint8)) > 0
+    known = (hard == 0) & (noise < 3) & near
+    if not known.any():  # Thin originals may contain no unregenerated seam samples.
+        return Image.fromarray(generated.astype(np.uint8))
+    h, w = hard.shape
+    scale = min(1.0, 512 / max(w, h))
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    weight = cv2.resize(known.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    error = cv2.resize((original - generated) * known[..., None], size, interpolation=cv2.INTER_AREA)
+    samples = weight > 0
+    field = error / np.maximum(weight[..., None], 1e-8)
+    _, labels = cv2.distanceTransformWithLabels((~samples).astype(np.uint8), cv2.DIST_L2, 5,
+                                               labelType=cv2.DIST_LABEL_PIXEL)
+    lookup = np.zeros((int(labels.max()) + 1, 3), np.float32)
+    lookup[labels[samples]] = field[samples]
+    field = lookup[labels]
+    field = cv2.GaussianBlur(field, (0, 0), max(0.1, 24 * scale))
+    field = cv2.resize(field, (w, h), interpolation=cv2.INTER_LINEAR)
+    return Image.fromarray(np.clip(np.rint(generated + field), 0, 255).astype(np.uint8))
+
+
+def klein_composite(generated, prepared, settings):
+    if settings["klein_seam_correction"]:
+        generated = klein_colour_match(generated, prepared)
+    canvas = Image.composite(generated, prepared["original"], prepared["blend"])
+    # The RGB already contains the seam blend. Applying its mask again as alpha would square the blend.
+    return {"canvas": canvas, "layer": canvas.convert("RGBA")}
+
 
 def _png(im):
     buf = io.BytesIO()
@@ -731,12 +929,18 @@ def expand_variations(picture, margins, prompt, job, seed=-1, settings=None, var
     kept = picture.crop((cl, ct, picture.width - cr, picture.height - cb)) if (cl or ct or cr or cb) else picture
     pad = tuple(max(0, m) for m in margins)
     name = comfy.upload(_png(kept), f"shpcrop_{os.getpid()}.png")
+    klein = None
+    if s["method"] == "flux2_klein":
+        klein = klein_prepare(kept, pad, s["klein_feathering"])
+        comfy.upload(_png(klein["prepared"]), name + ".klein.png")
+        comfy.upload(_png(klein["noise"].convert("RGB")), name + ".mask.png")
     results = []
     for i in range(n):
         if job.cancel:
             raise Cancelled()
         job.index = i
-        r = expand(comfy, name, kept.size, pad, prompt, job, base + i, s)
+        r = expand(comfy, name, kept.size, pad, prompt, job, base + i, s,
+                   **({"klein": klein} if klein is not None else {}))
         r["margins"] = tuple(margins)  # the signed margins relative to the original picture, for Send to PhotoCraft
         results.append(r)
         if on_result is not None:
@@ -748,21 +952,23 @@ def expand_variations(picture, margins, prompt, job, seed=-1, settings=None, var
     return results
 
 
-def expand(comfy, image_name, size, margins, prompt, job, seed, s):
-    """One generation. Returns {"canvas": RGB, "layer": RGBA (opaque over the new area, soft inside the original), "margins"}."""
+def expand(comfy, image_name, size, margins, prompt, job, seed, s, *, klein=None):
+    """One generation; Klein returns an opaque single-blend layer, other methods retain their feathered alpha."""
     graph = build_graph(image_name, margins, prompt, seed, s)
     client_id = uuid.uuid4().hex
     pid = comfy.queue(graph, client_id)
     outputs = comfy.wait(pid, client_id, graph, job)
     try:
         canvas = Image.open(io.BytesIO(comfy.view(outputs["out"]["images"][0]))).convert("RGB")
-        mask = Image.open(io.BytesIO(comfy.view(outputs["mask"]["images"][0]))).convert("L")
+        mask = None if klein is not None else Image.open(io.BytesIO(comfy.view(outputs["mask"]["images"][0]))).convert("L")
     except (KeyError, IndexError) as e:
         raise ExpandError("ComfyUI returned no picture") from e
     left, top, right, bottom = margins
     want = (size[0] + left + right, size[1] + top + bottom)
-    if canvas.size != want or mask.size != want:
+    if canvas.size != want or (mask is not None and mask.size != want):
         raise ExpandError(f"ComfyUI returned {canvas.size[0]}x{canvas.size[1]}, expected {want[0]}x{want[1]}")
+    if klein is not None:
+        return {**klein_composite(canvas, klein, s), "margins": tuple(margins)}
     layer = canvas.convert("RGBA")
     layer.putalpha(mask)
     return {"canvas": canvas, "layer": layer, "margins": tuple(margins)}

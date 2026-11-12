@@ -94,6 +94,28 @@ class BridgeTests(unittest.TestCase):
         b.client = FakePhotoCraft(b, **fake_options)
         return b
 
+    def test_open_uses_absolute_path_in_gui_and_relative_when_headless(self):
+        for headless in (False, True):
+            with self.subTest(headless=headless):
+                b = self.bridge(CropBridge, headless=headless)
+                b.headless = headless
+                b.client.calls.clear()
+                rel = "scratch.png"
+                Image.new("RGB", (4, 4)).save(b.exchange / rel)
+                b._open(rel)
+                method, params = next(c for c in b.client.calls if c[0] in ("app.open", "doc.open"))
+                if headless:
+                    self.assertEqual((method, params["path"]), ("doc.open", "exchange/scratch.png"))
+                else:
+                    self.assertEqual((method, params["path"]), ("app.open", str(b.exchange / rel)))
+
+    def test_open_refuses_exchange_outside_read_root(self):
+        b = self.bridge(CropBridge)
+        b.read_root = self.root / "elsewhere"
+        with self.assertRaises(ControlError):
+            b._open("scratch.png")
+        self.assertFalse(any(c[0] == "app.open" for c in b.client.calls))
+
     def test_status_preserves_authentication_failure_code(self):
         from shp_photocraft_tools.modules.crop import server as crop
         from shp_photocraft_tools.modules.dnb import ui_server as skin
@@ -121,6 +143,23 @@ class BridgeTests(unittest.TestCase):
                 with patch.dict(os.environ, {f"{prefix}_PC_PORT": "5678", f"{prefix}_PC_EXCHANGE": str(self.root / module)}):
                     self.assertEqual(detect_config(prefix, module)["port"], 5678)
                     self.assertEqual(detect_config(prefix, module)["exchange"], self.root / module)
+
+    def test_guarded_launch_uses_existing_launcher_without_automation_flags(self):
+        launcher = self.root / "guarded-launcher"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o700)
+        bridge = self.bridge(DnbBridge)
+        with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1",
+                                     "SHP_PC_FLATPAK_LAUNCHER": str(launcher)}), \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+            bridge.launch()
+            self.assertEqual(popen.call_args.args[0], [str(launcher)])
+        with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1",
+                                     "SHP_PC_FLATPAK_LAUNCHER": "/missing"}), \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(ControlError, "guarded PhotoCraft"):
+                bridge.launch()
+            popen.assert_not_called()
 
     def test_fetch_both_bridges_desktop_and_headless(self):
         self.assertIs(CropBridge.fetch, DnbBridge.fetch)
@@ -224,6 +263,66 @@ class BridgeTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_flatpak_guard_checks_each_connection_before_authentication(self):
+        requests = []
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                for line in self.rfile:
+                    msg = json.loads(line)
+                    requests.append(msg["method"])
+                    reply = ({"ok": False, "error": "synthetic-token leaked"}
+                             if msg["method"] == "error"
+                             else {"ok": True, "result": {}})
+                    self.wfile.write((json.dumps(reply) + "\n").encode())
+                    self.wfile.flush()
+
+        from shp_photocraft_tools.shared.photocraft import flatpak_discovery, flatpak_peer
+        with tempfile.TemporaryDirectory() as tmp, socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as srv:
+            srv.daemon_threads = True
+            thread = threading.Thread(target=srv.serve_forever)
+            thread.start()
+            token = Path(tmp) / "token"
+            token.write_text("synthetic-token")
+            client = Client(srv.server_address[1], token, timeout=2)
+            try:
+                with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1"}), \
+                     patch.object(flatpak_discovery, "pinned_user_deployment", return_value=(Path("/fake"), "commit")), \
+                     patch.object(flatpak_discovery, "find_flatpak_process", return_value=123), \
+                     patch.object(flatpak_peer, "verify_flatpak_peer") as verify:
+                    verify.side_effect = flatpak_peer.PeerIdentityError("wrong peer")
+                    with self.assertRaisesRegex(ControlError, "no token was sent") as failure:
+                        client.call("status")
+                    self.assertEqual(failure.exception.code, "authentication")
+                    self.assertIsNone(client._sock)
+                    self.assertEqual(requests, [])
+                    verify.side_effect = None
+                    client.call("status")
+                    client.close()
+                    client.call("status")
+                    self.assertEqual(verify.call_count, 3)
+                    self.assertEqual(requests, ["auth", "status", "auth", "status"])
+                    with self.assertRaises(ControlError) as error:
+                        client.call("error")
+                    self.assertIn("[redacted]", str(error.exception))
+                    self.assertNotIn("synthetic-token", str(error.exception))
+            finally:
+                client.close()
+                srv.shutdown()
+                thread.join()
+
+    def test_flatpak_guard_rejects_bad_setting_and_never_replays_mutations(self):
+        client = Client(1234, "/unused")
+        with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "invalid"}):
+            with self.assertRaisesRegex(ControlError, "verification setting"):
+                client.call("status")
+        with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1"}), \
+             patch.object(client, "_call") as call:
+            client.call("app.open", path="/fake")
+            call.assert_called_with("app.open", {"path": "/fake"}, 1)
+            client.run("layer.copy")
+            call.assert_called_with("engine.execute", {"command": "layer.copy", "params": {}}, 1)
+
     def test_disconnected_warning_uses_configured_control_port(self):
         with tempfile.TemporaryDirectory() as tmp:
             token = Path(tmp) / "control.token"

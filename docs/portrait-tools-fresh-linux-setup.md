@@ -281,10 +281,14 @@ ComfyUI opens at `http://127.0.0.1:8188/`.
 Use the exact sources and installation steps in
 [MODELS](../MODELS.md#crop-comfyui-models-and-nodes):
 
-- Both methods need **comfyui-inpaint-nodes** (`INPAINT_ColorMatch`) and the
+- FLUX.2 dev and FLUX.1 Fill need **comfyui-inpaint-nodes** (`INPAINT_ColorMatch`) and the
   included **seam-color-correct** node (`SeamColorCorrect`).
 - FLUX.2 additionally needs **ComfyUI-GGUF** (`UnetLoaderGGUF`) and a compatible
   ComfyUI revision. Tools constructs its graphs; no workflow JSON install is needed.
+- The third option, **FLUX.2 Klein**, uses standard image/mask nodes plus
+  `UNETLoader`, Qwen `CLIPLoader` type `flux2`, `ReferenceLatent`,
+  `SetLatentNoiseMask` and `Flux2Scheduler`. It does not need the dev GGUF loader,
+  inpaint colour nodes or the custom seam node.
 - Install each node's requirements in ComfyUI's environment. Check upstream
   model access/licensing, especially FLUX.1 Fill's non-commercial terms.
 
@@ -313,11 +317,25 @@ curl -fsS http://127.0.0.1:8188/object_info/SeamColorCorrect
 | FLUX.1 Fill: Patch Fill and optional expansion | `flux1-fill-dev.safetensors` in `models/diffusion_models/`; `clip_l.safetensors` and `t5xxl_fp8_e4m3fn_scaled.safetensors` in `models/text_encoders/`; `ae.safetensors` in `models/vae/` |
 | FLUX.2: default expansion | `flux2-dev-q3_k_m.gguf` in `models/unet/`; `mistral_3_small_flux2_fp8.safetensors` in `models/text_encoders/`; `flux2-vae.safetensors` in `models/vae/` |
 | FLUX.2 Turbo option | `Flux_2-Turbo-LoRA_comfyui.safetensors` in `models/loras/`, required when turbo lora is on |
+| FLUX.2 Klein: third expansion option | `flux-2-klein-9b.safetensors` in `models/diffusion_models/`; `qwen_3_8b_fp8mixed.safetensors` in `models/text_encoders/`; `flux2-vae.safetensors` in `models/vae/` |
 | Neural upscale option | `4xNomos8k_atd_jpg.safetensors` in `models/upscale_models/`, or another installed selected model |
 
 Download from MODELS' linked sources; match filenames/case or select the actual
 installed name in the UI. **Lanczos (no model)** skips neural upscaling, not the
 generation models. Fill defaults to Lanczos; FLUX.2 defaults to a neural upscaler.
+Klein defaults to Lanczos, 4 steps, 2 MP and feather 32 px. Its LoRA toggle
+defaults off: the dev Turbo file above is incompatible. To enable it, install
+weights explicitly made for the selected Klein model, select them in Advanced
+and use their recommended strength. Unknown/incompatible local headers block
+generation with an error; a shape check alone cannot prove model quality.
+
+Klein prepares a fixed 24 px inward generation overlap with Gaussian radius
+8 px in source coordinates. Feather affects only the final RGB blend. Its
+colour correction adds smooth offsets, and the opaque once-composited layer
+matches the preview. Existing settings and other generation methods are not
+reinterpreted. Restart Tools after backend updates; generate a fresh result.
+Avoid concurrent model-loaded ComfyUI instances on the same GPU: readiness
+does not guarantee sufficient VRAM.
 
 ### Connect AI Fill
 
@@ -361,6 +379,20 @@ nodes/models should be reported before Generate; readiness still does not prove
 the model fits your GPU memory.
 
 ## 7. Optional: connect PhotoCraft
+
+An existing permissioned launcher can be reused by matching its port, token file,
+exchange directory and read root; do not copy token contents into documentation.
+For the already configured guarded launcher, native Tools supports
+`SHP_PC_VERIFY_FLATPAK=1` with `SHP_PC_FLATPAK_LAUNCHER` pointing to that existing
+executable, plus matching `SHP_PC_PORT`, `SHP_PC_TOKEN_FILE`, `SHP_PC_EXCHANGE`
+and `SHP_PC_READ_ROOT`. This preserves supported 0.23.x deployment/process/socket
+checks before authentication; unverifiable peers fail closed and uncertain
+guarded mutations are not retried. It is not cryptographic server authentication.
+Do not enable this guard for an unrelated native editor deployment.
+GUI exchange imports use absolute paths inside the read root, preventing a
+relative exchange path from becoming a stale Open-dialog location. Headless
+imports remain relative to that root. Launcher-environment edits take effect
+only after a normal Tools restart.
 
 First get local Tools working. Install a compatible PhotoCraft build separately;
 this repository does not provide its installation. You need an open document,

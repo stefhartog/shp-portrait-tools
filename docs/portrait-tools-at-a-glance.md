@@ -36,8 +36,12 @@ Two complementary tabs share one source and ComfyUI connection, with separate ge
 
 ### Crop & Expand
 
-Reframe the portrait and generate the extra surroundings with FLUX.2 or FLUX.1 Fill.
+Reframe the portrait and generate the extra surroundings with FLUX.2 dev (default),
+FLUX.1 Fill, or FLUX.2 Klein.
 Compare variations, choose your composition, and send the expanded canvas and generated layer back to PhotoCraft.
+Klein has its own settings and optional compatible LoRA (off by default).
+Its soft source-resolution overlap and colour correction help blend the seam;
+the result is composited once, so placement matches the preview.
 
 ### Patch Fill
 

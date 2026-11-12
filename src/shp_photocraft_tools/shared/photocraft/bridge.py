@@ -54,16 +54,32 @@ def detect_config(prefix, module):
             "read_root": Path(read_root).expanduser(), "config_dir": own}
 
 
+def _redact(value, secret):
+   if isinstance(value, str):
+       return value.replace(secret, "[redacted]") if secret else value
+   if isinstance(value, list):
+       return [_redact(item, secret) for item in value]
+   if isinstance(value, dict):
+       return {_redact(key, secret): _redact(item, secret) for key, item in value.items()}
+   return value
+
+
 class Client:
     """One authenticated JSON-lines connection (reconnects when it drops)."""
 
     def __init__(self, port, token_file, host="127.0.0.1", timeout=180.0):
         self.host, self.port, self.token_file, self.timeout = host, port, Path(token_file), timeout
         self._sock = self._file = None
+        self._redaction_token = None
         self._id = itertools.count(1)
 
     def _connect(self):
         self.close()
+        guard = os.environ.get("SHP_PC_VERIFY_FLATPAK")
+        if guard not in (None, "1"):
+            raise AuthenticationError("Invalid PhotoCraft Flatpak verification setting")
+        if guard and self.host != "127.0.0.1":
+            raise AuthenticationError("PhotoCraft Flatpak verification requires IPv4 loopback")
         try:
             token = self.token_file.read_text(encoding="utf-8").strip()
         except OSError as e:
@@ -72,11 +88,30 @@ class Client:
             self._sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         except OSError as e:
             raise ControlError(f"PhotoCraft not running or contollable (port {self.port})") from e
-        self._file = self._sock.makefile("rwb")
-        reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
+        if guard:
+            from .flatpak_discovery import DiscoveryError, find_flatpak_process, pinned_user_deployment
+            from .flatpak_peer import PeerIdentityError, verify_flatpak_peer
+
+            try:
+                executable, commit = pinned_user_deployment()
+                pid = find_flatpak_process(executable, commit, Path(f"/run/user/{os.getuid()}"))
+                verify_flatpak_peer(self._sock, pid, executable)
+            except (DiscoveryError, PeerIdentityError, OSError) as e:
+                self.close()
+                raise AuthenticationError("PhotoCraft process identity could not be verified; no token was sent") from e
+        self._redaction_token = token if guard else None
+        try:
+            self._file = self._sock.makefile("rwb")
+            reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
+        except (OSError, ConnectionError, ValueError) as e:
+            self.close()
+            raise ControlError("PhotoCraft authentication connection failed") from e
         if not reply.get("ok"):
             self.close()
-            raise AuthenticationError(f"PhotoCraft refused the control token: {reply.get('error')}")
+            error = str(reply.get("error"))
+            if token:
+                error = error.replace(token, "[redacted]")
+            raise AuthenticationError(f"PhotoCraft refused the control token: {error}")
 
     def close(self):
         for t in (self._file, self._sock):
@@ -86,6 +121,7 @@ class Client:
             except OSError:
                 pass
         self._file = self._sock = None
+        self._redaction_token = None
 
     def _exchange(self, msg):
         self._file.write((json.dumps(msg) + "\n").encode())
@@ -93,9 +129,15 @@ class Client:
         line = self._file.readline()
         if not line:
             raise ConnectionError("PhotoCraft closed the control connection")
-        return json.loads(line)
+        reply = json.loads(line)
+        if self._redaction_token and isinstance(reply, dict) and "error" in reply:
+            reply["error"] = _redact(reply["error"], self._redaction_token)
+        return reply
 
     def call(self, method, **params):
+        if os.environ.get("SHP_PC_VERIFY_FLATPAK") and method in (
+                "app.open", "app.save", "doc.open", "doc.save", "doc.close"):
+            return self.call_once(method, **params)
         return self._call(method, params, 2)
 
     def call_once(self, method, **params):
@@ -119,6 +161,8 @@ class Client:
             return reply.get("result")
 
     def run(self, command, **params):
+        if os.environ.get("SHP_PC_VERIFY_FLATPAK"):
+            return self.run_once(command, **params)
         return self.call("engine.execute", command=command, params=params)
 
     def run_once(self, command, **params):
@@ -183,8 +227,15 @@ class Bridge:
         return f"{self.module} {stem} {os.getpid()}-{next(self._names)}.png"
 
     def _open(self, rel):
-        path = os.path.relpath(self.exchange / rel, self.read_root).replace(os.sep, "/")
-        self.client.call("doc.open" if self.headless else "app.open", path=path)
+        full = Path(os.path.abspath(self.exchange / rel))
+        root = Path(os.path.abspath(self.read_root))
+        if not full.is_relative_to(root):
+            raise ControlError("the exchange folder is outside the PhotoCraft read root")
+        if self.headless:
+            self.client.call("doc.open", path=full.relative_to(root).as_posix())
+        else:
+            # Absolute, so PhotoCraft does not remember a cwd-relative folder for its Open dialog.
+            self.client.call("app.open", path=str(full))
         return int(self.session()["active"])
 
     def _save(self, rel, index):
@@ -232,13 +283,22 @@ class Bridge:
 
     def launch(self):
         """Explicitly start PhotoCraft with the control channel on, as the OpenFill launcher does."""
-        cmd = os.environ.get("PHOTOCRAFT_BIN") or shutil.which("photocraft") or str(Path.home() / ".local" / "bin" / "photocraft")
-        if not Path(cmd).exists() and not shutil.which(cmd):
-            raise ControlError("cannot find PhotoCraft (set PHOTOCRAFT_BIN)")
-        self.token_file.parent.mkdir(parents=True, exist_ok=True)
+        guard = os.environ.get("SHP_PC_VERIFY_FLATPAK")
+        if guard not in (None, "1"):
+            raise ControlError("Invalid PhotoCraft Flatpak verification setting")
+        if guard:
+            cmd = os.environ.get("SHP_PC_FLATPAK_LAUNCHER", "")
+            if not Path(cmd).is_absolute() or not Path(cmd).is_file() or not os.access(cmd, os.X_OK):
+                raise ControlError("Cannot find the guarded PhotoCraft Flatpak launcher")
+            args = [cmd]
+        else:
+            cmd = os.environ.get("PHOTOCRAFT_BIN") or shutil.which("photocraft") or str(Path.home() / ".local" / "bin" / "photocraft")
+            if not Path(cmd).exists() and not shutil.which(cmd):
+                raise ControlError("cannot find PhotoCraft (set PHOTOCRAFT_BIN)")
+            self.token_file.parent.mkdir(parents=True, exist_ok=True)
+            args = [cmd, "--control", str(self.port), "--control-token-file", str(self.token_file),
+                    "--automation-read-root", str(self.read_root), "--automation-write-root", str(self.exchange)]
         env = {k: v for k, v in os.environ.items() if not k.startswith("PHOTOCRAFT_CONTROL") and not k.startswith("PHOTOCRAFT_AUTOMATION")}
-        args = [cmd, "--control", str(self.port), "--control-token-file", str(self.token_file),
-                "--automation-read-root", str(self.read_root), "--automation-write-root", str(self.exchange)]
         self.config_dir.mkdir(parents=True, exist_ok=True)
         with open(self.config_dir / "photocraft.log", "ab") as log:
             subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=sys.platform != "win32")

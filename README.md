@@ -178,7 +178,7 @@ uv run --no-sync shp-photocraft-tools --config /absolute/path/to/launcher.json -
 ~/.local/bin/shp-photocraft-tools --browser  # explicit Ungoogled Chromium app fallback
 ```
 
-No silent Chrome fallback: native Ungoogled Chromium or its named Flatpak is required.
+No silent Chrome fallback: an explicitly supported Ungoogled Chromium installation is required.
 Optional `ungoogled_chromium` config selects a native executable. Browser mode can open
 multiple windows; only native mode guarantees one. Use exact loopback `127.0.0.1`,
 not localhost/LAN addresses.
@@ -218,6 +218,16 @@ different helpers, custom launch actions or concurrent target edits are refused.
 The existing shared token/read/write configuration is reused; no broader grants
 are added. The launcher starts PhotoCraft only if its port refuses connections;
 an existing listener must authenticate, not trigger a duplicate instance.
+
+Normal Tools can reuse an existing permissioned PhotoCraft launcher. Match its
+`SHP_PC_PORT`, `SHP_PC_TOKEN_FILE`, `SHP_PC_EXCHANGE`, and `SHP_PC_READ_ROOT`
+values rather than creating another token or broadening file access. Preserve
+any existing process-identity checks; see the
+[connection notes](docs/portrait-tools-fresh-linux-setup.md#7-optional-connect-photocraft).
+GUI imports use absolute paths within the read root, avoiding a stale relative
+Open-dialog location; headless imports remain read-root-relative.
+A running supervisor retains its old environment until Quit and restart;
+changing a launcher does not update an existing process.
 
 In the **running LightCraft**, select `~/.local/bin/photocraft-lightcraft` in
 Settings > External Editing (program path only, no quotes, flags or `%F`).
@@ -352,7 +362,7 @@ It receives only the downscaled RGB image through stdin, sees read-only runtime/
 mounts, uses disposable temporary storage and returns a bounded result. Its network
 boundary does **not** disable telemetry generation or prove absence of queues/retries.
 The parent app retains PhotoCraft/Comfy networking. This is Linux-only and fails closed
-if isolation cannot be created; it is not a general desktop/Flatpak privacy guarantee.
+if isolation cannot be created; it is not a general desktop privacy guarantee.
 
 ### Optional OpenCV Zoo pose backend (experimental)
 
@@ -638,6 +648,32 @@ Original back, without LoRA; FLUX.2 keeps optional Turbo/seam choices.
 Both offer model upscaling or Lanczos (no model); only selected neural models require
 upscale nodes. Text encoding CPU/default is saved, not a guaranteed GPU-memory fit.
 Old presets default to FLUX.2 without reinterpreting settings.
+
+**FLUX.2 Klein** is the third expansion method, alongside the unchanged default
+FLUX.2 dev and FLUX.1 Fill. It has separate `klein_*` settings: defaults are
+4 steps, 2 MP, feather 32 px, Lanczos resizing and seam correction off.
+Its optional Turbo LoRA is
+off by default: select Klein-specific weights and a strength in Advanced, then enable
+the toggle. Local safetensors projection widths are checked before generation;
+incompatible or unrecognised weights block the run with an error, rather than being
+silently skipped. FLUX.2 dev Turbo and FLUX.1 Turbo weights do not fit Klein 9B.
+Put compatible weights under `ComfyUI/models/loras` (`SHPC_COMFY_DIR` overrides the
+local ComfyUI directory). Width checks do not establish training family or effectiveness:
+use weights explicitly published for the selected Klein model.
+
+Klein prepares its overlap in source pixels (fixed 24 px growth, Gaussian generation-mask radius 8 px)
+before resizing. Only missing pixels receive a blurred edge continuation; the
+original alone remains the model reference. Its seam correction adds a smooth
+colour-offset field measured on safe original pixels, without filtering generated
+texture. Feather controls only the final Gaussian RGB transition into the original; zero keeps
+a hard join. Klein sends this already blended result as an opaque layer, so its
+placed seam matches the preview instead of applying the feather a second time.
+Original pixels outside the transition remain unchanged. Other methods retain
+their existing compositing. These independently implemented steps do not reproduce
+GenFill's exact prefill/reference or guarantee identical generated results.
+The user reports it is a useful third option; this is not a universal quality
+ranking. Restart Tools after installing backend updates and generate a new
+result; already generated results retain their previous compositing.
 
 Ratio/free handles can crop/expand; positive margins cap at **999 original pixels per
 side** (`SHPC_LIMIT` can lower), negative cropping unrestricted. CROP shows resolution

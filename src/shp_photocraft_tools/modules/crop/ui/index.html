@@ -620,9 +620,13 @@ async function loadList() {
 
 const SETKEYS = ['guidance','steps','megapixels','feathering','unet','upscale','lora','seam_correction'];
 const FILLKEYS = ['guidance','steps','megapixels','feathering','unet','upscale'];
+const KLEINKEYS = ['steps','megapixels','feathering','unet','upscale','seam_correction','lora','lora_name','lora_strength'];
+const CONTROLKEYS = [...SETKEYS, 'lora_name', 'lora_strength'];
 let savedSettings = {};
 const isFill = () => X.mode === 'patch' || $('smethod').value === 'flux1_fill';
-const settingKey = k => isFill() && FILLKEYS.includes(k) ? 'fill_' + k : k;
+const isKlein = () => !isFill() && $('smethod').value === 'flux2_klein';
+const familyKeys = () => isFill() ? FILLKEYS : isKlein() ? KLEINKEYS : SETKEYS;
+const settingKey = k => isFill() && FILLKEYS.includes(k) ? 'fill_' + k : isKlein() && KLEINKEYS.includes(k) ? 'klein_' + k : k;
 const SL = {};
 function slider(parent, key, label, min, max, step, tip) {
   const row = document.createElement('div'); row.className = 'row';
@@ -635,19 +639,21 @@ function slider(parent, key, label, min, max, step, tip) {
 }
 (function buildAdvanced() {
   const root = $('xAdv');
-  root.insertAdjacentHTML('beforeend', `<div class="row model-row"><label for="smethod">method</label><select id="smethod" style="flex:1"><option value="flux2">FLUX.2</option><option value="flux1_fill">FLUX.1 Fill</option></select></div>`);
+  root.insertAdjacentHTML('beforeend', `<div class="row model-row"><label for="smethod">method</label><select id="smethod" style="flex:1"><option value="flux2">FLUX.2</option><option value="flux1_fill">FLUX.1 Fill</option><option value="flux2_klein">FLUX.2 klein (masked inpaint)</option></select></div>`);
   slider(root, 'guidance', 'guidance', 1, 10, 0.5, 'Prompt strength. Higher is more contrasty and saturated.');
   slider(root, 'steps', 'steps', 1, 50, 1, 'Sampling steps: 8 with the Turbo LoRA, about 20 without.');
   slider(root, 'megapixels', 'megapixels', 0.25, 2, 0.25, 'Size the AI works at (the result is upscaled afterwards). Smaller is faster and often cleaner.');
   slider(root, 'feathering', 'feather px', 0, 512, 8, 'How far the original fades into the new area at the seam.');
   root.insertAdjacentHTML('beforeend', `
     <div class="row toggle-row"><label for="slora">turbo lora</label><input type="checkbox" id="slora" role="switch"></div>
+    <div class="row model-row" id="kleinLoraRow" hidden><label for="slora_name" title="Requires weights made for the selected Klein model. FLUX.2 dev Turbo and FLUX.1 LoRAs are incompatible; unknown weight formats are rejected.">Klein LoRA</label><select id="slora_name" style="flex:1"></select></div>
     <div class="row toggle-row"><label for="sseam_correction">seam colour correction</label><input type="checkbox" id="sseam_correction"></div>
     <div class="row model-row"><label for="sunet" id="sunetLabel" title="GGUF diffusion model." style="cursor:help">model</label><select id="sunet" style="flex:1"></select></div>
     <div class="row model-row"><label for="supscale" id="supscaleLabel" title="Upscale model for the generated area." style="cursor:help">upscaler</label><select id="supscale" style="flex:1"></select></div>
     <div class="row model-row" id="fillDeviceRow" hidden><label for="sfill_clip_device" title="Shared by Crop and Patch Fill, outside presets. Default lets ComfyUI choose GPU/offloading according to available memory. CPU uses less VRAM." style="cursor:help">text encoding</label><select id="sfill_clip_device" style="flex:1"><option value="cpu">CPU</option><option value="default">Default (GPU / auto)</option></select></div>`);
   const firstSlider = root.querySelector('input[type="range"]').closest('.row');
   root.querySelectorAll('.model-row').forEach(row => root.insertBefore(row, firstSlider));
+  slider(root, 'lora_strength', 'LoRA strength', 0, 2, 0.05, 'Model LoRA strength. Use the value recommended for your Klein-specific weights.');
 })();
 function fillSelect(id, options, value) {
   const sel = $(id); sel.innerHTML = '';
@@ -660,18 +666,21 @@ function showSettings(v) {
   $('xContext').value=v.patch_context ?? 100;
   contextReadout();
   $('smethod').value = X.mode==='patch'?'flux1_fill':v.method || 'flux2';
-  const fill = isFill();
+  const fill = isFill(), klein = isKlein();
   $('smethod').closest('.row').querySelector('label').title = X.mode==='patch' ? 'Patch Fill uses FLUX.1 Fill with its own saved settings and presets, through the shared ComfyUI connection.' : 'Generation model family for expansion.';
   $('sguidance').max = fill ? 100 : 10;
   $('sguidance').step = fill ? 1 : 0.5;
-  $('ssteps').closest('.row').querySelector('label').title = fill ? 'Native Fill sampling steps (default 28).' : 'Sampling steps: 8 with the Turbo LoRA, about 20 without.';
-  $('sfeathering').closest('.row').querySelector('label').title = X.mode==='patch' ? 'Feather inward from the painted boundary in source pixels; unpainted pixels stay untouched.' : 'How far the original fades into the new area at the seam.';
-  $('sunetLabel').title = fill ? 'Full FLUX.1 Fill safetensors weights, loaded FP8. Not FLUX dev, Kontext or Nunchaku.' : 'GGUF diffusion model.';
+  $('ssteps').closest('.row').querySelector('label').title = fill ? 'Native Fill sampling steps (default 28).' : klein ? 'Sampling steps for the distilled klein model (default 4).' : 'Sampling steps: 8 with the Turbo LoRA, about 20 without.';
+  $('sfeathering').closest('.row').querySelector('label').title = X.mode==='patch' ? 'Feather inward from the painted boundary in source pixels; unpainted pixels stay untouched.' : klein ? 'Gaussian RGB blend over a 24 px inward overlap; source-pixel feather width. Zero keeps a hard join. Applied once, including on placement.' : 'How far the original fades into the new area at the seam.';
+  $('sunetLabel').title = fill ? 'Full FLUX.1 Fill safetensors weights, loaded FP8. Not FLUX dev, Kontext or Nunchaku.' : klein ? 'FLUX.2 klein safetensors diffusion model (Qwen text encoder, CFG 1; optional Klein-compatible LoRA).' : 'GGUF diffusion model.';
   ['lora','seam_correction'].forEach(k => { $('s' + k).closest('.row').hidden = fill; });
+  $('kleinLoraRow').hidden = !klein;
+  $('slora_strength').closest('.row').hidden = !klein;
+  $('sguidance').closest('.row').hidden = klein;
   $('supscaleLabel').title = 'Lanczos only, or a neural upscale model followed by exact-size Lanczos resizing. Neural upscale uses additional time and VRAM.';
   $('fillDeviceRow').hidden = !fill;
   $('sfill_clip_device').value = v.fill_clip_device || 'cpu';
-  SETKEYS.forEach(k => {
+  CONTROLKEYS.forEach(k => {
     const e = $('s' + k), value = v[settingKey(k)];
     if (e.type === 'checkbox') e.checked = !!value;
     else if (SL[k]) SL[k](value);
@@ -691,6 +700,8 @@ async function loadStatus() {
   showSettings(r.settings);
   fillSelect('sunet', r.unets, r.settings[settingKey('unet')]);
   fillSelect('supscale', ['lanczos', ...r.upscalers], r.settings[settingKey('upscale')]);
+  fillSelect('slora_name', ['', ...(r.loras || [])], r.settings.klein_lora_name || '');
+  $('slora_name').querySelector('option[value=""]').textContent = 'Select Klein-compatible weights';
   $('supscale').querySelector('option[value="lanczos"]').textContent = 'Lanczos (no model)';
   X.ready = r.ok;
   if (!X.running) $('xRun').title = r.message || 'Generate the new area with ComfyUI. The picture itself is not changed.';
@@ -727,11 +738,11 @@ async function saveSettings(values) {
     return;
   }
   ++statusRequest; X.settingsSaving = true; X.ready = false; xButtons(); xInfo();
-  try { await api('/api/settings', {mode:X.mode,values}); await loadStatus(); setStatus('Settings saved', false, true); }
+  try { await api('/api/settings', {mode:X.mode,values}); await loadStatus(); if (X.ready) setStatus('Settings saved', false, true); }
   catch (e) { setStatus(e.message, true); }
   finally { X.settingsSaving = false; xButtons(); xInfo(); updateStar(); }
 }
-SETKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[settingKey(k)]: e.type === 'checkbox' ? e.checked : e.value}); });
+CONTROLKEYS.forEach(k => { const e = $('s' + k); e.onchange = () => saveSettings({[settingKey(k)]: e.type === 'checkbox' ? e.checked : e.value}); });
 $('smethod').onchange = () => saveSettings({method: $('smethod').value});
 $('sfill_clip_device').onchange = () => saveSettings({fill_clip_device: $('sfill_clip_device').value});
 $('xPrompt').onchange = () => saveSettings({prompt:$('xPrompt').value});
@@ -750,7 +761,7 @@ const curSettings = () => {
   const o = {...savedSettings, prompt:$('xPrompt').value, method: X.mode==='patch'?savedSettings.method:$('smethod').value};
   if(X.mode==='patch')o.patch_context=+$('xContext').value;
   delete o.fill_clip_device;
-  SETKEYS.filter(k => !isFill() || FILLKEYS.includes(k)).forEach(k => {
+  CONTROLKEYS.filter(k => familyKeys().includes(k)).forEach(k => {
     const e = $('s' + k);
     o[settingKey(k)] = e.type === 'checkbox' ? e.checked : (e.tagName === 'SELECT' || isNaN(+e.value) ? e.value : +e.value);
   });

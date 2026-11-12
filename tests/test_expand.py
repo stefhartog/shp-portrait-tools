@@ -4,6 +4,7 @@ Run:  uv run python tests/test_expand.py   (no real ComfyUI or PhotoCraft needed
 import io
 import json
 import re
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -77,6 +79,121 @@ def test_graph():
             assert g["12"]["inputs"]["model"][0] == ("20" if lora else "5")
             assert g["26"]["inputs"]["destination"][0] == ("27" if seam else "25")
     assert "new area should show" not in X.build_graph("p.png", (1, 0, 0, 0), "  ", 1, X.DEFAULTS)["8"]["inputs"]["text"]
+
+
+def test_klein_graph(tmp):
+    saved = X.fill_settings(tmp / "s.json", {"method": "flux2_klein"})
+    assert saved["unet"] == X.DEFAULTS["unet"] and saved["megapixels"] == X.DEFAULTS["megapixels"]  # dev settings kept
+    for upscale in ("lanczos", "4x.pth"):
+        for seam in (True, False):
+            s = dict(saved, klein_upscale=upscale, klein_seam_correction=seam)
+            g = X.build_graph("p.png", (0, 100, 0, 100), "sand", 3, s)
+            for nid, node in g.items():
+                for v in node["inputs"].values():
+                    if isinstance(v, list):
+                        assert v[0] in g, (nid, v)
+            kinds = {n["class_type"] for n in g.values()}
+            assert not kinds & {"EmptyFlux2LatentImage", "FluxGuidance", "UnetLoaderGGUF", "LoraLoaderModelOnly"}
+            assert g["17"]["inputs"]["latent_image"] == ["39", 0] and g["39"]["class_type"] == "SetLatentNoiseMask"
+            assert g["9"]["inputs"]["pixels"] == ["3", 0] and g["12"]["inputs"]["cfg"] == 1.0
+            # the reference is the original picture alone, never the blurred pre-fill (Klein would copy the blur)
+            assert g["10"]["inputs"]["latent"] == g["41"]["inputs"]["latent"] == ["44", 0]
+            assert g["44"]["inputs"]["pixels"] == ["43", 0] and g["43"]["inputs"]["image"] == ["1", 0]
+            assert g["5"]["inputs"]["unet_name"] == "flux-2-klein-9b.safetensors" and g["6"]["inputs"]["clip_name"] == X.KLEIN_CLIP
+            assert g["3"]["inputs"]["megapixels"] == 2.0 and g["2"]["inputs"]["image"] == "p.png.klein.png"
+            assert g["30"]["inputs"] == {"image": "p.png.mask.png", "channel": "red"}
+            assert ("ImageUpscaleWithModel" in kinds) == (upscale != "lanczos")
+            assert not kinds & {"SeamColorCorrect", "INPAINT_MaskedBlur", "ImageCompositeMasked"}
+            assert "sand" in g["8"]["inputs"]["text"] and g["16"]["inputs"]["noise_seed"] == 3
+    for feather in (0, 48):
+        g = X.build_graph("p.png", (0, 0, 96, 0), "", 3, dict(saved, klein_feathering=feather))
+        assert g["39"]["inputs"]["mask"] == ["34m", 0]
+        assert g["34i"]["inputs"]["mask"] == ["30", 0]
+
+
+def test_klein_seam(tmp):
+    rng = np.random.default_rng(16)
+    picture = Image.fromarray(rng.integers(60, 170, (256, 288, 3), dtype=np.uint8))
+    prep = X.klein_prepare(picture, (0, 0, 64, 64), 16)
+    zero = X.klein_prepare(picture, (0, 0, 64, 64), 0)
+    assert np.array_equal(np.asarray(prep["prepared"])[:256, :288], np.asarray(picture))
+    assert np.asarray(prep["noise"])[128, 280] > 128  # denoise overlaps original by 24 source pixels
+    assert 0 < np.asarray(prep["noise"])[128, 258] < 128
+    assert np.array_equal(np.asarray(zero["blend"]), np.asarray(zero["hard"]))
+    assert np.all(np.asarray(prep["blend"])[:, 288:] == 255)
+    shifted = Image.fromarray(np.asarray(prep["original"]) + np.array([14, 8, 5], np.uint8))
+    s = dict(X.DEFAULTS, klein_seam_correction=False)
+    result = X.klein_composite(shifted, prep, s)
+    expected = Image.composite(shifted, prep["original"], prep["blend"])
+    assert np.array_equal(np.asarray(result["canvas"]), np.asarray(expected))
+    placed = Image.alpha_composite(prep["original"].convert("RGBA"), result["layer"])
+    assert np.array_equal(np.asarray(placed.convert("RGB")), np.asarray(result["canvas"]))
+    assert np.all(np.asarray(result["layer"])[..., 3] == 255)
+    assert np.array_equal(np.asarray(result["canvas"])[:180, :200], np.asarray(picture)[:180, :200])
+    corrected = X.klein_composite(shifted, prep, dict(s, klein_seam_correction=True))
+    assert np.abs(np.asarray(corrected["canvas"]).astype(int) - np.asarray(prep["original"]).astype(int)).max() <= 1
+    assert np.array_equal(np.asarray(corrected["canvas"])[:180, :200], np.asarray(picture)[:180, :200])
+
+    class Comfy:
+        def __init__(self):
+            self.uploads = {}
+
+        def upload(self, data, name):
+            self.uploads[name] = Image.open(io.BytesIO(data)).copy()
+            return name
+
+        def queue(self, graph, client):
+            self.graph = graph
+            return "klein-test"
+
+        def wait(self, *args):
+            return {"out": {"images": [{"filename": "result.png"}]}}
+
+        def view(self, info):
+            return X._png(shifted)
+
+    comfy = Comfy()
+    with patch.object(X, "Comfy", return_value=comfy), patch.object(X, "status", return_value={"ok": True}):
+        run = X.expand_variations(picture, (0, 0, 64, 64), "", X.Job(), 1,
+                                  dict(s, method="flux2_klein", klein_feathering=16))[0]
+    source_name = comfy.graph["2"]["inputs"]["image"]
+    mask_name = comfy.graph["30"]["inputs"]["image"]
+    assert np.array_equal(np.asarray(comfy.uploads[source_name]), np.asarray(prep["prepared"]))
+    assert np.array_equal(np.asarray(comfy.uploads[mask_name].convert("L")), np.asarray(prep["noise"]))
+    assert np.array_equal(np.asarray(run["canvas"]), np.asarray(result["canvas"]))
+
+
+def test_klein_lora(tmp):
+    def header(folder, name, tensors):
+        path = tmp / "models" / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(tensors).encode()
+        path.write_bytes(struct.pack("<Q", len(data)) + data)
+
+    header("diffusion_models", X.DEFAULTS["klein_unet"],
+           {"double_blocks.0.img_attn.qkv.weight": {"shape": [12288, 4096]}})
+    for name, width in (("klein.safetensors", 4096), ("dev.safetensors", 6144), ("flux1.safetensors", 3072)):
+        header("loras", name, {"transformer.transformer_blocks.0.attn.to_q.lora_A.weight": {"shape": [64, width]}})
+    s = dict(X.DEFAULTS, method="flux2_klein", klein_lora=True, klein_lora_name="klein.safetensors",
+             klein_lora_strength=0.75)
+    with patch.dict(X.os.environ, {"SHPC_COMFY_DIR": str(tmp)}):
+        g = X.build_graph("p.png", (0, 0, 96, 0), "", 3, s)
+        assert g["12"]["inputs"]["model"] == ["47", 0]
+        assert g["47"]["inputs"] == {"model": ["5", 0], "lora_name": "klein.safetensors", "strength_model": 0.75}
+        for name in ("dev.safetensors", "flux1.safetensors", "../unknown.safetensors", ""):
+            assert raises(X.build_graph, "p.png", (0, 0, 96, 0), "", 3, dict(s, klein_lora_name=name))
+        info = {node: {} for node in X.KLEIN_REQUIRED_NODES}
+        opts = {("UNETLoader", "unet_name"): [s["klein_unet"]], ("CLIPLoader", "clip_name"): [X.KLEIN_CLIP],
+                ("CLIPLoader", "type"): ["flux2"], ("VAELoader", "vae_name"): [X.VAE_NAME],
+                ("INPAINT_MaskedFill", "fill"): ["telea"],
+                ("LoraLoaderModelOnly", "lora_name"): ["klein.safetensors", "dev.safetensors"]}
+        options = lambda node, field: opts.get((node, field), [])
+        assert not X._klein_status(s, info, options)["ok"]
+        info["LoraLoaderModelOnly"] = {}
+        assert X._klein_status(s, info, options)["ok"]
+        assert not X._klein_status(dict(s, klein_lora_name="dev.safetensors"), info, options)["ok"]
+        assert not X._klein_status(dict(s, klein_lora_name="missing.safetensors"), info, options)["ok"]
+        assert "47" not in X.build_graph("p.png", (0, 0, 96, 0), "", 3, dict(s, klein_lora=False))
 
 
 class StubComfy(BaseHTTPRequestHandler):

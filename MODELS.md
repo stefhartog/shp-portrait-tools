@@ -207,7 +207,7 @@ path and restores the existing default behavior.
 Crop calls an external [ComfyUI](https://github.com/comfyanonymous/ComfyUI) runtime. Follow
 ComfyUI's current GPU/PyTorch installation instructions in its **own** `venv/` or `.venv/`,
 then install custom-node dependencies into that environment, not Tools' `.venv`.
-For **FLUX.2**, use a ComfyUI revision supporting `ReferenceLatent`,
+For **FLUX.2 dev**, use a ComfyUI revision supporting `ReferenceLatent`,
 `EmptyFlux2LatentImage` and `Flux2Scheduler`. **FLUX.1 Fill** instead uses core `UNETLoader`,
 `DualCLIPLoader` (type `flux`, device `cpu`), `InpaintModelConditioning` and `KSampler`.
 No FLUX.2-specific nodes or models are needed for Fill. The historical environment used ComfyUI 0.43
@@ -215,7 +215,7 @@ and a 24 GB GPU; that is context, not a tested minimum VRAM/version guarantee.
 
 | Custom node | Required exported node | Installation source |
 |---|---|---|
-| ComfyUI-GGUF (FLUX.2 only) | `UnetLoaderGGUF` | [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF), under `ComfyUI/custom_nodes/`; install its requirements using ComfyUI's Python. |
+| ComfyUI-GGUF (FLUX.2 dev only) | `UnetLoaderGGUF` | [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF), under `ComfyUI/custom_nodes/`; install its requirements using ComfyUI's Python. |
 | comfyui-inpaint-nodes | `INPAINT_ColorMatch` | [Acly/comfyui-inpaint-nodes](https://github.com/Acly/comfyui-inpaint-nodes), under `custom_nodes/`; follow its dependency instructions. Other inpainting weights are not used by this graph. |
 | seam-color-correct | `SeamColorCorrect` | Repo-managed copy: [`comfyui/custom_nodes/seam-color-correct/`](comfyui/custom_nodes/seam-color-correct/), included in source checkout/release. Install as below. |
 
@@ -244,7 +244,32 @@ curl -fsS http://127.0.0.1:8188/object_info/SeamColorCorrect
 
 Use port 18788 instead for the Tools-managed instance. The JSON must contain a
 `SeamColorCorrect` entry; an empty object or startup import error means it has not loaded.
-Crop's readiness check requires this node even when seam correction is switched off.
+Dev/Fill readiness requires this node; Klein's local seam correction does not.
+
+### FLUX.2 Klein: third expansion method
+
+| File | ComfyUI folder | Upstream |
+|---|---|---|
+| `flux-2-klein-9b.safetensors` | `models/diffusion_models/` | [BFL FLUX.2 Klein 9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B); choose the actual installed safetensors filename in Tools |
+| `qwen_3_8b_fp8mixed.safetensors` | `models/text_encoders/` | [Comfy-Org Klein encoder](https://huggingface.co/Comfy-Org/flux2-klein-9B/tree/main/split_files/text_encoders) |
+| `flux2-vae.safetensors` | `models/vae/` | Same FLUX.2 VAE as dev |
+
+Klein uses core `UNETLoader`, `CLIPLoader` type `flux2`, `VAEEncode`,
+`ReferenceLatent`, `SetLatentNoiseMask`, `CFGGuider`, `Flux2Scheduler`, Euler and
+standard image/mask scaling nodes. No GGUF, Telea/blur custom nodes or custom
+colour-correction node is required. Neural upscale needs its loader only if
+selected; Lanczos is the default.
+
+Its settings are independent `klein_*` fields: 4 steps, 2 MP, feather 32,
+seam correction off and LoRA off. Optional `klein_lora_name` /
+`klein_lora_strength` select local Klein-specific weights under `models/loras`
+(strength default 1). Tools checks recognised safetensors projection widths
+without allocating GPU tensors. Dev Turbo (width 6144) and FLUX.1 Turbo (3072)
+do not fit Klein 9B (4096); errors are explicit rather than silently skipping.
+Local inspection uses `SHPC_COMFY_DIR` (default `~/ComfyUI`); unknown formats or
+external model locations fail conservatively. Compatible shapes do not prove
+training family, effectiveness or a recommended step count. Follow the adapter's
+publisher guidance and upstream licences; Tools downloads no models.
 
 The copied `__init__.py` is byte-identical to the existing local node at the time of copying:
 SHA-256 `f14e335bf4ffb87117f767392bb23adef07441c72678b426ca362fd362c161e8`.

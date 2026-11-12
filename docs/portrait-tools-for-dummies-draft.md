@@ -70,7 +70,7 @@ installation checklist.
 | Current application | Linux, Python 3.13, uv and the repository's locked dependencies. Windows support is not implemented or verified. |
 | Any of the four skin tabs | The three manually supplied ONNX models listed in [MODELS](../MODELS.md), plus pose-model weights downloaded on first analysis or prepared ahead of time. Full CPU-only skin analysis is **not guaranteed**; the pose helper explicitly requests CUDA. |
 | Native desktop window, tray and native file pickers | System GTK3, WebKit2-4.1 and AppIndicator3 bindings, a graphical session and suitable tray support. See README for the installer and distro package examples. |
-| AI Fill generation | A separate, working ComfyUI installation with its own environment, models and custom nodes. Crop & Expand supports FLUX.2 or FLUX.1 Fill; Patch Fill requires FLUX.1 Fill. Tools does not install these for you. |
+| AI Fill generation | A separate, working ComfyUI installation with its own environment and models. Crop & Expand supports FLUX.2 dev, FLUX.1 Fill or FLUX.2 Klein; Patch Fill requires FLUX.1 Fill. Tools does not install these for you. |
 | PhotoCraft integration only | A compatible PhotoCraft build, authenticated control/automation enabled at launch, matching token and permitted file-exchange directories, and an open document. Tools does not install or start PhotoCraft for you. |
 
 **Optional, not a prerequisite for local skin processing:** PhotoCraft, ComfyUI,
@@ -372,8 +372,15 @@ already completed variations. In a result view, wheel to zoom, drag to pan, and
 double-click to fit. Middle-button dragging pans in source and result views
 without moving the crop frame.
 
-The **method** choices are **FLUX.2** (default) and **FLUX.1 Fill**, with separate
+The **method** choices are **FLUX.2** dev (default), **FLUX.1 Fill** and **FLUX.2 Klein**, with separate
 settings and model requirements. Changing the dropdown does not install weights.
+Klein defaults to 4 steps, 2 MP and Lanczos; its optional Turbo LoRA is off.
+Only choose weights made for the selected Klein model: dev Turbo weights do not fit.
+Its generation mask grows 24 original-image pixels inward and softens at radius
+8 pixels regardless of working resolution. **Feather** changes only the final
+blend; zero leaves a hard join. **Seam colour correction** adjusts smooth colour
+drift without blurring texture. The once-blended opaque result places exactly
+as previewed, keeping original pixels outside the transition unchanged.
 **Lanczos (no model)** avoids a neural upscaler, not the generation models.
 **Free Comfy memory** only requests unloading while the queue is idle; it does
 not guarantee a particular RAM/VRAM reduction.
