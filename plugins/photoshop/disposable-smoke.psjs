@@ -1,0 +1,79 @@
+// Manually run with File > Scripts > Browse. Only a NEW unsaved test document is modified.
+const {app, core, imaging, constants} = require("photoshop");
+let testDocument;
+try {
+    const report = await core.executeAsModal(async context => {
+        testDocument = await app.createDocument({name: "Skin Tools DISPOSABLE API TEST - do not save",
+            width: 8, height: 4, depth: 16, mode: constants.NewDocumentMode.RGB,
+            fill: constants.DocumentFill.WHITE, profile: "sRGB IEC61966-2.1"});
+        const doc = testDocument;
+        const history = await context.hostControl.suspendHistory({documentID: doc.id, name: "Disposable Skin Tools round trip"});
+        let committed = false;
+        const ramp = [0, 1, 255, 256, 32767, 32768, 65534, 65535];
+        const samples = new Uint16Array(8 * 4 * 3);
+        const inverse = new Uint16Array(samples.length);
+        const mask = new Uint8Array(8 * 4);
+        for (let y = 0; y < 4; ++y) {
+            for (let x = 0; x < 8; ++x) {
+                mask[y * 8 + x] = [0, 64, 128, 255][y];
+                for (let c = 0; c < 3; ++c) {
+                    samples[(y * 8 + x) * 3 + c] = ramp[x];
+                    inverse[(y * 8 + x) * 3 + c] = 65535 - ramp[x];
+                }
+            }
+        }
+        async function put(layer, data, isMask) {
+            const image = await imaging.createImageDataFromBuffer(data, {width: 8, height: 4,
+                components: isMask ? 1 : 3, colorSpace: isMask ? "Grayscale" : "RGB",
+                colorProfile: isMask ? "Gray Gamma 2.2" : doc.colorProfileName, chunky: true, fullRange: true});
+            try {
+                const options = {documentID: doc.id, layerID: layer.id, imageData: image, replace: true};
+                if (isMask) await imaging.putLayerMask(options);
+                else await imaging.putPixels(options);
+            } finally { image.dispose(); }
+        }
+        async function composite() {
+            const pixels = await imaging.getPixels({documentID: doc.id, componentSize: 16, applyAlpha: false});
+            try {
+                if (pixels.level !== 0 || pixels.imageData.width !== 8 || pixels.imageData.height !== 4)
+                    throw new Error("Composite bounds/resolution differ from the disposable source.");
+                return {data: await pixels.imageData.getData({fullRange: true}),
+                    components: pixels.imageData.components};
+            } finally { pixels.imageData.dispose(); }
+        }
+        function difference(actual, expected) {
+            let maximum = 0;
+            for (let p = 0; p < 8 * 4; ++p) {
+                for (let c = 0; c < 3; ++c)
+                    maximum = Math.max(maximum, Math.abs(actual.data[p * actual.components + c] - expected[p * 3 + c]));
+            }
+            return maximum;
+        }
+        try {
+            const source = await doc.createPixelLayer({name: "Source RGB16 ramp"});
+            await put(source, samples, false);
+            const captureError = difference(await composite(), samples);
+            const layer = await doc.createPixelLayer({name: "Masked inverse ramp - one editable pixel layer"});
+            await put(layer, inverse, false);
+            await put(layer, mask, true);
+            const expected = new Float64Array(samples.length);
+            for (let i = 0; i < samples.length; ++i) {
+                const alpha = mask[Math.floor(i / 3)] / 255;
+                expected[i] = samples[i] * (1 - alpha) + inverse[i] * alpha;
+            }
+            const compositeError = difference(await composite(), expected);
+            if (captureError > 2 || compositeError > 4)
+                throw new Error(`Numeric check failed: capture ${captureError}, masked composite ${compositeError} / 65535.`);
+            await context.hostControl.resumeHistory(history, true);
+            committed = true;
+            return `Disposable RGB16 API check passed.\nCapture max error: ${captureError}/65535.\nMasked Normal composite max error: ${compositeError}/65535.\nOne Undo should remove the two test layers. No file was saved.\nThis does not validate network/pairing, group masks or full Skin Tools rendering.`;
+        } finally {
+            if (!committed) await context.hostControl.resumeHistory(history, false);
+        }
+    }, {commandName: "Skin Tools disposable API test", timeOut: 1});
+    await app.showAlert(report);
+} catch (error) {
+    console.error(error);
+    await app.showAlert(`Skin Tools disposable API test failed: ${error.message}\nOnly the newly created test document may have changed; nothing was saved.`);
+    throw error;
+}

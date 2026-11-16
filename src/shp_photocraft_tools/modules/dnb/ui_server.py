@@ -44,6 +44,8 @@ from . import skin_mask as K
 from . import skin_mask_compare as M
 from . import pose_backend as POSE
 from . import photocraft_bridge as PCB
+from . import photoshop_bridge as PSB
+from shp_photocraft_tools.shared.photoshop import Broker as PhotoshopBroker, handle_http as photoshop_http
 from . import frequency_separation as FS
 from . import skintone as ST
 from . import directional_blur as DB
@@ -1309,9 +1311,41 @@ def save_skin(req, p):
 
 
 BRIDGE = {"b": None, "doc": None}
+EDITOR = {"selected": "photocraft", "photoshop": None, "broker": None}
+
+
+def photoshop_broker():
+    if EDITOR["broker"] is None:
+        EDITOR["broker"] = PhotoshopBroker()
+    return EDITOR["broker"]
+
+
+def api_editor(req):
+    selected = req.get("editor", EDITOR["selected"])
+    if selected not in ("photocraft", "photoshop"):
+        raise ValueError("editor must be photocraft or photoshop")
+    if selected != EDITOR["selected"]:
+        if selected == "photoshop":
+            photoshop_broker()
+        EDITOR["selected"] = selected
+        BRIDGE["doc"] = None
+    return {"editor": selected}
+
+
+def api_photoshop_pair(req):
+    return photoshop_broker().pairing_code()
+
+
+def api_photoshop_revoke(req):
+    BRIDGE["doc"] = None
+    return photoshop_broker().revoke()
 
 
 def bridge():
+    if EDITOR["selected"] == "photoshop":
+        if EDITOR["photoshop"] is None:
+            EDITOR["photoshop"] = PSB.Bridge(photoshop_broker())
+        return EDITOR["photoshop"]
     if BRIDGE["b"] is None:
         BRIDGE["b"] = PCB.Bridge()
     return BRIDGE["b"]
@@ -1319,6 +1353,9 @@ def bridge():
 
 def api_pc_status(req):
     try:
+        if EDITOR["selected"] == "photoshop" and not photoshop_broker().connected():
+            return {"connected": False, "message": "Open the Skin Tools Connector panel in Photoshop and pair/connect.",
+                    "code": "photoshop", "fetched": BRIDGE["doc"]}
         st = bridge().status()
         return {"connected": True, "doc": st["doc"], "fetched": BRIDGE["doc"], "headless": st["headless"]}
     except PCB.ControlError as e:
@@ -1327,18 +1364,22 @@ def api_pc_status(req):
 
 def api_pc_fetch(req):
     started = time.perf_counter()
-    path, doc = progress.call("Getting merged image from PhotoCraft", bridge().fetch, ROOT / "inbox")
+    editor = EDITOR["selected"]
+    path, doc = progress.call("Getting merged image from " + ("Photoshop" if editor == "photoshop" else "PhotoCraft"),
+                              bridge().fetch, ROOT / "inbox")
     fetched = time.perf_counter()
     res = api_load({"path": str(path)})
     res["timings"]["loaded"] += fetched - started
     res["seconds"] = time.perf_counter() - started
     BRIDGE["doc"] = doc
-    STATE["source_kind"] = res["source_kind"] = "photocraft"
+    STATE["source_kind"] = res["source_kind"] = editor
     res["pc_doc"] = doc
     return res
 
 
 def watch_target():
+    if EDITOR["selected"] != "photocraft":
+        raise ValueError("Watch-folder editor handoff is PhotoCraft-only; select PhotoCraft first")
     return capture_target(bridge())
 
 
@@ -1368,10 +1409,11 @@ def load_watch_image(path, target):
 
 def api_pc_send_layers(req):
     if STATE["img"] is None or BRIDGE["doc"] is None:
-        raise ValueError("get a picture from PhotoCraft first")
+        raise ValueError("get a picture from the selected editor first")
     if "generation" in req and req["generation"]!=STATE.get("landmark_generation"):
         raise ValueError("the loaded image changed; Get Image again before Send Layers")
     p = parse_params(req)
+    validate_editor_source(p)
     img = STATE["img"]
     if p["mode"]=="combine":
         return {"sent":True,**send_combined_layers(p)}
@@ -1414,12 +1456,23 @@ def skin_result(p):
 
 def api_pc_send(req):
     if STATE["img"] is None or BRIDGE["doc"] is None:
-        raise ValueError("get a picture from PhotoCraft first")
+        raise ValueError("get a picture from the selected editor first")
     p=parse_params(req)
+    validate_editor_source(p)
     if p["mode"] == "mask":
         return api_pc_send_layers(req)
     result,icc=skin_result(p)
     return {"sent":True,**bridge().send_result(FS.rgb16(result),BRIDGE["doc"],source_icc=icc)}
+
+
+def validate_editor_source(p):
+    if STATE.get("source_kind") != EDITOR["selected"]:
+        raise ValueError("Selected editor differs from the fetched source; Get Image again")
+    if (EDITOR["selected"] == "photoshop" and p["mode"] in ("dnb", "combine")
+            and STATE.get("icc") != STATE.get("source_icc")):
+        raise ValueError("Photoshop D&B/Combine currently requires native sRGB or Adobe RGB samples. "
+                         "This profile was converted for analysis; no correction was sent. "
+                         "Use FS & Tone, or explicitly convert a disposable copy in Photoshop.")
 
 
 def send_combined_layers(p):
@@ -1515,9 +1568,9 @@ def api_send_result(req):
         raise ValueError("load an image first")
     if req.get("generation", STATE.get("landmark_generation")) != STATE.get("landmark_generation"):
         raise ValueError("the loaded image changed; Get Image again before sending")
-    if STATE.get("source_kind") == "photocraft":
+    if STATE.get("source_kind") in ("photocraft", "photoshop"):
         if not api_pc_status({})["connected"]:
-            raise ValueError("PhotoCraft is disconnected; reconnect to send this PhotoCraft source")
+            raise ValueError("The source editor is disconnected; reconnect and Get Image again")
         return api_pc_send(req)
     if STATE.get("source_kind") != "local" or not STATE.get("path"):
         raise ValueError("Get Image again to establish the output destination")
@@ -1715,6 +1768,9 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path.startswith("/api/photoshop/"):
+            photoshop_http(self, photoshop_broker())
+            return
         path = self.path.split("?")[0]
         if path == "/api/mask-precache":
             return self.send(200, json.dumps(mask_cache_status()).encode(), "application/json")
@@ -1762,20 +1818,31 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, data, "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg")
         self.send(404, b"not found", "text/plain")
 
+    def do_POST(self):
+        if self.path.startswith("/api/photoshop/"):
+            photoshop_http(self, photoshop_broker())
+            return
+        super().do_POST()
+
     def do_api_POST(self):
         token = None
         try:
-            if self.path in ("/api/send-result","/api/pc/send_layers", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare") and (
+            if (self.path.startswith("/api/editor")
+                    or (EDITOR["selected"] == "photoshop" and self.path.startswith("/api/pc/"))
+                    or self.path in ("/api/send-result", "/api/pc/send_layers", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare")) and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
             n = int(self.headers.get("Content-Length", 0))
+            if not 0 <= n <= 1024 * 1024:
+                raise ValueError("API request exceeds the 1 MiB JSON limit")
             req = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/api/batch/cancel":
                 return self.send(200, json.dumps(api_batch_cancel(req)).encode(), "application/json")
             fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
                   "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/send_layers":api_pc_send_layers, "/api/pc/launch": api_pc_launch,
+                  "/api/editor": api_editor, "/api/editor/pair": api_photoshop_pair, "/api/editor/revoke": api_photoshop_revoke,
                   "/api/send-result": api_send_result,
                   "/api/batch": api_batch, "/api/batch/images": api_batch_images,
                   "/api/watch-folder/load": self.load_watch_image,

@@ -72,6 +72,12 @@ Load a local image or connect to PhotoCraft to fetch the current document. Previ
 and compare generated or retouched results, then save locally or send editable layers
 back to PhotoCraft. PhotoCraft is optional; the main tools can work with local files.
 
+An experimental **Windows Photoshop 28.0 UXP connector** is available for Skin Tools.
+It adds local pairing and editable pixel-layer stacks without replacing PhotoCraft.
+It is a source preview, not a verified end-user installer: live Photoshop fidelity,
+group masks and CCX installation still need user-assisted validation. See
+[Photoshop setup and limitations](docs/photoshop.md) before loading it.
+
 ## Dependencies
 
 **Required:** Linux, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/).

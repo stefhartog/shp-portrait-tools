@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+body { padding: 14px; color: #ddd; background: #292929; font: 13px sans-serif; }
+button, input { margin: 5px 0; padding: 6px; width: 100%; }
+p { margin: 8px 0; } #status { white-space: pre-wrap; }
+</style></head>
+<body>
+<h3>Skin Tools Connector (preview)</h3>
+<p>Start Tools normally. In Skin Tools choose Photoshop and Create pairing code.</p>
+<input id="code" type="password" placeholder="One-time code from Tools">
+<button id="pair">Pair with local Tools</button>
+<button id="connect">Connect / resume</button>
+<button id="disconnect">Disconnect locally</button>
+<button id="profile">Select exact source ICC profile...</button>
+<p id="profileName">No ICC file selected.</p>
+<p>Keep this panel loaded. Reopen after restarting Photoshop. To revoke access, use Forget pairing in Tools.</p>
+<p>Preview: opaque RGB 8/16-bit only, up to 40 MP. Hue is an editable rendered pixel layer, not a live LUT adjustment.</p>
+<p id="status" role="status">Disconnected. Use disposable documents until live validation is complete.</p>
+<script src="main.js"></script>
+</body>
+</html>

@@ -131,6 +131,16 @@
   <details class="grp" id="generalSettings">
     <summary>Settings &amp; Info</summary>
     <div class="gbody" id="generalSettingsContent">
+      <details id="g-editor" open>
+        <summary>Source editor</summary>
+        <div class="row"><label for="editorSelect">editor</label><select id="editorSelect"><option value="photocraft">PhotoCraft / local files</option><option value="photoshop">Photoshop (UXP preview)</option></select></div>
+        <div id="photoshopPairing" hidden>
+          <button id="photoshopPair">Create pairing code</button>
+          <button id="photoshopRevoke">Forget pairing</button>
+          <p class="hint" id="photoshopPairCode" role="status"></p>
+          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit, exact source ICC file required; Hue is a rendered pixel layer. Get Image again after each Send. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's binary transport.</p>
+        </div>
+      </details>
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
       <details id="g-pose">
         <summary>Pose analysis backend</summary>
@@ -1037,7 +1047,7 @@ function applyLoaded(r) {
     state.imageGeneration = r.generation;
     state.hueCenterNote = '';
     state.hueCenterFailed = false;
-    state.loaded = true; state.pcFetched = r.source_kind === 'photocraft'; state.sourceKind = r.source_kind || 'local'; state.version = 0; state.avers = 0; syncCropButtons(); state.estS = r.S;
+    state.loaded = true; state.pcFetched = ['photocraft','photoshop'].includes(r.source_kind); state.sourceKind = r.source_kind || 'local'; state.version = 0; state.avers = 0; syncCropButtons(); state.estS = r.S;
     syncTransferTitles();
     state.skintoneError = r.skintone_error || null;
     state.color.hue = state.color.saturation = state.color.rgb = null;
@@ -1155,7 +1165,8 @@ function setBusy(b, operation=true) {
   ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache','poseBackend','posePython','poseModel','poseSave'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
-  $('pcSendLayers').disabled=b||!state.loaded||state.sourceKind!=='photocraft';
+  $('pcSendLayers').disabled=b||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
+  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -1352,12 +1363,12 @@ async function pcGet() {
     state.pcConnected = connection.connected; syncTransferTitles();
     let path = null;
     if (!connection.connected) {
-      if (connection.code === 'authentication') throw new Error(connection.message);
+      if (connection.code === 'authentication' || $('editorSelect').value === 'photoshop') throw new Error(connection.message);
       if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
       path = window.prompt('SHP_OPEN_IMAGE_V1');
       if (!path) return;
     }
-    const message = path ? 'Opening local image...' : 'Getting image from PhotoCraft...';
+    const message = path ? 'Opening local image...' : 'Getting image from selected editor...';
     beginLoadTimings(message); setStatus(message);
     const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', path ? {path} : {});
     applyLoaded(r);
@@ -1373,10 +1384,10 @@ async function pcGet() {
 }
 async function pcSend(layers=false) {
   if (state.busy || !state.loaded) return;
-  if(layers && (state.sourceKind!=='photocraft'||!['frequency','dnb','combine'].includes(state.mode))) return;
+  if(layers && (!['photocraft','photoshop'].includes(state.sourceKind)||!['frequency','dnb','combine'].includes(state.mode))) return;
   const started = performance.now();
   const p = params(); if (!(p.S > 0)) { setStatus('Enter S first.', true); return; }
-  setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : layers ? 'Sending editable SkinTools layers to PhotoCraft...' : 'Sending result to PhotoCraft...');
+  setBusy(true); setStatus(state.sourceKind === 'local' ? 'Saving full-resolution result beside source...' : layers ? 'Sending editable SkinTools layers to source editor...' : 'Sending result to source editor...');
   if (temporaryLog.send) recordCalculation(temporaryLog.send);
   temporaryLog.send = 'Preparing Send...';
   renderTemporaryLog();
@@ -1386,11 +1397,40 @@ async function pcSend(layers=false) {
     logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
     if (r.saved) setStatus(`Saved result: ${r.path}`, false, true);
+    else if (state.sourceKind === 'photoshop') setStatus('Sent to Photoshop. Get Image again before sending another result.', false, true);
   }
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
 }
 $('pcGet').onclick = pcGet; $('pcSend').onclick = ()=>pcSend(); $('pcSendLayers').onclick=()=>pcSend(true);
+$('editorSelect').onchange = async () => {
+  setBusy(true);
+  try {
+    const r = await api('/api/editor', {editor:$('editorSelect').value});
+    $('photoshopPairing').hidden = r.editor !== 'photoshop';
+    state.pcConnected = null;
+    setStatus('Editor selected. Get Image again before sending.');
+  } catch (e) { setStatus(e.message, true); }
+  finally { setBusy(false); }
+};
+$('photoshopPair').onclick = async () => {
+  try {
+    const r = await api('/api/editor/pair', {});
+    $('photoshopPairCode').textContent = `Enter in Photoshop: ${r.code} (expires in ${r.expires_seconds}s)`;
+    setTimeout(() => { $('photoshopPairCode').textContent = ''; }, r.expires_seconds * 1000);
+  } catch (e) { setStatus(e.message, true); }
+};
+$('photoshopRevoke').onclick = async () => {
+  try {
+    await api('/api/editor/revoke', {});
+    $('photoshopPairCode').textContent = '';
+    setStatus('Photoshop pairing revoked. Pair again to reconnect.');
+  } catch (e) { setStatus(e.message, true); }
+};
+api('/api/editor', {}).then(r => {
+  $('editorSelect').value = r.editor;
+  $('photoshopPairing').hidden = r.editor !== 'photoshop';
+}).catch(e => setStatus(e.message, true));
 let watchFolderErrors = '';
 let watchFolderLoadError = '';
 async function pollWatchFolder() {
@@ -1534,8 +1574,8 @@ function syncMode() {
   const dnb = state.mode==='dnb', frequency = state.mode==='frequency';
   $('g-combine').hidden=state.mode!=='combine';
   $('g-batch').hidden=state.mode!=='combine';
-  $('pcSendLayers').hidden=state.sourceKind!=='photocraft'||!['dnb','frequency','combine'].includes(state.mode);
-  $('pcSendLayers').disabled=state.busy||!state.loaded||state.sourceKind!=='photocraft';
+  $('pcSendLayers').hidden=!['photocraft','photoshop'].includes(state.sourceKind)||!['dnb','frequency','combine'].includes(state.mode);
+  $('pcSendLayers').disabled=state.busy||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
   syncFrequencyControls();
   $('maskOperations').hidden = state.mode !== 'mask';
   $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
@@ -1560,9 +1600,9 @@ function syncMode() {
   syncTabs();
 }
 function syncTransferTitles() {
-  $('pcGet').title = state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
+  $('pcGet').title = $('editorSelect').value === 'photoshop' ? 'Get the active Photoshop document through the paired UXP connector.' : state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
   $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'mask' ? 'Add a grayscale skin mask layer.' : 'Add the flattened corrected photograph as an RGB16 Normal layer.';
-  $('pcSendLayers').hidden=state.sourceKind!=='photocraft'||!['dnb','frequency','combine'].includes(state.mode);
+  $('pcSendLayers').hidden=!['photocraft','photoshop'].includes(state.sourceKind)||!['dnb','frequency','combine'].includes(state.mode);
   $('pcSendLayers').title='Add one editable SkinTools folder: D&B above Detail, Hue, Directional Blur, Blur and Color; enabled effects only.';
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
