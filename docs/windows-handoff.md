@@ -24,8 +24,9 @@ the Linux desktop or editor-handoff installers on Windows.
 ## Windows port status (Skin Tools standalone)
 
 Branch `stefhartog-skin-tools-windows-port`, started from `23cffaf41f0c1e1477e8296c62836451f7a2951f`.
-Scope: Skin Tools (`dnb`, port 8765) standalone service and browser WebUI only. Not touched:
-GTK desktop/tray, launcher/supervisor/installers, Crop & Expand/AI Fill, Flatpak, LightCraft,
+Scope of the first port: Skin Tools (`dnb`, port 8765) standalone service and browser WebUI. The
+Windows desktop host (launcher/supervisor/pywebview/pystray) was added later, see below. Still not
+touched: GTK desktop/tray, installers, Crop & Expand/AI Fill, Flatpak, LightCraft,
 the Linux-only Google pose worker.
 
 ### Verified on Windows
@@ -116,7 +117,8 @@ browser, batch/PhotoCraft send.
 - Not tested: symlink semantics (needs Developer Mode/elevation), CPU-only fallback end to end,
   network/cross-volume paths, locked-file behavior beyond the unit tests, antivirus interaction,
   the WebUI beyond fetching `/`, PhotoCraft/ComfyUI/LightCraft, launcher/tray/desktop.
-- `launcher`, `supervisor`, `shared/owned_process.py` and `comfy.py` remain Linux-only.
+- `comfy.py` remains Linux-only (rejected in the Windows launcher config). The launcher,
+  supervisor and ownership primitives now have Windows paths; see the desktop host section.
 
 ## Windows desktop host design (pywebview + pystray)
 
@@ -142,8 +144,64 @@ the Windows config and not verified (it needs a ComfyUI that is not ported).
 | Wake/show/import from both inboxes | Same 3 s poll of `/<module>/api/watch-folder`; a new ready token shows the window |
 | SIGTERM quit | `SIGBREAK`/Ctrl+C request the same confirmed quit path; tray Quit is primary |
 
-Known weakening versus Linux: a job object is assigned just after spawn (not atomically), so a
-grandchild created in that gap would escape the job.
+Known weakening versus Linux: only the services the supervisor spawns are job-contained (spawned
+suspended, assigned to their own Job Object, then resumed, so nothing can escape in a gap). The
+launcher-spawned supervisor and the desktop host are not in a job; they are identified by
+`SHP_SERVER_INSTANCE`/`(pid, creation time)` and the supervisor exits its children when it exits.
+Closing the window hides it (tray Quit is the only way to stop services; Ctrl+C/SIGBREAK is not
+handled while the WinForms loop runs, so a killed host leaves the supervisor running until its
+lifetime lease expires).
+
+### Windows desktop host: implemented
+
+Commands (from the worktree; nothing is installed, no shortcut/registry/Start menu is touched):
+
+```powershell
+python -m uv sync --locked --extra gpu           # includes win32-only pywebview + pystray
+python -m uv run --no-sync shp-photocraft-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
+python -m uv run --no-sync shp-photocraft-tools                  # starts shell + Skin Tools and opens the window
+python -m uv run --no-sync shp-photocraft-tools --no-browser     # services only; open http://127.0.0.1:18760/
+```
+
+`launcher.json` defaults: models `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`, ports crop
+18768 / dnb 18765, shell 18760, startup `{crop: false, dnb: true}`; `comfy` is rejected on Windows.
+`SHP_TOOLS_DATA` relocates the data/state tree (used by the smoke test). Logs: `<data>\state\*.log`
+and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
+
+Optional shortcut recipe (documented only, NOT executed): a `.lnk` whose target is
+`<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_photocraft_tools.launcher --config
+%APPDATA%\shp-photocraft-tools\launcher.json`, start in `<worktree>`.
+
+Code: `shared/filelock.py` (msvcrt lock), `shared/windows_process.py` (identity, jobs,
+single-instance mutex/event), platform dispatch in `shared/owned_process.py` and
+`shared/supervision.py`, Windows paths in `launcher.py`/`supervisor.py`,
+`desktop/protocol.py`, `desktop/windows_controller.py`. Linux paths are behind `sys.platform` guards.
+
+#### Verified (real run, `tests/windows_host_smoke.py`, disposable data dir/inbox, real models read-only)
+
+Against real WebView2 (157.0.4341.46), pythonnet and pystray: shell and Skin Tools iframe load in
+the pywebview window; `__shpOwnedDesktop` (top) and `__shpNativeFileDialog` (shell and iframe) are
+set; the tray icon is created (`run_detached` reports ready); all four `SHP_OPEN_*` prompts
+round-trip through the real `ScriptDialogOpening` handler with a fake picker (the answers match
+the GTK formats); hide/show toggle the form's visibility; Quit through the real
+`/api/ui/native-quit` stops the supervisor and Skin Tools with no listener left on 18760/18765
+and no stray python processes. Unit tests (`tests/test_windows_host.py`): file lock, job adoption,
+termination, identity-mismatch refusal, single-instance mutex/event, prompt protocol. Regression
+set (`test_combine ... test_windows_service`, plus the new tests): 84 OK, skipped 9.
+`test_launcher`/`test_supervisor` are Linux-oriented and still have Windows failures (6 of 21).
+
+Findings: WebView2 raises `ScriptDialogOpening` only when `AreDefaultScriptDialogsEnabled` is
+false, so the host disables them and renders alert/confirm itself with `MessageBox`; the venv
+`python.exe` is a redirector that spawns the real interpreter, so ownership uses job membership
+rather than `Popen.pid`; closed loopback ports take ~2 s to refuse on Windows (probe timeout 5 s).
+
+#### Not verified (try in the GUI)
+
+Real native pickers (Open/Folder dialogs; only the fake picker path was run), the Yes/No/Cancel
+batch-source box, tray right-click menu and notifications, close-button hide, the second-launch
+"show existing window" wake, Restart / Force Restart / Reload, the busy and unsent-work
+confirmations, window geometry persistence, download Save-As, new-window/navigation blocking,
+inbox wake-to-show, GPU inference through the host, and AI Fill (`crop`).
 
 ## Committed feature state
 
