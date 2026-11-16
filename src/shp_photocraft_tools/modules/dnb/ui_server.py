@@ -21,6 +21,7 @@ import math
 import threading
 import tempfile
 import os
+import sys
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -2326,7 +2327,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, json.dumps(read_presets()).encode(), "application/json")
         if path == "/api/global-settings":
             try:
-                return self.send(200, json.dumps(read_global_settings()).encode(), "application/json")
+                return self.send(200, json.dumps({**read_global_settings(), "photocraft_launch_available": sys.platform == "win32"}).encode(), "application/json")
             except (OSError, ValueError) as error:
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
         if path == "/api/images":
@@ -2358,7 +2359,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
         try:
             if (self.path == "/api/layer-precache/cancel" or self.path.startswith("/api/editor")
                     or (EDITOR["selected"] == "photoshop" and self.path.startswith("/api/pc/"))
-                    or self.path in ("/api/send-result", "/api/pc/send_layers", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare")) and (
+                    or self.path in ("/api/send-result", "/api/pc/send_layers", "/api/pc/launch", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare")) and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")

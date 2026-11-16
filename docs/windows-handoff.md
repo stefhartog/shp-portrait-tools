@@ -326,6 +326,36 @@ when PhotoCraft is unavailable it offers the desktop's local-file picker instead
 After updating launcher code, exit Tools completely and reopen it to replace the
 running supervisor and modules; a window refresh alone does not update their settings.
 
+For shortcut launches, the optional `photocraft` object in the existing
+`%APPDATA%\shp-photocraft-tools\launcher.json` holds paths only:
+
+```json
+{
+  "photocraft": {
+    "port": 7878,
+    "token_file": "C:\\Users\\YOURNAME\\AppData\\Local\\shp-photocraft-control\\control.token",
+    "exchange": "C:\\Users\\YOURNAME\\AppData\\Local\\shp-photocraft-control\\exchange",
+    "read_root": "C:\\Users\\YOURNAME\\AppData\\Local\\shp-photocraft-control\\exchange",
+    "executable": "C:\\Program Files\\PhotoCraft\\photocraft.exe",
+    "editor_config": "C:\\Users\\YOURNAME\\AppData\\Local\\shp-photocraft-control\\editor-settings"
+  }
+}
+```
+
+Add that object alongside the existing settings, not as a replacement. All paths
+must be absolute; keep both roots limited to the exchange. Explicit `SHP_PC_*`
+and module-specific overrides take precedence, as do `PHOTOCRAFT_BIN` and
+`PHOTOCRAFT_CONFIG_DIR`. The shortcut must run a checkout containing this
+integration; merely updating configuration does not update an older checkout.
+Quit Tools from its tray and reopen it once after changing configuration or code;
+an already-running supervisor retains its old environment. PhotoCraft is not
+started automatically: use the **PhotoCraft** button in Skin Tools. It authenticates
+and reuses a controlled desktop listener, or starts a separate controlled window.
+It refuses an untrusted listener instead of starting another on an occupied port.
+Open the document in that controlled window; Get Image and Send Layers do not attach
+to the ordinary already-running editor. If connection fails, the button reports
+the error. A running editor is never stopped by this action.
+
 For a first isolated setup, run the following in PowerShell from this checkout. It
 creates a **new** private directory, refusing to alter an existing directory or token.
 The ACL grants the current Windows user access and is inherited by the token and
@@ -343,13 +373,16 @@ $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'Ful
 $acl.AddAccessRule($rule)
 Set-Acl -LiteralPath $private -AclObject $acl
 New-Item -ItemType Directory -Path (Join-Path $private 'exchange') | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $private 'editor-settings') | Out-Null
 $bytes = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-[System.IO.File]::WriteAllText((Join-Path $private 'control.token'), [Convert]::ToHexString($bytes).ToLowerInvariant())
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+$hex = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+[System.IO.File]::WriteAllText((Join-Path $private 'control.token'), $hex)
 ```
 
-In the same PowerShell session (and again in future sessions), set the paths and
-start **a separate controlled PhotoCraft instance** and Skin Tools:
+The environment-based alternative below is only for manual or standalone testing;
+the configured shortcut does not require these commands:
 
 ```powershell
 $private = Join-Path $env:LOCALAPPDATA 'shp-photocraft-control'

@@ -92,6 +92,18 @@ def read_config(path):
     return config
 
 
+def apply_photocraft_env(config):
+    """Apply configured defaults without overriding explicit process environment."""
+    pc = config.get("photocraft")
+    if sys.platform != "win32" or pc is None:
+        return
+    names = {"port": "SHP_PC_PORT", "token_file": "SHP_PC_TOKEN_FILE",
+             "exchange": "SHP_PC_EXCHANGE", "read_root": "SHP_PC_READ_ROOT",
+             "executable": "PHOTOCRAFT_BIN", "editor_config": "PHOTOCRAFT_CONFIG_DIR"}
+    for key, name in names.items():
+        os.environ.setdefault(name, str(pc[key]))
+
+
 def set_startup(path, name, enabled):
     if name not in MODULES or type(enabled) is not bool:
         raise LaunchError("Startup preference requires a known module and a boolean")

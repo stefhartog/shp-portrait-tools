@@ -19,7 +19,7 @@ from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .launcher import MODULES, LaunchError, background_python, probe, read_config, verify, set_startup
+from .launcher import MODULES, LaunchError, background_python, probe, read_config, verify, set_startup, apply_photocraft_env
 from .shared.health import identity
 from .shared.lifecycle import BrowserHandler, BrowserServer, script
 from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
@@ -614,6 +614,7 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     args = parser.parse_args()
     config = read_config(args.config)
+    apply_photocraft_env(config)
     instance = os.environ.get("SHP_SERVER_INSTANCE", uuid.uuid4().hex)
     modules = Modules(config, args.data, args.state, instance, args.config)
     server = ShellServer(("127.0.0.1", config["shell_port"]), modules)

@@ -94,6 +94,7 @@ class BridgeTests(unittest.TestCase):
 
     def bridge(self, cls, **fake_options):
         b = cls(port=1, token_file=self.root / "no-token", exchange=self.root / "exchange", read_root=self.root)
+        b.config_dir = self.root / "config"
         b.client = FakePhotoCraft(b, **fake_options)
         return b
 
@@ -163,17 +164,40 @@ class BridgeTests(unittest.TestCase):
         bridge = self.bridge(DnbBridge)
         executable = self.root / "photocraft.exe"
         executable.touch()
-        with patch.dict(os.environ, {"PHOTOCRAFT_BIN": str(executable)}), \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+        editor_config = self.root / "editor-settings"
+        editor_config.mkdir()
+        with patch.dict(os.environ, {"PHOTOCRAFT_BIN": str(executable), "PHOTOCRAFT_CONFIG_DIR": str(editor_config)}), \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection",
+                   side_effect=ConnectionRefusedError()), \
+             patch.object(bridge, "_verify_windows_editor"):
             with self.assertRaisesRegex(ControlError, "private PhotoCraft control token"):
                 bridge.launch()
             popen.assert_not_called()
             bridge.token_file.write_text("a" * 64)
+            with patch.dict(os.environ, {"PHOTOCRAFT_CONFIG_DIR": ""}):
+                with self.assertRaisesRegex(ControlError, "separate existing PhotoCraft"):
+                    bridge.launch()
+            popen.assert_not_called()
+            popen.return_value.poll.return_value = None
             bridge.launch()
             args = popen.call_args.args[0]
             self.assertEqual(args[0], str(executable))
             self.assertEqual(args[args.index("--automation-read-root") + 1], str(bridge.read_root))
             self.assertEqual(args[args.index("--automation-write-root") + 1], str(bridge.exchange))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows connection reuse")
+    def test_windows_reuses_only_authenticated_desktop(self):
+        bridge = self.bridge(DnbBridge)
+        bridge.token_file.write_text("a" * 64)
+        with patch("shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection"), \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
+             patch.object(bridge, "_verify_windows_editor") as verify:
+            self.assertTrue(bridge.launch()["reused"])
+            verify.side_effect = ControlError("untrusted listener")
+            with self.assertRaisesRegex(ControlError, "untrusted listener"):
+                bridge.launch()
+            popen.assert_not_called()
 
     @unittest.skipIf(sys.platform == "win32", "Flatpak launch is Linux-only")
     def test_guarded_launch_uses_existing_launcher_without_automation_flags(self):

@@ -3,6 +3,7 @@
 import itertools
 import hashlib
 import hmac
+import errno
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import time
 from pathlib import Path
 
 from shp_photocraft_tools.shared.platform_paths import global_config_dir
+from shp_photocraft_tools.shared.filelock import file_lock
 
 OPENFILL = Path.home() / ".config" / "openfill-photocraft"
 
@@ -326,6 +328,8 @@ class Bridge:
 
     def launch(self):
         """Explicitly start PhotoCraft with the control channel on, as the OpenFill launcher does."""
+        if sys.platform == "win32":
+            return self._launch_windows()
         guard = os.environ.get("SHP_PC_VERIFY_FLATPAK")
         if guard not in (None, "1"):
             raise ControlError("Invalid PhotoCraft Flatpak verification setting")
@@ -352,3 +356,57 @@ class Bridge:
         with open(self.config_dir / "photocraft.log", "ab") as log:
             subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=sys.platform != "win32")
         return {"launched": cmd, "port": self.port}
+
+    def _launch_windows(self):
+        if os.environ.get("SHP_PC_VERIFY_FLATPAK") is not None:
+            raise ControlError("PhotoCraft Flatpak verification is not available on Windows")
+        if not self.token_file.is_file():
+            raise ControlError("create a private PhotoCraft control token file before launching; see Windows setup")
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        with file_lock(self.config_dir / "photocraft-launch.lock", timeout=40):
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=3):
+                    occupied = True
+            except OSError as error:
+                if isinstance(error, ConnectionRefusedError) or error.errno in (errno.ECONNREFUSED, 10061):
+                    occupied = False
+                else:
+                    raise ControlError(f"Cannot check PhotoCraft port {self.port}: {error}") from error
+            if occupied:
+                self._verify_windows_editor()
+                return {"reused": True, "port": self.port}
+            fallback = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "PhotoCraft" / "photocraft.exe"
+            cmd = os.environ.get("PHOTOCRAFT_BIN") or shutil.which("photocraft") or str(fallback)
+            if not Path(cmd).is_file() and not shutil.which(cmd):
+                raise ControlError("cannot find PhotoCraft (set PHOTOCRAFT_BIN)")
+            editor_config = os.environ.get("PHOTOCRAFT_CONFIG_DIR")
+            if not editor_config or not Path(editor_config).is_absolute() or not Path(editor_config).is_dir():
+                raise ControlError("configure a separate existing PhotoCraft editor settings directory before launching")
+            args = [cmd, "--control", str(self.port), "--control-token-file", str(self.token_file),
+                    "--automation-read-root", str(self.read_root), "--automation-write-root", str(self.exchange)]
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith("PHOTOCRAFT_CONTROL") and not k.startswith("PHOTOCRAFT_AUTOMATION")}
+            log_path = self.config_dir / "photocraft.log"
+            with log_path.open("ab") as log:
+                process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, env=env)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise ControlError(f"PhotoCraft exited before connecting; see {log_path}")
+                try:
+                    self._verify_windows_editor()
+                    return {"launched": cmd, "port": self.port}
+                except AuthenticationError:
+                    raise
+                except ControlError:
+                    time.sleep(0.25)
+            raise ControlError(f"PhotoCraft did not become ready; see {log_path}. No process was stopped.")
+
+    def _verify_windows_editor(self):
+        client = Client(self.port, self.token_file, timeout=3)
+        try:
+            result = client.call_once("ui.inspect")
+            if not isinstance(result, dict) or not isinstance(result.get("session"), dict):
+                raise ControlError("The authenticated listener is not a PhotoCraft desktop session")
+        finally:
+            client.close()
