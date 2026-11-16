@@ -47,13 +47,13 @@ Read [README](../README.md), [HANDOFF](../HANDOFF.md) and [MODELS](../MODELS.md)
 Older handoff/setup documents still contain historical repository names and machine
 paths; use the repository above and configure paths locally.
 
-**Full Windows support is not implemented.** Only the Skin Tools (`dnb`) standalone
+**Full Windows support is not implemented.** The Skin Tools (`dnb`) standalone
 service and WebUI have been ported; see [Windows port status](#windows-port-status-skin-tools-standalone)
 for what was verified. The rest of this page keeps the original Linux-era analysis, and
 the table below describes the baseline before the port unless marked otherwise. The previous handoff's 118 passing
 Linux tests and one skipped optional live-desktop test described its older baseline,
-not a fresh result for current main. No Windows installation, inference, process
-management or PhotoCraft integration has been validated for this update. Do not run
+not a fresh result for current main. PhotoCraft transport verification is described below;
+the full Skin Tools UI-to-editor workflow has not yet been verified. Do not run
 the Linux desktop or editor-handoff installers on Windows.
 
 ## Windows port status (Skin Tools standalone)
@@ -285,6 +285,73 @@ around load, and retains files on failure. It cannot prove a same-sized active d
 is the one that exported the PNG. Preserve this limitation in Windows UX/docs.
 
 ## PhotoCraft/LightCraft integration boundary
+
+### Windows PhotoCraft connection
+
+The installed Windows PhotoCraft 0.23.1 (build `45066c482`) exposes the same
+authenticated control and scoped filesystem APIs. With disposable files, both its
+headless engine and a separate GUI instance fetched a merged image and accepted an
+editable Soft Light layer with a mask. This did not test Skin Tools model analysis,
+the complete WebUI flow, or the user's existing open document. The test did not use
+the existing editor's settings or documents.
+
+On Windows the client requires PhotoCraft's challenge authentication: it verifies the
+server knows the token before sending a proof, never sends the token over the socket,
+and does not retry potentially executed mutations. This authenticates possession of
+the shared secret, not an executable identity; another process with the token can
+impersonate PhotoCraft. Keep the token and exchange private. Windows defaults use
+`%APPDATA%\shp-photocraft-tools\dnb` with the exchange as the only read root; shared
+`SHP_PC_*` and module-specific `DNB_PC_*` overrides still apply. The Windows Launch
+endpoint requires an existing token file; PhotoCraft itself does not enforce a private
+Windows ACL. Do not use the Linux Flatpak verification settings on Windows.
+
+For a first isolated setup, run the following in PowerShell from this checkout. It
+creates a **new** private directory, refusing to alter an existing directory or token.
+The ACL grants the current Windows user access and is inherited by the token and
+exchange. Check local policy and protect any backups of this directory too.
+
+```powershell
+$private = Join-Path $env:LOCALAPPDATA 'shp-photocraft-control'
+if (Test-Path -LiteralPath $private) { throw 'Control directory exists; inspect it rather than overwriting it.' }
+New-Item -ItemType Directory -Path $private | Out-Null
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object System.Security.AccessControl.DirectorySecurity
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $private -AclObject $acl
+New-Item -ItemType Directory -Path (Join-Path $private 'exchange') | Out-Null
+$bytes = [byte[]]::new(32)
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[System.IO.File]::WriteAllText((Join-Path $private 'control.token'), [Convert]::ToHexString($bytes).ToLowerInvariant())
+```
+
+In the same PowerShell session (and again in future sessions), set the paths and
+start **a separate controlled PhotoCraft instance** and Skin Tools:
+
+```powershell
+$private = Join-Path $env:LOCALAPPDATA 'shp-photocraft-control'
+$env:SHP_PC_TOKEN_FILE = Join-Path $private 'control.token'
+$env:SHP_PC_EXCHANGE = Join-Path $private 'exchange'
+$env:SHP_PC_READ_ROOT = $env:SHP_PC_EXCHANGE
+$env:PHOTOCRAFT_CONFIG_DIR = Join-Path $private 'editor-settings'
+& "$env:ProgramFiles\PhotoCraft\photocraft.exe" --control 7878 --control-token-file $env:SHP_PC_TOKEN_FILE --automation-read-root $env:SHP_PC_READ_ROOT --automation-write-root $env:SHP_PC_EXCHANGE
+python -m uv run --no-sync shp-photocraft-tools
+```
+
+Use the actual executable path if installed elsewhere; set `PHOTOCRAFT_BIN` to it
+for the Tools Launch endpoint. If port 7878 is in use, choose a free port and set
+`SHP_PC_PORT` to the same value before starting both programs. Open the intended
+document **in the controlled window**, then use Get Image and Send Layers. Control
+flags deliberately start a separate instance; they do not attach to an ordinary
+already-open PhotoCraft window. Save the edited document from that window yourself.
+Automation can read and write only the exchange, not arbitrary image folders.
+If the isolated editor's Preferences > Integrations disables Allow Agent Control,
+enable it there and restart that isolated instance. Never copy a token into source
+control. For an isolated repeatable integration test, set `PHOTOCRAFT_TEST_CLI` and
+optionally `PHOTOCRAFT_TEST_GUI` to the installed executables and run
+`python -m uv run --no-sync python -m unittest discover -s tests -p test_windows_photocraft_live.py -v`.
 
 These are source-inspected constraints of **PhotoCraft 0.23.1**, not a Windows
 end-to-end result or a promise about later PhotoCraft versions:

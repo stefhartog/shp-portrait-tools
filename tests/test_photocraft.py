@@ -2,9 +2,12 @@
 
 import json
 import io
+import hashlib
+import hmac
 import os
 import socketserver
 import struct
+import sys
 import tempfile
 import threading
 import unittest
@@ -132,7 +135,7 @@ class BridgeTests(unittest.TestCase):
     def test_config_compatible_aliases_and_precedence(self):
         shared = {"SHP_PC_PORT": "1234", "SHP_PC_TOKEN_FILE": str(self.root / "token"),
                   "SHP_PC_EXCHANGE": str(self.root / "exchange"), "SHP_PC_READ_ROOT": str(self.root)}
-        with patch.dict(os.environ, shared, clear=True):
+        with patch.dict(os.environ, shared):
             for prefix, module in (("SHPC", "crop"), ("DNB", "dnb")):
                 cfg = detect_config(prefix, module)
                 self.assertEqual(cfg["port"], 1234)
@@ -144,6 +147,35 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual(detect_config(prefix, module)["port"], 5678)
                     self.assertEqual(detect_config(prefix, module)["exchange"], self.root / module)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows configuration")
+    def test_windows_default_scope_and_launch_require_existing_token(self):
+        with patch.dict(os.environ, {"APPDATA": str(self.root)}, clear=False):
+            with patch.dict(os.environ, {key: "" for key in ("SHP_PC_TOKEN_FILE", "SHP_PC_EXCHANGE",
+                                                              "SHP_PC_READ_ROOT", "DNB_PC_TOKEN_FILE",
+                                                              "DNB_PC_EXCHANGE", "DNB_PC_READ_ROOT")}):
+                # Omitted overrides, not empty override values.
+                for key in ("SHP_PC_TOKEN_FILE", "SHP_PC_EXCHANGE", "SHP_PC_READ_ROOT",
+                            "DNB_PC_TOKEN_FILE", "DNB_PC_EXCHANGE", "DNB_PC_READ_ROOT"):
+                    del os.environ[key]
+                cfg = detect_config("DNB", "dnb")
+                self.assertEqual(cfg["config_dir"], self.root / "shp-photocraft-tools" / "dnb")
+                self.assertEqual(cfg["read_root"], cfg["exchange"])
+        bridge = self.bridge(DnbBridge)
+        executable = self.root / "photocraft.exe"
+        executable.touch()
+        with patch.dict(os.environ, {"PHOTOCRAFT_BIN": str(executable)}), \
+             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(ControlError, "private PhotoCraft control token"):
+                bridge.launch()
+            popen.assert_not_called()
+            bridge.token_file.write_text("a" * 64)
+            bridge.launch()
+            args = popen.call_args.args[0]
+            self.assertEqual(args[0], str(executable))
+            self.assertEqual(args[args.index("--automation-read-root") + 1], str(bridge.read_root))
+            self.assertEqual(args[args.index("--automation-write-root") + 1], str(bridge.exchange))
+
+    @unittest.skipIf(sys.platform == "win32", "Flatpak launch is Linux-only")
     def test_guarded_launch_uses_existing_launcher_without_automation_flags(self):
         launcher = self.root / "guarded-launcher"
         launcher.write_text("#!/bin/sh\n")
@@ -263,6 +295,7 @@ class BridgeTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "Flatpak peer verification is Linux-only")
     def test_flatpak_guard_checks_each_connection_before_authentication(self):
         requests = []
 
@@ -338,6 +371,7 @@ class TransportTests(unittest.TestCase):
                                      f"PhotoCraft not running or contollable (port {port})")
                     self.assertIsNone(client._sock)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows uses challenge authentication")
     def test_authentication_reconnect_and_refusal(self):
         requests = []
         drop = [True]
@@ -389,6 +423,63 @@ class TransportTests(unittest.TestCase):
                     client.close()
                 srv.shutdown()
                 thread.join()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows challenge authentication")
+    def test_windows_challenge_authentication_and_untrusted_listener(self):
+        token_value = "ab" * 32
+        requests = []
+        valid = [True]
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                client_nonce = None
+                server_nonce = "cd" * 32
+                def proof(role):
+                    message = f"photocraft-control-v1 {role}\n{client_nonce}\n{server_nonce}".encode()
+                    return hmac.new(token_value.encode(), message, hashlib.sha256).hexdigest()
+                for line in self.rfile:
+                    msg = json.loads(line)
+                    requests.append(msg)
+                    if msg["method"] == "auth.challenge":
+                        client_nonce = msg["params"]["clientNonce"]
+                        reply = {"ok": True, "result": {"serverNonce": server_nonce,
+                                                        "serverProof": proof("server") if valid[0] else "00" * 32}}
+                    elif msg["method"] == "auth":
+                        reply = {"ok": msg["params"] == {"proof": proof("client")}}
+                    else:
+                        reply = {"ok": True, "result": msg["params"]}
+                    self.wfile.write((json.dumps(reply) + "\n").encode())
+                    self.wfile.flush()
+
+        with tempfile.TemporaryDirectory() as tmp, socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as srv:
+            srv.daemon_threads = True
+            thread = threading.Thread(target=srv.serve_forever)
+            thread.start()
+            token = Path(tmp) / "token"
+            token.write_text(token_value)
+            client = Client(srv.server_address[1], token, timeout=2)
+            try:
+                self.assertEqual(client.call("status", value=42), {"value": 42})
+                client.close()
+                valid[0] = False
+                with self.assertRaisesRegex(ControlError, "could not prove"):
+                    client.call("status")
+                self.assertEqual([msg["method"] for msg in requests],
+                                 ["auth.challenge", "auth", "status", "auth.challenge"])
+                self.assertNotIn(token_value, json.dumps(requests))
+            finally:
+                client.close()
+                srv.shutdown()
+                thread.join()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows mutation retry policy")
+    def test_windows_mutations_are_not_replayed(self):
+        client = Client(1234, "unused")
+        with patch.object(client, "_call") as call:
+            client.call("app.open", path="test.png")
+            call.assert_called_with("app.open", {"path": "test.png"}, 1)
+            client.run("layer.copy")
+            call.assert_called_with("engine.execute", {"command": "layer.copy", "params": {}}, 1)
 
 
 if __name__ == "__main__":

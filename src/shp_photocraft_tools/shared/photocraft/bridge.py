@@ -1,14 +1,20 @@
 """Compatible PhotoCraft JSON-lines transport, session handling and merged-document fetch."""
 
 import itertools
+import hashlib
+import hmac
 import json
 import os
+import re
+import secrets
 import shutil
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from shp_photocraft_tools.shared.platform_paths import global_config_dir
 
 OPENFILL = Path.home() / ".config" / "openfill-photocraft"
 
@@ -27,7 +33,8 @@ class AuthenticationError(ControlError):
 
 def detect_config(prefix, module):
     """Module-specific env overrides shared SHP_PC_*; existing OpenFill auth is reused."""
-    own = Path.home() / ".config" / "shp-photocraft-tools" / module
+    own = (global_config_dir() if sys.platform == "win32"
+           else Path.home() / ".config" / "shp-photocraft-tools") / module
 
     def env(key, default=None):
         return os.environ.get(f"{prefix}_PC_{key}", os.environ.get(f"SHP_PC_{key}", default))
@@ -36,15 +43,19 @@ def detect_config(prefix, module):
     token = env("TOKEN_FILE")
     exchange = env("EXCHANGE")
     of_token = OPENFILL / "control.token"
-    if token is None:
+    if token is None and sys.platform != "win32":
         token = of_token if of_token.exists() else own / "control.token"
+    elif token is None:
+        token = own / "control.token"
     token = Path(token).expanduser()
     if exchange is None:
         exchange = OPENFILL / "exchange" if token == of_token else own / "exchange"
     exchange = Path(exchange).expanduser()
     home = Path.home().resolve()
     read_root = env("READ_ROOT")
-    if read_root is None:
+    if read_root is None and sys.platform == "win32":
+        read_root = exchange
+    elif read_root is None:
         try:
             exchange.resolve().relative_to(home)
             read_root = home
@@ -78,6 +89,8 @@ class Client:
         guard = os.environ.get("SHP_PC_VERIFY_FLATPAK")
         if guard not in (None, "1"):
             raise AuthenticationError("Invalid PhotoCraft Flatpak verification setting")
+        if guard and sys.platform == "win32":
+            raise AuthenticationError("PhotoCraft Flatpak verification is not available on Windows")
         if guard and self.host != "127.0.0.1":
             raise AuthenticationError("PhotoCraft Flatpak verification requires IPv4 loopback")
         try:
@@ -99,19 +112,48 @@ class Client:
             except (DiscoveryError, PeerIdentityError, OSError) as e:
                 self.close()
                 raise AuthenticationError("PhotoCraft process identity could not be verified; no token was sent") from e
-        self._redaction_token = token if guard else None
+        self._redaction_token = token if guard or sys.platform == "win32" else None
         try:
             self._file = self._sock.makefile("rwb")
-            reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
+            if sys.platform == "win32":
+                reply = self._challenge_auth(token)
+            else:
+                reply = self._exchange({"id": "auth", "method": "auth", "params": {"token": token}})
+        except AuthenticationError:
+            self.close()
+            raise
         except (OSError, ConnectionError, ValueError) as e:
             self.close()
             raise ControlError("PhotoCraft authentication connection failed") from e
+        if not isinstance(reply, dict):
+            self.close()
+            raise AuthenticationError("PhotoCraft sent an invalid authentication reply")
         if not reply.get("ok"):
             self.close()
             error = str(reply.get("error"))
             if token:
                 error = error.replace(token, "[redacted]")
             raise AuthenticationError(f"PhotoCraft refused the control token: {error}")
+
+    def _challenge_auth(self, token):
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", token):
+            raise AuthenticationError("PhotoCraft control token must contain 64 hexadecimal characters")
+        client_nonce = secrets.token_hex(32)
+        reply = self._exchange({"id": "challenge", "method": "auth.challenge",
+                                "params": {"clientNonce": client_nonce}})
+        result = reply.get("result") if isinstance(reply, dict) and reply.get("ok") else None
+        if not isinstance(result, dict):
+            raise AuthenticationError("PhotoCraft did not provide an authentication challenge; no token was sent")
+        nonce, proof = result.get("serverNonce"), result.get("serverProof")
+        if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", nonce):
+            raise AuthenticationError("PhotoCraft sent an invalid authentication challenge; no token was sent")
+        def signature(role):
+            message = f"photocraft-control-v1 {role}\n{client_nonce}\n{nonce.lower()}".encode("ascii")
+            return hmac.new(token.lower().encode("ascii"), message, hashlib.sha256).hexdigest()
+        if (not isinstance(proof, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", proof)
+                or not hmac.compare_digest(signature("server"), proof.lower())):
+            raise AuthenticationError("PhotoCraft could not prove its control token; no token was sent")
+        return self._exchange({"id": "auth", "method": "auth", "params": {"proof": signature("client")}})
 
     def close(self):
         for t in (self._file, self._sock):
@@ -135,7 +177,7 @@ class Client:
         return reply
 
     def call(self, method, **params):
-        if os.environ.get("SHP_PC_VERIFY_FLATPAK") and method in (
+        if (os.environ.get("SHP_PC_VERIFY_FLATPAK") or sys.platform == "win32") and method in (
                 "app.open", "app.save", "doc.open", "doc.save", "doc.close"):
             return self.call_once(method, **params)
         return self._call(method, params, 2)
@@ -161,7 +203,7 @@ class Client:
             return reply.get("result")
 
     def run(self, command, **params):
-        if os.environ.get("SHP_PC_VERIFY_FLATPAK"):
+        if os.environ.get("SHP_PC_VERIFY_FLATPAK") or sys.platform == "win32":
             return self.run_once(command, **params)
         return self.call("engine.execute", command=command, params=params)
 
@@ -286,15 +328,21 @@ class Bridge:
         guard = os.environ.get("SHP_PC_VERIFY_FLATPAK")
         if guard not in (None, "1"):
             raise ControlError("Invalid PhotoCraft Flatpak verification setting")
+        if guard and sys.platform == "win32":
+            raise ControlError("PhotoCraft Flatpak verification is not available on Windows")
         if guard:
             cmd = os.environ.get("SHP_PC_FLATPAK_LAUNCHER", "")
             if not Path(cmd).is_absolute() or not Path(cmd).is_file() or not os.access(cmd, os.X_OK):
                 raise ControlError("Cannot find the guarded PhotoCraft Flatpak launcher")
             args = [cmd]
         else:
-            cmd = os.environ.get("PHOTOCRAFT_BIN") or shutil.which("photocraft") or str(Path.home() / ".local" / "bin" / "photocraft")
+            fallback = (Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "PhotoCraft" / "photocraft.exe"
+                        if sys.platform == "win32" else Path.home() / ".local" / "bin" / "photocraft")
+            cmd = os.environ.get("PHOTOCRAFT_BIN") or shutil.which("photocraft") or str(fallback)
             if not Path(cmd).exists() and not shutil.which(cmd):
                 raise ControlError("cannot find PhotoCraft (set PHOTOCRAFT_BIN)")
+            if sys.platform == "win32" and not self.token_file.is_file():
+                raise ControlError("create a private PhotoCraft control token file before launching; see Windows setup")
             self.token_file.parent.mkdir(parents=True, exist_ok=True)
             args = [cmd, "--control", str(self.port), "--control-token-file", str(self.token_file),
                     "--automation-read-root", str(self.read_root), "--automation-write-root", str(self.exchange)]
