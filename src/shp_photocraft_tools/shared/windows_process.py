@@ -184,11 +184,16 @@ def _job_for(process):
         return _jobs.get(process.pid)
 
 
-def require_session_stopped(process):
+def require_session_stopped(process, wait=10):
     if process is None:
         return
     job = _job_for(process)
-    if job is not None and job.handle and job.active():
+    if job is None or not job.handle:
+        return
+    deadline = time.monotonic() + wait
+    while job.active() and time.monotonic() < deadline:
+        time.sleep(.1)  # the venv launcher and its interpreter exit a moment apart
+    if job.active():
         raise RuntimeError("Owned job still has processes; refusing replacement")
 
 

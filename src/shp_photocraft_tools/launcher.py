@@ -108,7 +108,7 @@ def set_startup(path, name, enabled):
 def probe(port):
     """None means no listener; an occupied but wrong/unhealthy port is an explicit failure."""
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
+        with socket.create_connection(("127.0.0.1", port), timeout=5 if sys.platform == "win32" else 1):
             pass
     except OSError as error:
         if isinstance(error, ConnectionRefusedError) or error.errno == errno.ECONNREFUSED:
