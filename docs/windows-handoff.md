@@ -12,11 +12,89 @@ Read [README](../README.md), [HANDOFF](../HANDOFF.md) and [MODELS](../MODELS.md)
 Older handoff/setup documents still contain historical repository names and machine
 paths; use the repository above and configure paths locally.
 
-**Windows support is not implemented or verified.** The previous handoff's 118 passing
+**Full Windows support is not implemented.** Only the Skin Tools (`dnb`) standalone
+service and WebUI have been ported; see [Windows port status](#windows-port-status-skin-tools-standalone)
+for what was verified. The rest of this page keeps the original Linux-era analysis, and
+the table below describes the baseline before the port unless marked otherwise. The previous handoff's 118 passing
 Linux tests and one skipped optional live-desktop test described its older baseline,
 not a fresh result for current main. No Windows installation, inference, process
 management or PhotoCraft integration has been validated for this update. Do not run
 the Linux desktop or editor-handoff installers on Windows.
+
+## Windows port status (Skin Tools standalone)
+
+Branch `stefhartog-skin-tools-windows-port`, started from `23cffaf41f0c1e1477e8296c62836451f7a2951f`.
+Scope: Skin Tools (`dnb`, port 8765) standalone service and browser WebUI only. Not touched:
+GTK desktop/tray, launcher/supervisor/installers, Crop & Expand/AI Fill, Flatpak, LightCraft,
+the Linux-only Google pose worker.
+
+### Verified on Windows
+
+Environment: Windows 11, Python 3.13.12, uv 0.13.8 (`python -m uv`, not on PATH), RTX 3090,
+driver 610.88. `uv sync --locked` (no `gpu` extra) succeeds.
+
+- **Import probe:** every `shp_photocraft_tools` module imports except the expected
+  Linux/optional ones: `launcher` and `supervisor` (`fcntl`), `desktop.controller` (`gi`),
+  `dnb.google_pose_worker` (`resource`), `dnb.texture_experiment` (`matplotlib`, research extra).
+- **Service:** `python -m shp_photocraft_tools.modules.dnb.ui_server` serves the WebUI on
+  loopback (HTTP 200 for `/`, checked with curl on 8765 and with `--port 0` in a test).
+- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
+  `%LOCALAPPDATA%\shp-photocraft-tools\<module>`, models to `...\dnb\models`, global settings
+  to `%APPDATA%\shp-photocraft-tools`, inbox to a folder under the data directory. Overrides:
+  `DNB_DATA`, `SHPC_DATA`, `DNB_MODELS`, `DNB_WATCH_DIRECTORY`/`SHPC_WATCH_DIRECTORY`, and
+  generic `WATCH_DIRECTORY`. Linux defaults (including the fixed inbox) are unchanged.
+- **Output safety** (`shared/winfs.py`, `shared/local_output_windows.py`, dispatched from
+  `local_output.py`): `CREATE_NEW` no-overwrite allocation, reserved-name/ADS/trailing dot
+  rejection, `\\?\` extended paths for long names, reparse-point refusal, atomic
+  `os.replace` for the preset with an external-change check, cleanup of only its own files.
+  The parent folders are held open without `FILE_SHARE_DELETE`; renaming or replacing them
+  during a write is refused by the OS instead of detected afterwards. This is the Windows
+  analogue of `dir_fd` and is weaker in one respect: identity is verified on the handle, not
+  inherited by every later call.
+- **Inbox** (`shared/watch_folder.py`): no `/proc/self/fd`; folder pinned the same way,
+  sharing violations are retried not recorded, reparse-point or non-directory inboxes are rejected.
+- **Port ownership** (`shared/lifecycle.py`): on Windows `BrowserServer` binds with
+  `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`. A negative control showed that plain
+  `ThreadingHTTPServer` lets a second process share a live port on Windows. Ownership here
+  is only "the server process owns its port"; `uv run` adds a wrapper process, so stop the
+  Python child. Supervisor/`owned_process` pid and `/proc` ownership are not ported.
+- **GPU:** `dnb_gpu.py` registers `site-packages\nvidia\*\bin[\x86_64]` with
+  `os.add_dll_directory`, exposes `device()`, and `estimate_body_scale.py` uses it instead of
+  a hardcoded `"cuda"` (CPU when the CUDA provider is unavailable). With CUDA 13/cuDNN 9 wheels
+  installed into the venv by hand, ONNX Runtime GPU 1.31.1 reported
+  `CUDAExecutionProvider` and ran a synthetic Conv model on it.
+- **Pose:** the rtmlib backend remains the default. Google Full raises a clear
+  Linux-only error on Windows (no bubblewrap); its worker is untouched.
+- **Tests** (commands below): the six-module command gives `Ran 58 tests ... OK (skipped=10)`;
+  adding `test_windows_output` (18) and `test_windows_service` (1) gives
+  `Ran 77 tests ... OK (skipped=11)`. Skips: 6 need `photocraft-cli`; 2 need the Linux-only
+  `supervisor`; 1 symbolic-input test and 1 file-symlink test need the symlink privilege;
+  1 replaced-folder test is replaced by a Windows test (folders cannot be replaced while pinned).
+  Without the privilege, symlink-based tests use hard links or junctions (`tests/winlinks.py`)
+  as stand-ins; they check the same no-overwrite behavior but are not real symlink tests.
+
+```powershell
+$env:PYTHONPATH = "tests"
+python -m uv run --no-sync python -m unittest test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results test_watch_folder -q
+python -m uv run --no-sync python -m unittest test_windows_output test_windows_service -q
+```
+
+### Not verified / assumptions / blockers
+
+- **`--extra gpu` does not resolve on Windows:** `uv.lock` pins `nvidia-cublas==13.8.2.12`,
+  which only has Linux wheels. `uv sync --locked --extra gpu --dry-run` fails; the lock needs a
+  `required-environments` entry for win32/AMD64 and a relock. The GPU check above used manually
+  installed wheels (cublas 13.10.0.20, cuda-runtime 13.4.92, cudnn 9.27.0.42, cufft 12.4.0.43,
+  curand 10.4.4.72) outside the lock; the lock file was not changed.
+- **Model weights absent:** nothing was in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`.
+  Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and `selfie_multiclass_256x256.onnx`
+  there (or in `DNB_MODELS`) per MODELS.md (URLs, sizes, SHA-256); rtmlib downloads the pose
+  weights (YOLOX-m, RTMW-x) to `~/.cache/rtmlib` on first use. Real portrait inference, the
+  speed and accuracy on Windows are therefore **not verified**; only a synthetic CUDA session was.
+- Not tested: symlink semantics (needs Developer Mode/elevation), CPU-only fallback end to end,
+  network/cross-volume paths, locked-file behavior beyond the unit tests, antivirus interaction,
+  the WebUI beyond fetching `/`, PhotoCraft/ComfyUI/LightCraft, launcher/tray/desktop.
+- `launcher`, `supervisor`, `shared/owned_process.py` and `comfy.py` remain Linux-only.
 
 ## Committed feature state
 
