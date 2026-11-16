@@ -40,6 +40,11 @@ def is_reparse_point(info):
     return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def is_sharing_violation(error):
+    """True for ERROR_SHARING_VIOLATION/ERROR_LOCK_VIOLATION: another process holds the file."""
+    return getattr(error, "winerror", None) in (32, 33)
+
+
 def lstat_identity(path):
     info = os.lstat(extended(path))
     return info.st_dev, info.st_ino
@@ -73,9 +78,27 @@ if sys.platform == "win32":
 
     def close_handle(handle):
         _kernel32.CloseHandle(handle)
+
+    def open_readonly_no_follow(path):
+        """Open a file for reading without following a link (a link is opened itself) and without
+        blocking an exporter that renames or deletes it; returns a CRT descriptor."""
+        import msvcrt
+        handle = _kernel32.CreateFileW(extended(os.path.abspath(path)), 0x80000000, 0x1 | 0x2 | 0x4,
+                                       None, _OPEN_EXISTING, 0x80 | _OPEN_REPARSE_POINT, None)
+        if handle == _INVALID_HANDLE or handle is None:
+            code = ctypes.get_last_error()
+            raise ctypes.WinError(code)
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        except BaseException:
+            _kernel32.CloseHandle(handle)
+            raise
 else:
     def pin_directory(path, *, follow_links=True):
         raise OSError("directory pinning is Windows-only")
 
     def close_handle(handle):
         raise OSError("directory pinning is Windows-only")
+
+    def open_readonly_no_follow(path):
+        raise OSError("Windows-only")
