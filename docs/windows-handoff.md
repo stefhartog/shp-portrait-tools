@@ -118,6 +118,33 @@ browser, batch/PhotoCraft send.
   the WebUI beyond fetching `/`, PhotoCraft/ComfyUI/LightCraft, launcher/tray/desktop.
 - `launcher`, `supervisor`, `shared/owned_process.py` and `comfy.py` remain Linux-only.
 
+## Windows desktop host design (pywebview + pystray)
+
+Decision: one Windows host process shows the existing shell in a pywebview (WebView2) window
+and a pystray tray icon. The WebUI, shell protocol (`/api/status`, `/api/modules/*`,
+`/api/ui/*`, `/api/ui/native-quit`) and the supervisor that owns the services are reused, so the
+only new UI-side code is `desktop/windows_controller.py`; the Linux GTK controller is not modified.
+Scope: Skin Tools (`dnb`, 18765 in the launcher) first. AI Fill (`crop`) is wired only because the
+supervisor already treats both modules uniformly (tray rows, start/stop); it is off by default in
+the Windows config and not verified (it needs a ComfyUI that is not ported).
+
+| Linux responsibility | Windows mapping |
+|---|---|
+| Launcher single-flight lock (`fcntl.flock`) | `shared/filelock.py`: `msvcrt.locking` on a lock file (same call sites as `flock`) |
+| `/usr/bin/python3`, XDG paths | `sys.executable`; `%LOCALAPPDATA%`/`%APPDATA%` via `platform_paths`; `launcher.json` written explicitly by `--init-config`, never implicitly |
+| Single desktop instance (GTK application ID) | Named mutex per shell URL; a second launch signals a named event so the first window shows itself, then exits |
+| Process identity (`/proc` session id + start ticks) | `(pid, creation FILETIME)` from `GetProcessTimes`; recorded at spawn and rechecked before any stop |
+| Ownership/termination (session + pidfds) | Each service the supervisor spawns is placed in its own Job Object (`CREATE_NEW_PROCESS_GROUP`); only that job is ever terminated, and only after pid + creation time are verified. Port listeners the host did not start are never touched. Graceful owner-protocol stop stays first. |
+| Child exits when supervisor dies (`getppid`) | Supervisor pid + creation time passed in the environment and polled (Windows keeps a stale parent pid) |
+| Hide to tray / tray menu | Window close hides to the pystray icon; menu mirrors the GTK one (service rows, Show/Hide, Restart, Force Restart, Quit) |
+| Busy / unsent-edit guards | Same `/api/status` busy and `(instance, revision, loaded)` signature checks and confirmation dialogs before native-quit; shared helpers moved to `desktop/protocol.py` |
+| Native pickers | WebView2 `ScriptDialogOpening` answers the same `SHP_OPEN_IMAGE_V1`, `SHP_OPEN_BATCH_FOLDER_V1`, `SHP_OPEN_BATCH_IMAGES_V1`, `SHP_OPEN_BATCH_SOURCE_V1` prompts with pywebview file/folder dialogs; `__shpNativeFileDialog` is injected for the app origin in all frames and `__shpOwnedDesktop` in the top frame via `AddScriptToExecuteOnDocumentCreated` |
+| Wake/show/import from both inboxes | Same 3 s poll of `/<module>/api/watch-folder`; a new ready token shows the window |
+| SIGTERM quit | `SIGBREAK`/Ctrl+C request the same confirmed quit path; tray Quit is primary |
+
+Known weakening versus Linux: a job object is assigned just after spawn (not atomically), so a
+grandchild created in that gap would escape the job.
+
 ## Committed feature state
 
 - Skin Tools includes Skin Mask, FS & Tone, Dodge & Burn and Combine, with shared source
