@@ -69,6 +69,13 @@ the Linux-only Google pose worker.
 Environment: Windows 11, Python 3.13.12, uv 0.13.8 (`python -m uv`, not on PATH), RTX 3090,
 driver 610.88. `uv sync --locked` (no `gpu` extra) succeeds.
 
+When updating an environment that previously installed both OpenCV wheels, run
+`python -m uv sync --locked --reinstall-package opencv-contrib-python` once
+(add `--extra gpu` if used). Removing the overlapping non-contrib wheel can
+remove shared `cv2` files; the reinstall restores them. The lock excludes
+rtmlib's redundant `opencv-python` dependency, but pip does not apply uv
+overrides and dependency checks still report that requirement as missing.
+
 - **Import probe:** every `shp_photocraft_tools` module imports except the expected
   Linux/optional ones: `launcher` and `supervisor` (`fcntl`), `desktop.controller` (`gi`),
   `dnb.google_pose_worker` (`resource`), `dnb.texture_experiment` (`matplotlib`, research extra).

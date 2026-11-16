@@ -2,6 +2,7 @@
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
+from importlib import metadata
 import tempfile
 import threading
 import unittest
@@ -59,6 +60,11 @@ class PipelineTests(unittest.TestCase):
     def params(self, method="gaussian"):
         return U.parse_params({"mode": "frequency", "S": 181,
                                "frequency": {"method": method, "radius": 2, "blur_radius": 4}})
+
+    def test_only_contrib_opencv_distribution_is_installed(self):
+        self.assertIsNotNone(metadata.version("opencv-contrib-python"))
+        with self.assertRaises(metadata.PackageNotFoundError):
+            metadata.version("opencv-python")
 
     def test_mask_placement_defaults_migrates_and_persists(self):
         import json

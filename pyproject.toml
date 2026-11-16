@@ -42,5 +42,9 @@ packages = ["src/shp_photocraft_tools"]
 "comfyui" = "comfyui"
 
 [tool.uv]
-override-dependencies = ["onnxruntime; sys_platform == 'never'"]
+# rtmlib also requires the non-contrib wheel, which overwrites the shared cv2 module.
+override-dependencies = [
+    "onnxruntime; sys_platform == 'never'",
+    "opencv-python; sys_platform == 'never'",
+]
 required-environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]

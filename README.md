@@ -107,6 +107,14 @@ The `gpu` extra supplies CUDA/cuDNN user-space libraries; it does not install a
 graphics driver. Keep ComfyUI in its own Python environment. For package details
 and other dependency options, see [pyproject.toml](pyproject.toml).
 
+If updating an existing environment that had both OpenCV wheels, repair their
+shared `cv2` files once with `uv sync --locked --extra gpu --reinstall-package
+opencv-contrib-python` (omit `--extra gpu` if not using it). The uv lock excludes
+`rtmlib`'s redundant `opencv-python` dependency in favor of the contrib wheel.
+Plain pip does not apply uv overrides, and dependency checks may report rtmlib's
+`opencv-python` and `onnxruntime` requirements as missing despite the contrib
+and GPU variants being installed.
+
 Get the three Skin Tools ONNX models and their documented hashes from
 [MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files), then place them in
 the model folder:
