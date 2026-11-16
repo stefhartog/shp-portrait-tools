@@ -24,6 +24,24 @@ by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_phot
 `desktop/shp-photocraft-tools.svg` into `shp-photocraft-tools.ico` next to `launcher.json`. Run
 `--init-config` first.
 
+The Windows host sets the explicit taskbar AppUserModelID `SHP.PortraitTools` before any native
+GUI initialization; the shortcut installer writes the same `System.AppUserModel.ID` to each shortcut.
+The host runs in a separate `pythonw.exe` process, so shortcut metadata alone is not sufficient.
+Its WinForms/WebView2 window receives the same multi-size ICO as the launcher through
+`webview.start(icon=...)`, rather than the Python executable's default icon. The shared Pillow
+renderer preserves the existing launcher's SVG shapes/palette and renders the grayscale
+`desktop/shp-photocraft-tools-tray.svg` variant for pystray; this is not a browser favicon change.
+ICO frames use native DIB encoding because WinForms/System.Drawing can misdecode PNG-compressed
+frames even when Explorer displays them correctly.
+Existing shortcuts can have just their AppID updated with
+`desktop.windows_identity.shortcut_app_id(path, APP_ID)` without recreating them or changing their
+target, arguments, working directory, icon or user properties. Fully quit Tools from the tray and
+relaunch the normal shortcut to load a host update (Reload UI does not replace the host).
+Explorer may retain an older pinned shortcut's identity; only if grouping is still stale after
+that relaunch, the user can unpin the old item and pin the updated normal shortcut again.
+Shortcut metadata and an isolated native-window check do not by themselves prove grouping on a
+user's live taskbar.
+
 The normal shortcut/supervisor starts the same Skin Tools service that includes the Photoshop
 connector backend; no alternate startup command or new shortcut arguments are needed. Choose
 **Settings & Info > Source editor** in Skin Tools. That choice is stored as `source_editor` in the

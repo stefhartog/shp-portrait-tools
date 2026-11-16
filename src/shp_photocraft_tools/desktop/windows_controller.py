@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .icons import icon_image, write_icon
 from .protocol import (IMAGE_EXTENSIONS, OPEN_PROMPTS, Connection, busy_modules, external_lines, validate_url,
                        work_signature)
 
@@ -116,13 +117,7 @@ def answer_open_prompt(request, picker):
 
 
 def tray_image():
-    from PIL import Image, ImageDraw
-    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((2, 2, 61, 61), radius=14, fill=(32, 36, 44, 255))
-    draw.ellipse((16, 14, 48, 46), outline=(236, 200, 160, 255), width=5)
-    draw.rectangle((22, 50, 42, 54), fill=(236, 200, 160, 255))
-    return image
+    return icon_image(tray=True, size=64)
 
 
 class Host:
@@ -623,6 +618,9 @@ class Host:
                 self.show()
 
     def run(self):
+        from .windows_identity import set_process_app_id
+        # Set the child host's identity before importing/creating any native GUI objects.
+        set_process_app_id()
         import webview
         from ..shared.windows_process import SingleInstance
         self.single = SingleInstance("SHP.PhotoCraftTools.p" + hashlib.sha256(self.base.encode()).hexdigest()[:16])
@@ -630,11 +628,15 @@ class Host:
             self.single.signal_primary()
             print("Tools is already open; asked the existing window to show itself.", flush=True)
             return 0
+        self.data.mkdir(parents=True, exist_ok=True)
+        native_icon = self.data / "shp-photocraft-tools.ico"
+        write_icon(native_icon)
         self.create_window()
         self.create_tray()
         for target in (self.connection.heartbeat, self.monitor, self.listen_for_second_launch):
             threading.Thread(target=target, daemon=True).start()
-        webview.start(gui="edgechromium", private_mode=False, storage_path=str(self.data / "data"))
+        webview.start(gui="edgechromium", private_mode=False, storage_path=str(self.data / "data"),
+                      icon=str(native_icon))
         self.connection.stopped.set()
         return 0
 

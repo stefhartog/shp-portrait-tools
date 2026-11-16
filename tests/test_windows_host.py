@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from shp_photocraft_tools.desktop.protocol import validate_url
 from shp_photocraft_tools.shared.filelock import file_lock
@@ -104,6 +105,30 @@ class ProtocolTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class NoConsoleTests(unittest.TestCase):
+    def test_identity_and_native_icon_are_ready_before_gui_start(self):
+        from shp_photocraft_tools.desktop import windows_controller as wc
+        import webview
+
+        calls = []
+        with tempfile.TemporaryDirectory() as directory:
+            host = wc.Host("http://127.0.0.1:18760/", Path(directory))
+
+            def start(**options):
+                calls.append("start")
+                self.assertEqual(options["gui"], "edgechromium")
+                self.assertTrue(Path(options["icon"]).is_file())
+                self.assertEqual(options["storage_path"], str(host.data / "data"))
+
+            with patch("shp_photocraft_tools.desktop.windows_identity.set_process_app_id",
+                       side_effect=lambda: calls.append("identity")), \
+                 patch("shp_photocraft_tools.shared.windows_process.SingleInstance",
+                       return_value=Mock(primary=True)), \
+                 patch.object(host, "create_window", side_effect=lambda: calls.append("window")), \
+                 patch.object(host, "create_tray", side_effect=lambda: calls.append("tray")), \
+                 patch.object(wc.threading, "Thread"), patch.object(webview, "start", side_effect=start):
+                self.assertEqual(host.run(), 0)
+        self.assertEqual(calls, ["identity", "window", "tray", "start"])
+
     def test_background_python_prefers_pythonw(self):
         from shp_photocraft_tools.shared.windows_process import background_python
         with tempfile.TemporaryDirectory() as directory:
@@ -158,6 +183,7 @@ class ShortcutInstallerTests(unittest.TestCase):
         self.assertEqual(details["target"], str(self.repo / ".venv" / "Scripts" / "pythonw.exe"))
         self.assertIn("-m shp_photocraft_tools.launcher --config", details["arguments"])
         self.assertEqual(details["cwd"], str(self.repo))
+        self.assertEqual(details["app_id"], self.installer.APP_ID)
         self.assertTrue((self.out / "shp-photocraft-tools.ico").exists())
         self.links[0].write_bytes(b"keep")
         self.assertEqual(self.run_installer(), 1)
@@ -168,6 +194,81 @@ class ShortcutInstallerTests(unittest.TestCase):
         self.assertTrue(self.links[0].exists())
         self.assertEqual(self.run_installer("--remove"), 0)
         self.assertFalse(any(link.exists() for link in self.links))
+
+    def test_app_id_update_preserves_shortcut_properties(self):
+        self.assertEqual(self.run_installer(), 0)
+        link = self.links[0]
+        self.installer.powershell(
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:SHP_LNK);"
+            "$s.Description='User description';$s.Hotkey='CTRL+ALT+F9';$s.WindowStyle=7;$s.Save()",
+            SHP_LNK=str(link))
+        before = self.installer.read_shortcut(link)
+        read_properties = (
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:SHP_LNK);"
+            "$s.Description;$s.Hotkey;$s.WindowStyle;"
+            "$f=(New-Object -ComObject Shell.Application).NameSpace((Split-Path $env:SHP_LNK));"
+            "$f.ParseName((Split-Path $env:SHP_LNK -Leaf)).ExtendedProperty('System.AppUserModel.ID')")
+        before_properties = self.installer.powershell(read_properties, SHP_LNK=str(link))
+        self.installer.shortcut_app_id(link, "SHP.Test.Previous")
+        self.installer.shortcut_app_id(link, self.installer.APP_ID)
+        self.assertEqual(self.installer.read_shortcut(link), before)
+        properties = self.installer.powershell(read_properties, SHP_LNK=str(link))
+        self.assertEqual(properties, before_properties)
+        self.assertEqual(properties[-1], self.installer.APP_ID)
+
+
+class IconTests(unittest.TestCase):
+    def test_native_images_match_launcher_and_grayscale_svg_artwork(self):
+        import xml.etree.ElementTree as ET
+        from shp_photocraft_tools.desktop.icons import icon_image
+        from shp_photocraft_tools.desktop.windows_controller import tray_image
+
+        for tray in (False, True):
+            name = "shp-photocraft-tools" + ("-tray" if tray else "") + ".svg"
+            svg = ET.parse(Path(__file__).resolve().parent.parent / "desktop" / name).getroot()
+            rect, brackets, circle, half = list(svg)
+            image = icon_image(tray=tray, size=256)
+            self.assertEqual(image.getpixel((0, 0))[3], 0)
+            for point, color in (((15, 64), rect.attrib["fill"]), ((9, 64), rect.attrib["stroke"]),
+                                 ((27, 40), brackets.attrib["stroke"]), ((78, 64), circle.attrib["fill"]),
+                                 ((50, 64), half.attrib["fill"])):
+                self.assertEqual(image.getpixel(tuple(v * 2 for v in point)), (*bytes.fromhex(color.lstrip("#")), 255))
+            if tray:
+                self.assertTrue(all(r == g == b for r, g, b, a in image.get_flattened_data() if a))
+        self.assertEqual(tray_image().tobytes(), icon_image(tray=True, size=64).tobytes())
+
+    def test_multi_size_ico_matches_native_launcher_artwork(self):
+        from PIL import Image
+        from shp_photocraft_tools.desktop.icons import icon_image, write_icon
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app.ico"
+            write_icon(path)
+            with Image.open(path) as image:
+                self.assertEqual(image.ico.sizes(), {(s, s) for s in (16, 24, 32, 48, 64, 128, 256)})
+                self.assertEqual(image.ico.getimage((256, 256)).tobytes(), icon_image().tobytes())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_winforms_can_decode_native_icon(self):
+        import clr
+        clr.AddReference("System.Drawing")
+        from System.Drawing import Icon
+        from shp_photocraft_tools.desktop.icons import write_icon
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "app.ico"
+            write_icon(path)
+            icon = Icon(str(path))
+            bitmap = icon.ToBitmap()
+            try:
+                color = bitmap.GetPixel(round(bitmap.Width * 50 / 128), round(bitmap.Height * 64 / 128))
+                self.assertEqual(color.A, 255)
+                self.assertTrue(all(abs(actual - expected) <= 4
+                                    for actual, expected in zip((color.R, color.G, color.B), (76, 141, 255))))
+                self.assertEqual(bitmap.GetPixel(0, 0).A, 0)
+            finally:
+                bitmap.Dispose()
+                icon.Dispose()
 
 
 if __name__ == "__main__":

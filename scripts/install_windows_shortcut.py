@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from shp_photocraft_tools.desktop.icons import write_icon
+from shp_photocraft_tools.desktop.windows_identity import APP_ID, shortcut_app_id
+
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "SHP Portrait Tools"
 ICON_NAME = "shp-photocraft-tools.ico"
@@ -41,30 +44,6 @@ def shortcut_arguments(config):
     return f'-m shp_photocraft_tools.launcher --config "{config}"'
 
 
-def write_icon(path):
-    """Draw desktop/shp-photocraft-tools.svg's shapes at 256 px into a multi-size .ico."""
-    from PIL import Image, ImageDraw
-    size, scale = 256, 2
-    canvas = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    unit = size * scale / 128
-
-    def at(*values):
-        return [value * unit for value in values]
-
-    draw.rounded_rectangle(at(6, 6, 122, 122), radius=14 * unit, fill="#16181d", outline="#4c8dff", width=round(5.5 * unit))
-    stroke = round(8 * unit)
-    for line in ((27, 27, 57, 27), (27, 27, 27, 57), (101, 101, 71, 101), (101, 101, 101, 71)):
-        draw.line(at(*line), fill="#e6e8ee", width=stroke)
-        for x, y in (line[:2], line[2:]):
-            draw.ellipse(at(x - 4, y - 4, x + 4, y + 4), fill="#e6e8ee")
-    draw.ellipse(at(41, 41, 87, 87), fill="#e6e8ee")
-    draw.pieslice(at(41, 41, 87, 87), 90, 270, fill="#4c8dff")
-    image = canvas.resize((size, size), Image.LANCZOS)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-
-
 def powershell(script, **env):
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                             env={**os.environ, **env}, capture_output=True, text=True, timeout=60,
@@ -76,7 +55,8 @@ def powershell(script, **env):
 
 def read_shortcut(path):
     target, arguments, cwd, icon = (powershell(READ_SCRIPT, SHP_LNK=str(path)) + [""] * 4)[:4]
-    return {"target": target, "arguments": arguments, "cwd": cwd, "icon": icon}
+    return {"target": target, "arguments": arguments, "cwd": cwd, "icon": icon,
+            "app_id": shortcut_app_id(path)}
 
 
 def locations(args):
@@ -166,6 +146,7 @@ def main(argv=None):
         powershell(CREATE_SCRIPT, SHP_LNK=str(link), SHP_TARGET=str(pythonw), SHP_ARGS=shortcut_arguments(args.config),
                    SHP_CWD=str(repo), SHP_DESC="SHP Portrait Tools (no console window)",
                    SHP_ICON=f"{icon},0" if use_icon else "")
+        shortcut_app_id(link, APP_ID)
         print(f"Created: {link}")
     return status
 
