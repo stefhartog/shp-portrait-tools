@@ -38,7 +38,9 @@ driver 610.88. `uv sync --locked` (no `gpu` extra) succeeds.
   `dnb.google_pose_worker` (`resource`), `dnb.texture_experiment` (`matplotlib`, research extra).
 - **Service:** `python -m shp_photocraft_tools.modules.dnb.ui_server` serves the WebUI on
   loopback (HTTP 200 for `/`, checked with curl on 8765 and with `--port 0` in a test).
-- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
+    In a standalone browser (no `window.__shpNativeFileDialog`) Image analysis shows the image
+    list + path box + Load; the desktop window hides them. Verified with headless Edge and
+    `/api/load` on a synthetic copy of the scikit-image astronaut.- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
   `%LOCALAPPDATA%\shp-photocraft-tools\<module>`, models to `...\dnb\models`, global settings
   to `%APPDATA%\shp-photocraft-tools`, inbox to a folder under the data directory. Overrides:
   `DNB_DATA`, `SHPC_DATA`, `DNB_MODELS`, `DNB_WATCH_DIRECTORY`/`SHPC_WATCH_DIRECTORY`, and
