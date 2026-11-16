@@ -1,0 +1,53 @@
+"""Standalone Skin Tools service on Windows: loopback bind ownership and clean termination."""
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from urllib.request import urlopen
+
+WINDOWS = sys.platform == "win32"
+
+
+def start(port, data, inbox):
+    env = dict(os.environ, DNB_DATA=data, DNB_WATCH_DIRECTORY=inbox, PYTHONIOENCODING="utf-8")
+    env.pop("SHP_SUPERVISOR_TOKEN", None)
+    return subprocess.Popen([sys.executable, "-m", "shp_photocraft_tools.modules.dnb.ui_server", "--port", str(port)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            env=env, text=True, encoding="utf-8")
+
+
+@unittest.skipUnless(WINDOWS, "Windows service ownership")
+class StandaloneServiceTests(unittest.TestCase):
+    def test_port_is_exclusive_and_service_stops_cleanly(self):
+        with tempfile.TemporaryDirectory(prefix="shp svc ") as temp:
+            data, inbox = str(Path(temp) / "data"), str(Path(temp) / "inbox")
+            first = start(0, data, inbox)
+            self.addCleanup(lambda: first.poll() is None and first.kill())
+            line = ""
+            while "http://127.0.0.1:" not in line:
+                line = first.stdout.readline()
+                self.assertTrue(line or first.poll() is None, "server exited before listening")
+            port = int(line.split("http://127.0.0.1:")[1].split()[0])
+            with urlopen(f"http://127.0.0.1:{port}/", timeout=10) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"Skin Tools", response.read())
+            second = start(port, data, inbox)
+            try:
+                output, _ = second.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                second.kill()
+                self.fail("a second service bound a port that is already owned")
+            self.assertNotEqual(second.returncode, 0)
+            self.assertRegex(output, r"10048|Address already in use")
+            with urlopen(f"http://127.0.0.1:{port}/", timeout=10) as response:
+                self.assertEqual(response.status, 200)
+            first.terminate()
+            first.wait(timeout=15)
+            self.assertFalse(Path(data, "models").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
