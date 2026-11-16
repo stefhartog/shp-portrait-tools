@@ -41,3 +41,4 @@ packages = ["src/shp_photocraft_tools"]
 
 [tool.uv]
 override-dependencies = ["onnxruntime; sys_platform == 'never'"]
+required-environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]

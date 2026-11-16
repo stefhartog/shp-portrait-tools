@@ -2,8 +2,14 @@ version = 1
 revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
-    "python_full_version >= '3.14'",
-    "python_full_version < '3.14'",
+    "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+]
+required-markers = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
 ]
 
 [manifest]
@@ -1434,12 +1440,32 @@ wheels = [
 name = "nvidia-cublas"
 version = "13.8.2.12"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "nvidia-cuda-nvrtc" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/d4/8c09a45b82c478d43bfcdd76838e38215bd7e6df1f3d54cc53ed834f181f/nvidia_cublas-13.8.2.12-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8740b0e5b502b93537aea93738a0649426746fa001071365cc756c7173b5a801", size = 552775376, upload-time = "2026-10-27T01:26:20.977Z" },
     { url = "https://files.pythonhosted.org/packages/04/36/c6f716dbd080fa030e6056261f238fb82c2b78d94e5074460740f61384b3/nvidia_cublas-13.8.2.12-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:21721774d8e7044debec3034ecc1a8cd22e173eb6dae5d7f5f8a014852382894", size = 439349182, upload-time = "2026-10-27T01:27:19.915Z" },
+]
+
+[[package]]
+name = "nvidia-cublas"
+version = "13.10.0.20"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "nvidia-cuda-nvrtc" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/39/e1b1b4adb8b171894d9a89035df0596d448cf73dc403802d24dbe30cc0be/nvidia_cublas-13.10.0.20-py3-none-win_amd64.whl", hash = "sha256:c310b749eea855b88fafb906de08d6819b87216c6711640771764fea5dcd8546", size = 427284863, upload-time = "2026-11-04T23:36:18.775Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/89/c875dcd88abc508a98a725214a30b2c001406095855154f32ee3f0946409/nvidia_cublas-13.10.0.20-py3-none-win_arm64.whl", hash = "sha256:05929d6a64af9edce1951ff82a514d630fc1a2369bcfe1ab195f5e85266dbfed", size = 279793527, upload-time = "2026-11-04T23:41:15.348Z" },
 ]
 
 [[package]]
@@ -1469,7 +1495,8 @@ name = "nvidia-cudnn-cu13"
 version = "9.28.0.42"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
+    { name = "nvidia-cublas", version = "13.8.2.12", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+    { name = "nvidia-cublas", version = "13.10.0.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/5e/08ba2dbd0cb5b8233141aefb6439acd6563626101e62d0740f1f2492bc95/nvidia_cudnn_cu13-9.28.0.42-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:97c70c7fe0ea32e97fcd0b40157915d27f0d1e238479e537e81b12ed3c8f17ae", size = 597093622, upload-time = "2026-11-04T20:03:57.422Z" },
@@ -2109,7 +2136,8 @@ dependencies = [
 
 [package.optional-dependencies]
 gpu = [
-    { name = "nvidia-cublas" },
+    { name = "nvidia-cublas", version = "13.8.2.12", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+    { name = "nvidia-cublas", version = "13.10.0.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
     { name = "nvidia-cuda-runtime" },
     { name = "nvidia-cudnn-cu13" },
     { name = "nvidia-cufft" },

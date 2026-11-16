@@ -106,11 +106,7 @@ browser, batch/PhotoCraft send.
 
 ### Not verified / assumptions / blockers
 
-- **`--extra gpu` does not resolve on Windows:** `uv.lock` pins `nvidia-cublas==13.8.2.12`,
-  which only has Linux wheels. `uv sync --locked --extra gpu --dry-run` fails; the lock needs a
-  `required-environments` entry for win32/AMD64 and a relock. The GPU check above used manually
-  installed wheels (cublas 13.10.0.20, cuda-runtime 13.4.92, cudnn 9.27.0.42, cufft 12.4.0.43,
-  curand 10.4.4.72) outside the lock; the lock file was not changed.
+- **`--extra gpu` on Windows:** fixed by adding `required-environments` (linux, win32) to `[tool.uv]` and relocking. The lock now forks `nvidia-cublas`: Linux keeps 13.8.2.12, win32 uses 13.10.0.20 (13.8.2.12 has no Windows wheel; the other CUDA libs already had Windows wheels). Verified: `uv sync --locked --extra gpu` succeeds, ONNX Runtime 1.31.1 lists `CUDAExecutionProvider`, `add_windows_dll_directories()` finds `nvidia\cudnn\bin` and `nvidia\cu13\bin\x86_64` in the venv. Not re-verified with the lock-installed libs: real model inference (the earlier Conv check used hand-installed wheels). The lock was not tested on Linux.
 - **Model weights:** not bundled. Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and
   `selfie_multiclass_256x256.onnx` in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models` (or
   `DNB_MODELS`) per MODELS.md; rtmlib downloads the pose weights on first use. Inference was
