@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import sys
 import time
 
 
@@ -93,3 +94,25 @@ def drain_pinned(handles, graceful, grace=3, kill_wait=2):
     finally:
         for fd in handles:
             os.close(fd)
+
+
+def close_handle(handle):
+    os.close(handle)
+
+
+def spawn_options():
+    return {"start_new_session": True}
+
+
+def adopt(process):
+    """Hook for platforms that must enroll a spawned service; a POSIX session needs nothing."""
+    return None
+
+
+def owns(process, pid):
+    return pid == process.pid
+
+
+if sys.platform == "win32":
+    from .windows_process import (adopt, close_handle, drain_pinned, owns, pin_session,  # noqa: F811
+                                  process_identity, require_session_stopped, spawn_options)

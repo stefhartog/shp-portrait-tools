@@ -4,6 +4,7 @@ import contextlib
 import hmac
 import json
 import os
+import sys
 import threading
 
 
@@ -88,4 +89,8 @@ def handle_owner(handler):
 
 
 def parent_alive():
+    if sys.platform == "win32":
+        # getppid() keeps reporting the original parent after it exits; verify pid + creation time.
+        from .windows_process import is_alive
+        return is_alive(int(os.environ["SHP_SUPERVISOR_PID"]), int(os.environ["SHP_SUPERVISOR_CREATED"]))
     return os.getppid() == int(os.environ["SHP_SUPERVISOR_PID"])
