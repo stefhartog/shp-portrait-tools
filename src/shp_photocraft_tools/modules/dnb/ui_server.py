@@ -37,6 +37,7 @@ from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 from shp_photocraft_tools.shared.local_output import write_local_result, batch_output
+from shp_photocraft_tools.shared.platform_paths import global_config_dir, watch_directory
 
 from . import dodge_burn as D
 from . import skin_mask as K
@@ -56,9 +57,9 @@ from .paths import DATA, MODELS
 ROOT = DATA
 HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
-GLOBAL_SETTINGS = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "settings.json"
+GLOBAL_SETTINGS = global_config_dir() / "settings.json"
 GLOBAL_SETTINGS_LOCK = threading.Lock()
-WATCH_DIRECTORY = Path("/home/stef/shp-photocraft-tools/watchfolder")
+WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
 FULL_MASK_LOCK = threading.Lock()

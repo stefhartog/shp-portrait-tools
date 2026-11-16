@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 from .launcher import MODULES, LaunchError, probe, read_config, verify, set_startup
 from .shared.health import identity
 from .shared.lifecycle import BrowserHandler, BrowserServer, script
-from .shared.owned_process import process_identity, pin_session, drain_pinned, require_session_stopped
+from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
+                                   require_session_stopped, spawn_options)
 from .shared.photocraft.bridge import detect_config
 from .shared.supervision import ControlError
 from .shared.ui import stylesheet, theme_script
@@ -66,7 +67,7 @@ class Modules:
         if health is None:
             raise LaunchError(f"{name} is not responding. See {self.logs / (name + '.log')}")
         verify(health, self.expected(name), self.config["ports"][name])
-        if (health.get("pid") != module.process.pid or health.get("instance") != module.instance
+        if (not owns(module.process, health.get("pid")) or health.get("instance") != module.instance
                 or health.get("supervisor") != self.instance or health.get("owner_protocol") != 1):
             raise LaunchError(f"{name} ownership changed. No unrelated process will be controlled.")
         return health
@@ -109,7 +110,8 @@ class Modules:
             env = dict(os.environ, SHPC_DATA=str(self.data / "crop"), DNB_DATA=str(self.data / "dnb"),
                        DNB_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
                        SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=module.token,
-                       SHP_SUPERVISOR_PID=str(os.getpid()))
+                       SHP_SUPERVISOR_PID=str(os.getpid()),
+                       SHP_SUPERVISOR_CREATED=str(process_identity(os.getpid())[1]))
             if self.config.get("exiftool"):
                 env["DNB_EXIFTOOL"] = self.config["exiftool"]
             if self.comfy:
@@ -120,8 +122,8 @@ class Modules:
                 module.process = subprocess.Popen(
                     [sys.executable, "-u", "-m", "shp_photocraft_tools.modules." + MODULES[name],
                      "--port", str(port)], env=env, cwd=str(self.data),
-                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
-            module.process_identity = process_identity(module.process.pid)
+                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **spawn_options())
+            module.process_identity = adopt(module.process) or process_identity(module.process.pid)
             deadline, failure = time.monotonic() + 40, None
             while time.monotonic() < deadline:
                 if module.process.poll() is not None:
@@ -295,7 +297,7 @@ class Modules:
         except BaseException:
             for _, _, handles in pinned:
                 for fd in handles:
-                    os.close(fd)
+                    close_handle(fd)
             raise
         errors = []
         for name, process, handles in pinned:

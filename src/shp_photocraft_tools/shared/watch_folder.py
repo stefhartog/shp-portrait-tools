@@ -1,15 +1,21 @@
 """Stable, direct PNG inbox imports driven by the connected UI, without worker threads."""
 
 import os
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 import stat
 import struct
+import sys
 import tempfile
 import threading
 import time
 import uuid
 import zlib
+
+from . import winfs
+
+WINDOWS = sys.platform == "win32"
 
 
 class ChangedFile(ValueError):
@@ -35,12 +41,15 @@ def capture_target(pc):
 
 
 def version(info):
+    if WINDOWS:
+        # st_ctime is the creation time here and differs between path and handle queries of one file.
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def verify_png(path):
     """Reject partial PNGs even when an image decoder tolerates truncation."""
-    with path.open("rb") as stream:
+    with (path.open("rb") if isinstance(path, Path) else nullcontext(path)) as stream:
         if stream.read(8) != b"\x89PNG\r\n\x1a\n":
             raise ValueError("watch-folder input is not a PNG")
         first = True
@@ -85,18 +94,54 @@ class WatchFolder:
             self.closed = True
 
     def _open_directory(self):
-        fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if WINDOWS:
+            # A pinned handle (no share-delete) keeps the directory from being renamed or replaced.
+            fd = winfs.pin_directory(self.directory, follow_links=False)
+            close = winfs.close_handle
+        else:
+            fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            close = os.close
         try:
-            info = os.fstat(fd)
+            info = os.lstat(self.directory) if WINDOWS else os.fstat(fd)
+            if WINDOWS and (winfs.is_reparse_point(info) or not stat.S_ISDIR(info.st_mode)):
+                raise ValueError("the watch folder must be a real directory, not a link")
             identity = info.st_dev, info.st_ino
             if self.identity is not None and self.identity != identity:
                 raise ValueError("watch folder changed; restart Tools before importing from it")
             self.identity = identity
             return fd
         except BaseException:
-            os.close(fd)
+            close(fd)
             raise
 
+    def _close_directory(self, directory):
+        (winfs.close_handle if WINDOWS else os.close)(directory)
+
+    def _listdir(self, directory):
+        return os.listdir(self.directory if WINDOWS else directory)
+
+    def _lstat(self, directory, name):
+        if WINDOWS:
+            return os.lstat(self.directory / name)
+        return os.stat(name, dir_fd=directory, follow_symlinks=False)
+
+    def _open_file(self, directory, name):
+        if WINDOWS:
+            return winfs.open_readonly_no_follow(self.directory / name)
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
+    def _verify_open_file(self, fd):
+        if WINDOWS:
+            with os.fdopen(os.dup(fd), "rb") as stream:
+                verify_png(stream)
+        else:
+            verify_png(Path(f"/proc/self/fd/{fd}"))
+
+    def _unlink(self, directory, name):
+        if WINDOWS:
+            os.unlink(self.directory / name)
+        else:
+            os.unlink(name, dir_fd=directory)
     def _check_directory(self):
         current = self.directory.stat(follow_symlinks=False)
         if (current.st_dev, current.st_ino) != self.identity:
@@ -113,13 +158,13 @@ class WatchFolder:
             except (OSError, ValueError) as error:
                 return {"ready": False, "error": str(error)}
             try:
-                names = sorted(name for name in os.listdir(directory) if Path(name).suffix.lower() == ".png")
+                names = sorted(name for name in self._listdir(directory) if Path(name).suffix.lower() == ".png")
                 self.seen = {name: record for name, record in self.seen.items() if name in names}
                 errors = []
                 ready = None
                 for name in names:
                     try:
-                        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                        info = self._lstat(directory, name)
                     except FileNotFoundError:
                         continue
                     current = version(info)
@@ -127,7 +172,7 @@ class WatchFolder:
                     if record is None or record["version"] != current:
                         record = {"version": current, "since": self.clock(), "token": uuid.uuid4().hex}
                         self.seen[name] = record
-                    if not stat.S_ISREG(info.st_mode):
+                    if not stat.S_ISREG(info.st_mode) or winfs.is_reparse_point(info):
                         record["error"] = "only direct regular PNG files are accepted (no symlinks)"
                     if record.get("error"):
                         errors.append(f"{name}: {record['error']}")
@@ -136,14 +181,16 @@ class WatchFolder:
                         if not record.get("validated"):
                             fd = None
                             try:
-                                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                                fd = self._open_file(directory, name)
                                 if version(os.fstat(fd)) != current:
                                     continue
-                                verify_png(Path(f"/proc/self/fd/{fd}"))
+                                self._verify_open_file(fd)
                                 if version(os.fstat(fd)) != current:
                                     continue
                                 record["validated"] = True
                             except (OSError, ValueError) as error:
+                                if WINDOWS and winfs.is_sharing_violation(error):
+                                    continue  # the exporter still holds the file; try again later
                                 record["error"] = str(error)
                                 errors.append(f"{name}: {error}")
                                 continue
@@ -155,7 +202,7 @@ class WatchFolder:
             except OSError as error:
                 return {"ready": False, "error": f"Cannot inspect watch folder: {error}"}
             finally:
-                os.close(directory)
+                self._close_directory(directory)
 
     def load(self, token, loader, *, retry_key=None):
         """Snapshot before decoding; consume exactly that version only after loader succeeds."""
@@ -179,10 +226,10 @@ class WatchFolder:
             loading = False
             try:
                 directory = self._open_directory()
-                source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                source = self._open_file(directory, name)
                 with os.fdopen(source, "rb") as stream:
                     before = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(before.st_mode) or version(before) != record["version"]:
+                    if not stat.S_ISREG(before.st_mode) or winfs.is_reparse_point(before) or version(before) != record["version"]:
                         raise ChangedFile("PNG export changed; waiting for a stable file")
                     self.storage.mkdir(parents=True, exist_ok=True)
                     staged = Path(tempfile.mkdtemp(prefix="watch-", dir=self.storage))
@@ -195,7 +242,7 @@ class WatchFolder:
                 verify_png(snapshot)
                 # Check the directory entry again before publishing any editor state.
                 self._check_directory()
-                if version(os.stat(name, dir_fd=directory, follow_symlinks=False)) != record["version"]:
+                if version(self._lstat(directory, name)) != record["version"]:
                     raise ChangedFile("PNG export was replaced; waiting for a stable file")
                 loading = True
                 result = loader(snapshot)
@@ -203,9 +250,9 @@ class WatchFolder:
                 staged = None  # The successful import owns its retained private source copy.
                 try:
                     self._check_directory()
-                    if version(os.stat(name, dir_fd=directory, follow_symlinks=False)) != record["version"]:
+                    if version(self._lstat(directory, name)) != record["version"]:
                         raise ChangedFile("PNG export changed during load; new file was retained")
-                    os.unlink(name, dir_fd=directory)
+                    self._unlink(directory, name)
                     result["watch_cleanup"] = True
                 except (OSError, ValueError) as error:
                     result["watch_cleanup"] = False
@@ -222,7 +269,7 @@ class WatchFolder:
                 raise
             finally:
                 if directory is not None:
-                    os.close(directory)
+                    self._close_directory(directory)
                 if staged is not None:
                     (staged / name).unlink(missing_ok=True)
                     staged.rmdir()

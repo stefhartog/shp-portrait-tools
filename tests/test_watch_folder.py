@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -119,6 +121,7 @@ class WatchFolderTests(unittest.TestCase):
         self.assertEqual(self.watch.load(token, loader), {"skipped":True})
         loader.assert_called_once()
 
+    @unittest.skipIf(sys.platform == "win32", "Windows pins the folder instead; see the Windows test below")
     def test_folder_replaced_during_load_keeps_original_and_replacement_files(self):
         source = self.inbox / "image.png"
         source.write_bytes(self.png)
@@ -136,6 +139,28 @@ class WatchFolderTests(unittest.TestCase):
         self.assertEqual((moved / "image.png").read_bytes(), self.png)
         self.assertEqual(source.read_bytes(), b"unrelated replacement")
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows folder pinning")
+    def test_windows_folder_cannot_be_replaced_during_load(self):
+        source = self.inbox / "image.png"
+        source.write_bytes(self.png)
+        token = self.ready()
+        moved = self.root / "moved"
+        attempts = []
+
+        def load(snapshot):
+            with self.assertRaises(PermissionError):
+                self.inbox.rename(moved)
+            with self.assertRaises(OSError):
+                self.inbox.rmdir()
+            attempts.append(True)
+            return {"generation": 1}
+
+        result = self.watch.load(token, load)
+        self.assertEqual(attempts, [True])
+        self.assertTrue(result["watch_cleanup"])
+        self.assertFalse(source.exists())
+        self.assertFalse(moved.exists())
+
     def test_closed_watcher_never_loads_or_removes_pending_input(self):
         source = self.inbox / "image.png"
         source.write_bytes(self.png)
@@ -150,7 +175,16 @@ class WatchFolderTests(unittest.TestCase):
     def test_only_direct_regular_pngs_and_pinned_directory(self):
         other = self.root / "other.png"
         other.write_bytes(self.png)
-        (self.inbox / "linked.png").symlink_to(other)
+        try:
+            (self.inbox / "linked.png").symlink_to(other)
+        except OSError:
+            if sys.platform != "win32":
+                raise
+            # Unprivileged Windows cannot create file symlinks; a junction is also a reparse point.
+            other_dir = self.root / "other_dir"
+            other_dir.mkdir()
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(self.inbox / "linked.png"), str(other_dir)],
+                           check=True, capture_output=True)
         nested = self.inbox / "nested"
         nested.mkdir()
         (nested / "nested.png").write_bytes(self.png)

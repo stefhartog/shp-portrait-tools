@@ -24,18 +24,19 @@ from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 from shp_photocraft_tools.shared.health import identity
 from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 from shp_photocraft_tools.shared.local_output import write_local_result
+from shp_photocraft_tools.shared.platform_paths import module_data, watch_directory
 from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
 
 from . import expand as X
 from . import photocraft_bridge as PCB
 
 HTML = Path(__file__).resolve().parent / "ui" / "index.html"
-DATA = Path(os.environ.get("SHPC_DATA", Path.home() / ".local" / "share" / "shp-photocraft-tools" / "crop")).expanduser()
+DATA = module_data("SHPC_DATA", "crop")
 SETTINGS_FILE = DATA / "settings.json"
 PRESETS_FILE = DATA / "presets.json"
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
-WATCH_DIRECTORY = Path("/home/stef/shp-photocraft-tools/watchfolder_crop")
+WATCH_DIRECTORY = watch_directory("SHPC_WATCH_DIRECTORY", "watchfolder_crop", "watchfolder_crop")
 DIRS = []
 BRIDGE = {"b": None}
 STATE = {"img": None, "name": None, "doc": None, "job": X.Job(), "thread": None, "seq": 0, "imgs": {}}

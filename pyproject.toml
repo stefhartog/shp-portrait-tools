@@ -10,6 +10,8 @@ dependencies = [
     "opencv-contrib-python>=4.10",
     "onnxruntime-gpu>=1.31.1",
     "rtmlib>=0.0.16",
+    "pywebview>=5.4; sys_platform == 'win32'",
+    "pystray>=0.19.5; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -41,3 +43,4 @@ packages = ["src/shp_photocraft_tools"]
 
 [tool.uv]
 override-dependencies = ["onnxruntime; sys_platform == 'never'"]
+required-environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]

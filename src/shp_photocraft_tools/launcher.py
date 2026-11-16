@@ -2,7 +2,6 @@
 
 import argparse
 import errno
-import fcntl
 import json
 import os
 import shutil
@@ -18,7 +17,9 @@ from pathlib import Path
 from urllib.error import URLError, HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from .shared.filelock import file_lock
 from .shared.health import identity
+from .shared.platform_paths import data_root, global_config_dir
 
 APP = "SHP Portrait Tools"
 DEFAULT_PORTS = {"crop": 18768, "dnb": 18765}
@@ -64,6 +65,8 @@ def read_config(path):
         raise LaunchError("'shell_port' must be a distinct integer port between 1024 and 65535")
     config["shell_port"] = shell_port
     comfy = config.get("comfy")
+    if comfy is not None and sys.platform == "win32":
+        raise LaunchError("Tools-managed ComfyUI is not supported on Windows; remove 'comfy' from " + str(path))
     if comfy is not None:
         if (not isinstance(comfy, dict) or set(comfy) != {"directory", "port"}
                 or not isinstance(comfy["directory"], str) or not Path(comfy["directory"]).is_absolute()
@@ -85,8 +88,7 @@ def set_startup(path, name, enabled):
     if name not in MODULES or type(enabled) is not bool:
         raise LaunchError("Startup preference requires a known module and a boolean")
     temporary = None
-    with path.with_suffix(path.suffix + ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with file_lock(path.with_suffix(path.suffix + ".lock")):
         config = read_config(path)
         config["startup"][name] = enabled
         try:
@@ -106,10 +108,10 @@ def set_startup(path, name, enabled):
 def probe(port):
     """None means no listener; an occupied but wrong/unhealthy port is an explicit failure."""
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
+        with socket.create_connection(("127.0.0.1", port), timeout=5 if sys.platform == "win32" else 1):
             pass
     except OSError as error:
-        if error.errno == errno.ECONNREFUSED:
+        if isinstance(error, ConnectionRefusedError) or error.errno == errno.ECONNREFUSED:
             return None
         raise LaunchError(f"Cannot check local port {port}: {error}") from error
     try:
@@ -164,7 +166,7 @@ def ensure_shell(config_path, data, config, logs):
             old_identity = found.get("process_identity")
             ticks = (old_identity if old_identity is not None else process_identity(found["pid"]))[1]
             wait_for_exit(found["pid"], ticks)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             pass
         # A draining supervisor must fully exit before any new listener is created.
         if probe(port) is not None:
@@ -177,7 +179,7 @@ def ensure_shell(config_path, data, config, logs):
             [sys.executable, "-u", "-m", "shp_photocraft_tools.supervisor",
              "--config", str(config_path.resolve()), "--data", str(data), "--state", str(logs)],
             env=env, cwd=str(data), stdout=log, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, start_new_session=True,
+            stdin=subprocess.DEVNULL, **detached_options(),
         )
     deadline = time.monotonic() + 40
     failure = None
@@ -188,7 +190,10 @@ def ensure_shell(config_path, data, config, logs):
             found = probe(port)
             if found is not None:
                 check(found)
-                if found.get("instance") != env["SHP_SERVER_INSTANCE"] or found.get("pid") != process.pid:
+                # The Windows venv python.exe is a launcher whose child is the real server, so the pid differs;
+                # the per-start random instance id (known only to this launcher) is the identity there.
+                if found.get("instance") != env["SHP_SERVER_INSTANCE"] or (
+                        sys.platform != "win32" and found.get("pid") != process.pid):
                     raise LaunchError(f"Another process acquired port {port} while Tools was starting")
                 threading.Thread(target=process.wait, daemon=True).start()
                 return found
@@ -204,7 +209,17 @@ def ensure_shell(config_path, data, config, logs):
     raise LaunchError(f"Tools supervisor did not become ready. See {log_path}. {failure or ''}")
 
 
+def detached_options():
+    if sys.platform == "win32":
+        from .shared.windows_process import detached_options as windows_options
+        return windows_options()
+    return {"start_new_session": True}
+
+
 def chromium_command(config, urls):
+    if sys.platform == "win32":
+        raise LaunchError("--browser (Ungoogled Chromium app mode) is Linux-only. Use the default desktop window, "
+                          "or --no-browser and open the loopback URL.")
     binary = config.get("ungoogled_chromium")
     if binary is not None and (not isinstance(binary, str) or not binary):
         raise LaunchError("'ungoogled_chromium' must be an executable name or path")
@@ -225,7 +240,43 @@ def chromium_command(config, urls):
             f"--app={urls[0]}", "--window-size=1347,994", "--no-first-run", "--no-default-browser-check"]
 
 
-def desktop_command(url):
+def tools_dirs():
+    """(data, state) roots. Windows honours SHP_TOOLS_DATA so tests can use a disposable tree."""
+    if sys.platform == "win32":
+        data = Path(os.environ.get("SHP_TOOLS_DATA") or data_root())
+        return data, data / "state"
+    return (Path.home() / ".local" / "share" / "shp-photocraft-tools",
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "shp-photocraft-tools")
+
+
+def default_config_path():
+    if sys.platform == "win32":
+        return global_config_dir() / "launcher.json"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "launcher.json"
+
+
+def write_default_config(path):
+    """Windows only: a Skin Tools-first launcher.json; refuses to overwrite and copies no weights."""
+    if path.exists():
+        raise LaunchError(f"{path} already exists; edit it instead")
+    config = {"models": os.environ.get("DNB_MODELS") or str(data_root() / "dnb" / "models"),
+              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"crop": False, "dnb": True}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2) + "\n")
+    return config
+
+
+def desktop_command(url, data):
+    if sys.platform == "win32":
+        command = [sys.executable, "-m", "shp_photocraft_tools.desktop.windows_controller",
+                   "--url", url, "--data-dir", str(data / "webview")]
+        checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        if checked.returncode:
+            raise LaunchError(f"Desktop runtime unavailable: {(checked.stderr or checked.stdout).strip()}. "
+                              "Run `python -m uv sync --locked` (installs pywebview/pystray) and install the "
+                              "Microsoft Edge WebView2 Runtime, or use --no-browser and the loopback URL.")
+        return command
     helper = files("shp_photocraft_tools.desktop").joinpath("controller.py")
     data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "shp-photocraft-tools" / "webview"
     icon = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "icons/hicolor/scalable/apps/shp-photocraft-tools.svg"
@@ -256,22 +307,20 @@ def wait_for_exit(pid, start_ticks, timeout=90):
 
 def launch(config_path, no_browser=False, browser=False):
     config = read_config(config_path)
-    data = Path.home() / ".local" / "share" / "shp-photocraft-tools"
-    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "shp-photocraft-tools"
+    data, state = tools_dirs()
     state.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
     urls = [f"http://127.0.0.1:{config['shell_port']}/"]
-    command = None if no_browser else (chromium_command(config, urls) if browser else desktop_command(urls[0]))
+    command = None if no_browser else (chromium_command(config, urls) if browser else desktop_command(urls[0], data))
     if command and not browser:
         command.extend(["--launcher-python", sys.executable, "--launcher-config", str(config_path.resolve())])
     log_name = "chromium.log" if browser else "desktop.log"
-    with (state / "launcher.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with file_lock(state / "launcher.lock"):
         shell = ensure_shell(config_path, data, config, state)
     if command:
         with (state / log_name).open("ab") as log:
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, start_new_session=True)
+                                       stdin=subprocess.DEVNULL, **detached_options())
         try:
             code = process.wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -284,14 +333,25 @@ def launch(config_path, no_browser=False, browser=False):
 
 def main():
     parser = argparse.ArgumentParser(description=f"Show the {APP} desktop window and tray controller")
-    default_config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "launcher.json"
+    default_config = default_config_path()
     parser.add_argument("--config", type=Path, default=default_config)
+    parser.add_argument("--init-config", action="store_true",
+                        help="Windows: write a Skin Tools-first launcher.json (never overwrites) and exit")
     parser.add_argument("--wait-for-exit", nargs=2, type=int, action="append", default=[], metavar=("PID", "START_TICKS"))
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--no-browser", action="store_true", help="start/reuse the shell without opening a window")
     mode.add_argument("--browser", action="store_true", help="open Ungoogled Chromium app instead of the owned desktop")
     args = parser.parse_args()
     try:
+        if args.init_config:
+            if sys.platform != "win32":
+                raise LaunchError("--init-config is for Windows; Linux uses scripts/install_desktop.py")
+            write_default_config(args.config)
+            print(f"Wrote {args.config}")
+            return
+        if sys.platform == "win32" and not args.config.exists():
+            raise LaunchError(f"No launcher configuration at {args.config}. Run with --init-config first "
+                              "and place the Skin Tools models in the 'models' directory it names.")
         for pid, ticks in args.wait_for_exit:
             wait_for_exit(pid, ticks)
         result = launch(args.config, args.no_browser, args.browser)

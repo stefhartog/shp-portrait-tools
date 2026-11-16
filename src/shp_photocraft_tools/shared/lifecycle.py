@@ -3,6 +3,8 @@
 import contextlib
 import json
 import os
+import socket
+import sys
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -91,6 +93,14 @@ class BrowserLifetime:
 
 
 class BrowserServer(ThreadingHTTPServer):
+    if sys.platform == "win32":
+        # SO_REUSEADDR on Windows lets a second process bind (and share) a live port; claim it exclusively.
+        allow_reuse_address = False
+
+        def server_bind(self):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+
     def __init__(self, *args, close_with_ui=False, busy=lambda: False, loaded=lambda: False, **kwargs):
         super().__init__(*args, **kwargs)
         token = os.environ.get("SHP_SUPERVISOR_TOKEN")

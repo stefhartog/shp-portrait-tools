@@ -69,7 +69,7 @@
   .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
-  details.grp[hidden], .tab[hidden], #toolModeRow[hidden] { display:none; }
+  #standaloneLoad[hidden], details.grp[hidden], .tab[hidden], #toolModeRow[hidden] { display:none; }
   #g-bands, #g-mask, #g-frequency { border-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
   details.grp > summary::after { display:none; }
@@ -245,6 +245,10 @@
       <div id="maskOperations">
         <div class="row" id="maskPrecacheRow"><span>Full-resolution skin mask</span> <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></div>
       </div>
+      <div id="standaloneLoad" hidden>
+        <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
+        <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
+      </div>
       <div id="info">No photo loaded.</div>
       <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
       <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
@@ -265,8 +269,6 @@
   </details>
   <div id="manual" hidden>
     <select id="view"><option value="detail">face crop</option><option value="crop" selected>portrait crop</option><option value="whole">whole image</option></select>
-    <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
-    <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
     <div class="row"><button class="primary" id="apply" disabled>Apply</button><button class="workflow" id="save" disabled>Save</button></div>
   </div>
 
@@ -1351,7 +1353,7 @@ async function pcGet() {
     let path = null;
     if (!connection.connected) {
       if (connection.code === 'authentication') throw new Error(connection.message);
-      if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis file path/list controls; Send Result then saves beside that source.');
+      if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
       path = window.prompt('SHP_OPEN_IMAGE_V1');
       if (!path) return;
     }
@@ -1501,6 +1503,7 @@ async function startBatch() {
   } finally { $('batchCancel').hidden=true; $('batchCancel').disabled=true; setBusy(false); }
 }
 $('batchStart').onclick = startBatch;
+addEventListener('load', () => { $('standaloneLoad').hidden = !!window.__shpNativeFileDialog; });
 $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: 'result', B: localStorage.getItem('dnb-tabB')};

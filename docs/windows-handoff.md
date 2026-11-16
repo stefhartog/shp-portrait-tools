@@ -12,11 +12,196 @@ Read [README](../README.md), [HANDOFF](../HANDOFF.md) and [MODELS](../MODELS.md)
 Older handoff/setup documents still contain historical repository names and machine
 paths; use the repository above and configure paths locally.
 
-**Windows support is not implemented or verified.** The previous handoff's 118 passing
+**Full Windows support is not implemented.** Only the Skin Tools (`dnb`) standalone
+service and WebUI have been ported; see [Windows port status](#windows-port-status-skin-tools-standalone)
+for what was verified. The rest of this page keeps the original Linux-era analysis, and
+the table below describes the baseline before the port unless marked otherwise. The previous handoff's 118 passing
 Linux tests and one skipped optional live-desktop test described its older baseline,
 not a fresh result for current main. No Windows installation, inference, process
 management or PhotoCraft integration has been validated for this update. Do not run
 the Linux desktop or editor-handoff installers on Windows.
+
+## Windows port status (Skin Tools standalone)
+
+Branch `stefhartog-skin-tools-windows-port`, started from `23cffaf41f0c1e1477e8296c62836451f7a2951f`.
+Scope of the first port: Skin Tools (`dnb`, port 8765) standalone service and browser WebUI. The
+Windows desktop host (launcher/supervisor/pywebview/pystray) was added later, see below. Still not
+touched: GTK desktop/tray, installers, Crop & Expand/AI Fill, Flatpak, LightCraft,
+the Linux-only Google pose worker.
+
+### Verified on Windows
+
+Environment: Windows 11, Python 3.13.12, uv 0.13.8 (`python -m uv`, not on PATH), RTX 3090,
+driver 610.88. `uv sync --locked` (no `gpu` extra) succeeds.
+
+- **Import probe:** every `shp_photocraft_tools` module imports except the expected
+  Linux/optional ones: `launcher` and `supervisor` (`fcntl`), `desktop.controller` (`gi`),
+  `dnb.google_pose_worker` (`resource`), `dnb.texture_experiment` (`matplotlib`, research extra).
+- **Service:** `python -m shp_photocraft_tools.modules.dnb.ui_server` serves the WebUI on
+  loopback (HTTP 200 for `/`, checked with curl on 8765 and with `--port 0` in a test).
+    In a standalone browser (no `window.__shpNativeFileDialog`) Image analysis shows the image
+    list + path box + Load; the desktop window hides them. Verified with headless Edge and
+    `/api/load` on a synthetic copy of the scikit-image astronaut.- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
+  `%LOCALAPPDATA%\shp-photocraft-tools\<module>`, models to `...\dnb\models`, global settings
+  to `%APPDATA%\shp-photocraft-tools`, inbox to a folder under the data directory. Overrides:
+  `DNB_DATA`, `SHPC_DATA`, `DNB_MODELS`, `DNB_WATCH_DIRECTORY`/`SHPC_WATCH_DIRECTORY`, and
+  generic `WATCH_DIRECTORY`. Linux defaults (including the fixed inbox) are unchanged.
+- **Output safety** (`shared/winfs.py`, `shared/local_output_windows.py`, dispatched from
+  `local_output.py`): `CREATE_NEW` no-overwrite allocation, reserved-name/ADS/trailing dot
+  rejection, `\\?\` extended paths for long names, reparse-point refusal, atomic
+  `os.replace` for the preset with an external-change check, cleanup of only its own files.
+  The parent folders are held open without `FILE_SHARE_DELETE`; renaming or replacing them
+  during a write is refused by the OS instead of detected afterwards. This is the Windows
+  analogue of `dir_fd` and is weaker in one respect: identity is verified on the handle, not
+  inherited by every later call.
+- **Inbox** (`shared/watch_folder.py`): no `/proc/self/fd`; folder pinned the same way,
+  sharing violations are retried not recorded, reparse-point or non-directory inboxes are rejected.
+- **Port ownership** (`shared/lifecycle.py`): on Windows `BrowserServer` binds with
+  `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`. A negative control showed that plain
+  `ThreadingHTTPServer` lets a second process share a live port on Windows. Ownership here
+  is only "the server process owns its port"; `uv run` adds a wrapper process, so stop the
+  Python child. Supervisor/`owned_process` pid and `/proc` ownership are not ported.
+- **GPU:** `dnb_gpu.py` registers `site-packages\nvidia\*\bin[\x86_64]` with
+  `os.add_dll_directory`, exposes `device()`, and `estimate_body_scale.py` uses it instead of
+  a hardcoded `"cuda"` (CPU when the CUDA provider is unavailable). With CUDA 13/cuDNN 9 wheels
+  installed into the venv by hand, ONNX Runtime GPU 1.31.1 reported
+  `CUDAExecutionProvider` and ran a synthetic Conv model on it.
+- **Pose:** the rtmlib backend remains the default. Google Full raises a clear
+  Linux-only error on Windows (no bubblewrap); its worker is untouched.
+- **Tests** (commands below): the six-module command gives `Ran 58 tests ... OK (skipped=10)`;
+  adding `test_windows_output` (18) and `test_windows_service` (1) gives
+  `Ran 77 tests ... OK (skipped=11)`. Skips: 6 need `photocraft-cli`; 2 need the Linux-only
+  `supervisor`; 1 symbolic-input test and 1 file-symlink test need the symlink privilege;
+  1 replaced-folder test is replaced by a Windows test (folders cannot be replaced while pinned).
+  Without the privilege, symlink-based tests use hard links or junctions (`tests/winlinks.py`)
+  as stand-ins; they check the same no-overwrite behavior but are not real symlink tests.
+
+```powershell
+$env:PYTHONPATH = "tests"
+python -m uv run --no-sync python -m unittest test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results test_watch_folder -q
+python -m uv run --no-sync python -m unittest test_windows_output test_windows_service -q
+```
+
+### Verified end to end with real models (2026-11-16)
+
+Standalone service on 8765 with the three ONNX models in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`
+(SHA-256 checked) and a disposable `DNB_DATA`/`DNB_WATCH_DIRECTORY`. Test image: scikit-image's
+`astronaut.png` (public domain NASA photo, 512x512; a real face, not a user photo). Same-origin
+JSON calls to `/api/load`, `/api/run` (Skin Mask, FS & Tone, Dodge & Burn, Combine) and `/api/save`
+(Dodge & Burn, Combine) all succeeded with no Windows-specific errors:
+
+- Load/analysis 29.8 s on first use, including a ~203 MB rtmlib weight download (YOLOX-m and
+  RTMW-x downloaded automatically to `~\.cache\rtmlib`); YuNet found the face (IPD 43 px, scale
+  S 43.3, confidence "high", mask 2.8%). Previews took 0.1-0.5 s. Saves wrote the expected PNG
+  files and `settings.json` under the data directory.
+- **Provider:** `CUDAExecutionProvider` (then CPU) is the provider list in use. `get_providers()` on the
+  live face-landmark session and on the rtmlib YOLOX and RTMW sessions returned
+  `['CUDAExecutionProvider', 'CPUExecutionProvider']`; ONNX Runtime warned that some shape ops stay on CPU,
+  which is normal. The selfie-segmentation session is created with the same list but was not
+  inspected individually. YuNet runs through OpenCV's `FaceDetectorYN` on CPU.
+- `DNB_DATA` also relocates the default model directory (`<DNB_DATA>\models`); set `DNB_MODELS`
+  to keep models elsewhere.
+- The six-module test command still gives `Ran 58 tests ... OK (skipped=10)`.
+
+Not covered by that run: portrait accuracy/quality and speed on larger (multi-megapixel) images,
+profiles beyond sRGB, multiple faces, CPU-only provider path end to end, WebUI interaction in a
+browser, batch/PhotoCraft send.
+
+### Not verified / assumptions / blockers
+
+- **`--extra gpu` on Windows:** fixed by adding `required-environments` (linux, win32) to `[tool.uv]` and relocking. The lock now forks `nvidia-cublas`: Linux keeps 13.8.2.12, win32 uses 13.10.0.20 (13.8.2.12 has no Windows wheel; the other CUDA libs already had Windows wheels). Verified: `uv sync --locked --extra gpu` succeeds, ONNX Runtime 1.31.1 lists `CUDAExecutionProvider`, `add_windows_dll_directories()` finds `nvidia\cudnn\bin` and `nvidia\cu13\bin\x86_64` in the venv. Not re-verified with the lock-installed libs: real model inference (the earlier Conv check used hand-installed wheels). The lock was not tested on Linux.
+- **Model weights:** not bundled. Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and
+  `selfie_multiclass_256x256.onnx` in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models` (or
+  `DNB_MODELS`) per MODELS.md; rtmlib downloads the pose weights on first use. Inference was
+  verified on one public-domain face (see above); accuracy and speed on real-size portraits are **not verified**.
+- Not tested: symlink semantics (needs Developer Mode/elevation), CPU-only fallback end to end,
+  network/cross-volume paths, locked-file behavior beyond the unit tests, antivirus interaction,
+  the WebUI beyond fetching `/`, PhotoCraft/ComfyUI/LightCraft, launcher/tray/desktop.
+- `comfy.py` remains Linux-only (rejected in the Windows launcher config). The launcher,
+  supervisor and ownership primitives now have Windows paths; see the desktop host section.
+
+## Windows desktop host design (pywebview + pystray)
+
+Decision: one Windows host process shows the existing shell in a pywebview (WebView2) window
+and a pystray tray icon. The WebUI, shell protocol (`/api/status`, `/api/modules/*`,
+`/api/ui/*`, `/api/ui/native-quit`) and the supervisor that owns the services are reused, so the
+only new UI-side code is `desktop/windows_controller.py`; the Linux GTK controller is not modified.
+Scope: Skin Tools (`dnb`, 18765 in the launcher) first. AI Fill (`crop`) is wired only because the
+supervisor already treats both modules uniformly (tray rows, start/stop); it is off by default in
+the Windows config and not verified (it needs a ComfyUI that is not ported).
+
+| Linux responsibility | Windows mapping |
+|---|---|
+| Launcher single-flight lock (`fcntl.flock`) | `shared/filelock.py`: `msvcrt.locking` on a lock file (same call sites as `flock`) |
+| `/usr/bin/python3`, XDG paths | `sys.executable`; `%LOCALAPPDATA%`/`%APPDATA%` via `platform_paths`; `launcher.json` written explicitly by `--init-config`, never implicitly |
+| Single desktop instance (GTK application ID) | Named mutex per shell URL; a second launch signals a named event so the first window shows itself, then exits |
+| Process identity (`/proc` session id + start ticks) | `(pid, creation FILETIME)` from `GetProcessTimes`; recorded at spawn and rechecked before any stop |
+| Ownership/termination (session + pidfds) | Each service the supervisor spawns is placed in its own Job Object (`CREATE_NEW_PROCESS_GROUP`); only that job is ever terminated, and only after pid + creation time are verified. Port listeners the host did not start are never touched. Graceful owner-protocol stop stays first. |
+| Child exits when supervisor dies (`getppid`) | Supervisor pid + creation time passed in the environment and polled (Windows keeps a stale parent pid) |
+| Hide to tray / tray menu | Window close hides to the pystray icon; menu mirrors the GTK one (service rows, Show/Hide, Restart, Force Restart, Quit) |
+| Busy / unsent-edit guards | Same `/api/status` busy and `(instance, revision, loaded)` signature checks and confirmation dialogs before native-quit; shared helpers moved to `desktop/protocol.py` |
+| Native pickers | WebView2 `ScriptDialogOpening` answers the same `SHP_OPEN_IMAGE_V1`, `SHP_OPEN_BATCH_FOLDER_V1`, `SHP_OPEN_BATCH_IMAGES_V1`, `SHP_OPEN_BATCH_SOURCE_V1` prompts with pywebview file/folder dialogs; `__shpNativeFileDialog` is injected for the app origin in all frames and `__shpOwnedDesktop` in the top frame via `AddScriptToExecuteOnDocumentCreated` |
+| Wake/show/import from both inboxes | Same 3 s poll of `/<module>/api/watch-folder`; a new ready token shows the window |
+| SIGTERM quit | `SIGBREAK`/Ctrl+C request the same confirmed quit path; tray Quit is primary |
+
+Known weakening versus Linux: only the services the supervisor spawns are job-contained (spawned
+suspended, assigned to their own Job Object, then resumed, so nothing can escape in a gap). The
+launcher-spawned supervisor and the desktop host are not in a job; they are identified by
+`SHP_SERVER_INSTANCE`/`(pid, creation time)` and the supervisor exits its children when it exits.
+Closing the window hides it (tray Quit is the only way to stop services; Ctrl+C/SIGBREAK is not
+handled while the WinForms loop runs, so a killed host leaves the supervisor running until its
+lifetime lease expires).
+
+### Windows desktop host: implemented
+
+Commands (from the worktree; nothing is installed, no shortcut/registry/Start menu is touched):
+
+```powershell
+python -m uv sync --locked --extra gpu           # includes win32-only pywebview + pystray
+python -m uv run --no-sync shp-photocraft-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
+python -m uv run --no-sync shp-photocraft-tools                  # starts shell + Skin Tools and opens the window
+python -m uv run --no-sync shp-photocraft-tools --no-browser     # services only; open http://127.0.0.1:18760/
+```
+
+`launcher.json` defaults: models `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`, ports crop
+18768 / dnb 18765, shell 18760, startup `{crop: false, dnb: true}`; `comfy` is rejected on Windows.
+`SHP_TOOLS_DATA` relocates the data/state tree (used by the smoke test). Logs: `<data>\state\*.log`
+and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
+
+Optional shortcut recipe (documented only, NOT executed): a `.lnk` whose target is
+`<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_photocraft_tools.launcher --config
+%APPDATA%\shp-photocraft-tools\launcher.json`, start in `<worktree>`.
+
+Code: `shared/filelock.py` (msvcrt lock), `shared/windows_process.py` (identity, jobs,
+single-instance mutex/event), platform dispatch in `shared/owned_process.py` and
+`shared/supervision.py`, Windows paths in `launcher.py`/`supervisor.py`,
+`desktop/protocol.py`, `desktop/windows_controller.py`. Linux paths are behind `sys.platform` guards.
+
+#### Verified (real run, `tests/windows_host_smoke.py`, disposable data dir/inbox, real models read-only)
+
+Against real WebView2 (157.0.4341.46), pythonnet and pystray: shell and Skin Tools iframe load in
+the pywebview window; `__shpOwnedDesktop` (top) and `__shpNativeFileDialog` (shell and iframe) are
+set; the tray icon is created (`run_detached` reports ready); all four `SHP_OPEN_*` prompts
+round-trip through the real `ScriptDialogOpening` handler with a fake picker (the answers match
+the GTK formats); hide/show toggle the form's visibility; Quit through the real
+`/api/ui/native-quit` stops the supervisor and Skin Tools with no listener left on 18760/18765
+and no stray python processes. Unit tests (`tests/test_windows_host.py`): file lock, job adoption,
+termination, identity-mismatch refusal, single-instance mutex/event, prompt protocol. Regression
+set (`test_combine ... test_windows_service`, plus the new tests): 84 OK, skipped 9.
+`test_launcher`/`test_supervisor` are Linux-oriented and still have Windows failures (6 of 21).
+
+Findings: WebView2 raises `ScriptDialogOpening` only when `AreDefaultScriptDialogsEnabled` is
+false, so the host disables them and renders alert/confirm itself with `MessageBox`; the venv
+`python.exe` is a redirector that spawns the real interpreter, so ownership uses job membership
+rather than `Popen.pid`; closed loopback ports take ~2 s to refuse on Windows (probe timeout 5 s).
+
+#### Not verified (try in the GUI)
+
+Real native pickers (Open/Folder dialogs; only the fake picker path was run), the Yes/No/Cancel
+batch-source box, tray right-click menu and notifications, close-button hide, the second-launch
+"show existing window" wake, Restart / Force Restart / Reload, the busy and unsent-work
+confirmations, window geometry persistence, download Save-As, new-window/navigation blocking,
+inbox wake-to-show, GPU inference through the host, and AI Fill (`crop`).
 
 ## Committed feature state
 

@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,6 +12,9 @@ def write_local_result(source, suffix, data, expected_directory=None, extension=
     source = Path(source)
     if extension not in (".png", ".tiff"):
         raise ValueError("result extension must be .png or .tiff")
+    if sys.platform == "win32":
+        from .local_output_windows import write_local_result as write_windows
+        return write_windows(source, suffix, data, expected_directory, extension)
     directory = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         opened = os.fstat(directory)
@@ -44,6 +48,11 @@ def write_local_result(source, suffix, data, expected_directory=None, extension=
 def batch_output(source_folder):
     """Pin exclusive batch outputs and atomically maintain one owned preset/manifest."""
     source_folder = Path(source_folder)
+    if sys.platform == "win32":
+        from .local_output_windows import batch_output as batch_windows
+        with batch_windows(source_folder) as result:
+            yield result
+        return
     parent = os.open(source_folder, os.O_RDONLY | os.O_DIRECTORY)
     output = None
     try:

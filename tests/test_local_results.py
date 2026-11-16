@@ -21,9 +21,13 @@ from PIL import Image
 
 from shp_photocraft_tools.modules.dnb import ui_server as S
 from shp_photocraft_tools.modules.crop import server as C
-from shp_photocraft_tools import supervisor
+try:
+    from shp_photocraft_tools import supervisor
+except ImportError:  # supervisor is Linux-only (fcntl)
+    supervisor = None
 from shp_photocraft_tools.shared import local_output
 import test_dnb as T
+from winlinks import directory_alias, file_symlink
 
 
 class LocalResultTests(unittest.TestCase):
@@ -150,7 +154,7 @@ class LocalResultTests(unittest.TestCase):
     def test_collision_symlink_concurrency_and_failed_write_cleanup(self):
         victim = self.root / "keep.png"
         victim.write_bytes(b"untouched")
-        (self.root / "synthetic_shpdnb_001.png").symlink_to(victim)
+        file_symlink(self.root / "synthetic_shpdnb_001.png", victim)
         (self.root / "synthetic_shpdnb_002.png").write_bytes(b"also untouched")
         with ThreadPoolExecutor(max_workers=6) as pool:
             outputs = list(pool.map(lambda i: S.write_local_result(self.image, "shpdnb", str(i).encode()),
@@ -158,7 +162,7 @@ class LocalResultTests(unittest.TestCase):
         self.assertEqual(len(set(outputs)), 6)
         self.assertEqual(victim.read_bytes(), b"untouched")
         self.assertEqual((self.root / "synthetic_shpdnb_002.png").read_bytes(), b"also untouched")
-        (self.root / "synthetic_shpdnb_001.tiff").symlink_to(victim)
+        file_symlink(self.root / "synthetic_shpdnb_001.tiff", victim)
         output = Path(S.write_local_result(self.image, "shpdnb", b"tiff", extension=".tiff"))
         self.assertEqual(output.name, "synthetic_shpdnb_002.tiff")
         self.assertEqual(victim.read_bytes(), b"untouched")
@@ -176,7 +180,7 @@ class LocalResultTests(unittest.TestCase):
         other = self.root / "other"
         other.mkdir()
         alias = self.root / "alias"
-        alias.symlink_to(other, target_is_directory=True)
+        directory_alias(alias, other)
         original_directory = self.root.stat()
         with self.assertRaisesRegex(ValueError, "source folder changed"):
             S.write_local_result(alias / self.image.name, "shpfs", b"data",
@@ -230,7 +234,7 @@ class CropLocalResultTests(unittest.TestCase):
                 state["job"].result = results[0]
                 C.api_select({"index": 1})
                 first = root / "portrait_shpcrop_001.png"
-                first.symlink_to(source)
+                file_symlink(first, source)
                 with patch.object(C, "api_pc_status") as pc:
                     saved = C.api_send_result({"seq": loaded["seq"], "path": "/ignored.png"})
                     pc.assert_not_called()
@@ -273,6 +277,7 @@ class CropLocalResultTests(unittest.TestCase):
                 self.assertEqual(state, before)
 
 
+@unittest.skipIf(supervisor is None, "supervisor is Linux-only")
 class NativeChooserTests(unittest.TestCase):
     def test_owned_proxy_sets_child_origin_for_guarded_result_route(self):
         manager = SimpleNamespace(comfy=None, modules={"dnb": SimpleNamespace(phase="running")},
