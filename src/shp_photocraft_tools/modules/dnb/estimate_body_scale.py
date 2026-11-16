@@ -41,7 +41,7 @@ _body = None
 def body():
     global _body
     if _body is None:
-        _body = Wholebody(mode="balanced", backend="onnxruntime", device="cuda")
+        _body = Wholebody(mode="balanced", backend="onnxruntime", device=dnb_gpu.device())
     return _body
 
 

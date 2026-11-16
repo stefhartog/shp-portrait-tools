@@ -41,6 +41,8 @@ def prerequisites(config):
     if config["backend"] == OPENCV:
         from . import opencv_zoo_pose
         return opencv_zoo_pose.prerequisites(config["model"])
+    if os.name == "nt":
+        raise ValueError("Experimental Google pose is Linux-only (bubblewrap sandbox); use the rtmlib backend on Windows")
     if not shutil.which("bwrap"):
         raise ValueError("Experimental Google pose requires bubblewrap and unprivileged user/network namespaces")
     python = Path(config["python"]).expanduser()
