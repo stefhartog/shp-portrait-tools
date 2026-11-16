@@ -3,7 +3,9 @@
 import os
 from pathlib import Path
 
-DATA = Path(os.environ.get("DNB_DATA", Path.home() / ".local" / "share" / "shp-photocraft-tools" / "dnb")).expanduser()
+from shp_photocraft_tools.shared.platform_paths import module_data
+
+DATA = module_data("DNB_DATA", "dnb")
 MODELS = Path(os.environ.get("DNB_MODELS", DATA / "models")).expanduser()
 
 
