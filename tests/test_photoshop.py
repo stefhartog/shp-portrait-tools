@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from shp_photocraft_tools.shared.photoshop import (
 )
 from shp_photocraft_tools.shared.photocraft import ControlError
 from shp_photocraft_tools.modules.dnb.photoshop_bridge import Bridge
-from shp_photocraft_tools.modules.dnb import frequency_separation as FS, skintone as ST
+from shp_photocraft_tools.modules.dnb import frequency_separation as FS, skintone as ST, photoshop_lut
 
 ICC = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 PROFILE = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(ICC))).strip()
@@ -51,6 +52,16 @@ def paired(**kwargs):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_connector_capabilities_are_optional_and_reset_on_new_session(self):
+        broker, _ = paired()
+        self.assertEqual(broker.capabilities, frozenset())
+        broker.hello("test-session", PROTOCOL, ["hue-lut-device-link-v1"])
+        self.assertIn("hue-lut-device-link-v1", broker.capabilities)
+        with self.assertRaisesRegex(ValueError, "capabilities"):
+            broker.hello("test-session", PROTOCOL, ["invalid capability"])
+        broker.hello("next-session", PROTOCOL)
+        self.assertEqual(broker.capabilities, frozenset())
+
     def test_pairing_expires_is_rate_limited_and_revoke_invalidates(self):
         clock = [0]
         broker, token = paired(clock=lambda: clock[0])
@@ -142,8 +153,8 @@ class BrokerTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            def get(**headers):
-                connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+            def get(connect_host="127.0.0.1", **headers):
+                connection = http.client.HTTPConnection(connect_host, server.server_port, timeout=2)
                 try:
                     connection.request("GET", "/api/photoshop/poll", headers=headers)
                     response = connection.getresponse()
@@ -156,6 +167,12 @@ class BrokerTests(unittest.TestCase):
             self.assertEqual(get()[0], 401)
             self.assertEqual(get(**headers, Origin="http://evil.example")[0], 403)
             self.assertEqual(get(**headers, Host="evil.example")[0], 403)
+            self.assertEqual(get(**headers, Host=f"localhost:{server.server_port + 1}")[0], 403)
+            self.assertEqual(get(**headers, Host=f"localhost.evil.example:{server.server_port}")[0], 403)
+            self.assertEqual(get(**headers, Host=f"localhost:{server.server_port}",
+                                 Origin="http://localhost:18765")[0], 403)
+            self.assertEqual(get(**headers, Host=f"localhost:{server.server_port}"), (200, b"null"))
+            self.assertEqual(get("localhost", **headers), (200, b"null"))
             self.assertEqual(get(Authorization="Bearer " + token)[0], 400)
             self.assertEqual(get(**headers), (200, b"null"))
         finally:
@@ -180,6 +197,7 @@ class BrokerTests(unittest.TestCase):
 
 class RecordingBroker:
     session = "test-session"
+    capabilities = frozenset()
 
     def __init__(self):
         self.captured = None
@@ -197,6 +215,47 @@ class RecordingBroker:
                 job.blob("icc").write_bytes(icc)
                 return finish(job, {"doc": doc})
             return {"document": "Disposable", "sent": True}
+
+
+class DeviceLinkTests(unittest.TestCase):
+    def test_numeric_identity_and_hue_link_have_correct_axes(self):
+        axis = np.linspace(0, 1, ST.LUT_SIZE, dtype=np.float32)
+        b, g, r = np.meshgrid(axis, axis, axis, indexing="ij")
+        identity = np.stack((r, g, b), axis=-1)
+        hue, = ST.tables(ST.settings({"hue_amount": 100}))
+        for table in (identity, hue):
+            raw = photoshop_lut.device_link(table)
+            self.assertEqual(struct.unpack_from(">I", raw)[0], len(raw))
+            self.assertEqual(raw[12:24], b"linkRGB RGB ")
+            count, = struct.unpack_from(">I", raw, 128)
+            tags = {struct.unpack_from(">4sII", raw, 132 + i * 12)[0]:
+                    struct.unpack_from(">4sII", raw, 132 + i * 12)[1:] for i in range(count)}
+            offset, length = tags[b"A2B0"]
+            self.assertEqual(raw[offset:offset + 4], b"mft2")
+            self.assertGreater(length, 200000)
+            grid = np.frombuffer(raw, dtype=">u2", count=33 ** 3 * 3, offset=offset + 64).reshape(33, 33, 33, 3)
+            for red, green, blue in ((0, 0, 0), (32, 0, 0), (0, 32, 0), (0, 0, 32), (3, 17, 26), (32, 32, 32)):
+                expected = np.rint(table[blue, green, red] * 65535).astype(np.uint16)
+                np.testing.assert_array_equal(grid[red, green, blue], expected)
+            # LittleCMS parsing and execution are independent of the Photoshop host.
+            link = ImageCms.ImageCmsProfile(io.BytesIO(raw))
+            identity_link = ImageCms.ImageCmsProfile(io.BytesIO(photoshop_lut.device_link(identity)))
+            transform = ImageCms.buildTransform(link, identity_link, "RGB", "RGB")
+            sample = Image.fromarray(np.array([[[0, 0, 0], [255, 0, 0], [80, 120, 200], [255, 255, 255]]], np.uint8))
+            actual = np.asarray(ImageCms.applyTransform(sample, transform))
+            if table is identity:
+                np.testing.assert_array_equal(actual, np.asarray(sample))
+            else:
+                self.assertEqual(actual.shape, (1, 4, 3))
+
+    def test_invalid_lookup_values_rejected(self):
+        invalid = np.zeros((ST.LUT_SIZE,) * 3 + (3,), np.float32)
+        for value in (float("nan"), -0.01, 1.01):
+            invalid[0, 0, 0, 0] = value
+            with self.assertRaisesRegex(ValueError, "finite RGB"):
+                photoshop_lut.device_link(invalid)
+        with self.assertRaises(ValueError):
+            photoshop_lut.device_link(np.zeros((2, 2, 2, 3)))
 
 
 class AdapterTests(unittest.TestCase):
@@ -254,7 +313,7 @@ class AdapterTests(unittest.TestCase):
                 {name: self.pixels for name in ("color", "blur", "detail")}, ST.settings({}),
                 self.mask, self.doc, ICC, mask_placement=placement, blur_strength=43,
                 directional=(self.pixels, self.mask, 37),
-                bands=[(1, self.pixels), (2, self.pixels)], band_mask8=self.mask, band_mix=65)
+                bands=[(1, self.pixels), (2, self.pixels)], band_mask8=self.mask, band_mix=65, hue_output="rendered")
             params, blobs = self.broker.captured
             group = params["layers"][0]
             self.assertEqual([node["name"] for node in group["children"]],
@@ -273,13 +332,49 @@ class AdapterTests(unittest.TestCase):
     def test_rendered_hue_matches_shared_lut_math_at_captured_stack_values(self):
         settings = ST.settings({})
         layers = {"color": self.pixels, "detail": np.full_like(self.pixels, 32768)}
-        self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False, mask_placement="layers")
+        self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False,
+                                  mask_placement="layers", hue_output="rendered")
         params, blobs = self.broker.captured
         hue = params["layers"][0]["children"][1]
         actual = np.frombuffer(blobs[hue["pixels"]], "<u2").reshape(3, 8, 3)[..., ::-1]
         table, = ST.tables(dict(settings, hue_amount=100))
         expected = FS.rgb16(ST.sample(self.pixels[..., ::-1].astype(np.float32) / 65535, table)[..., ::-1])
         np.testing.assert_array_equal(actual, expected)
+
+    def test_native_hue_requires_capability_and_preserves_layer_placement(self):
+        settings = ST.settings({"skintone": {"hue_amount": 47}})
+        layers = {"color": self.pixels, "detail": np.full_like(self.pixels, 32768)}
+        with self.assertRaisesRegex(ControlError, "updated Photoshop connector"):
+            self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False)
+        self.broker.capabilities = frozenset(["hue-lut-device-link-v1"])
+        self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False)
+        default_hue = self.broker.captured[0]["layers"][0]["children"][1]
+        self.assertIn("lookup", default_hue)
+        for placement in ("folder", "layers"):
+            with patch.object(ST, "sample", side_effect=AssertionError("rendered unexpectedly")):
+                self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False,
+                                          mask_placement=placement, hue_output="native")
+            params, blobs = self.broker.captured
+            group = params["layers"][0]
+            self.assertEqual([node["name"] for node in group["children"]], ["Detail", "Hue", "Color"])
+            hue = group["children"][1]
+            self.assertEqual((hue["blend"], hue["opacity"]), ("Normal", 47))
+            self.assertNotIn("pixels", hue)
+            self.assertEqual("mask" in group, placement == "folder")
+            self.assertEqual("mask" in hue, placement == "layers")
+            self.assertEqual(params["blobs"][hue["lookup"]]["kind"], "icc-lut")
+            self.assertEqual(blobs[hue["lookup"]], photoshop_lut.device_link(ST.tables(dict(settings, hue_amount=100))[0]))
+
+    def test_hue_output_is_only_forwarded_to_photoshop(self):
+        from shp_photocraft_tools.modules.dnb import ui_server as U
+        self.assertEqual(U.parse_params({"mode": "frequency", "S": 181})["photoshop_hue"], "native")
+        self.assertEqual(U.parse_params({"mode": "frequency", "S": 181, "photoshop_hue": "rendered"})["photoshop_hue"], "rendered")
+        with self.assertRaisesRegex(ValueError, "Hue output"):
+            U.parse_params({"mode": "frequency", "S": 181, "photoshop_hue": "unexpected"})
+        with patch.dict(U.EDITOR, {"selected": "photocraft"}):
+            self.assertEqual(U.photoshop_hue_options({"photoshop_hue": "native"}), {})
+        with patch.dict(U.EDITOR, {"selected": "photoshop"}):
+            self.assertEqual(U.photoshop_hue_options({"photoshop_hue": "native"}), {"hue_output": "native"})
 
     def test_bands_group_and_bad_metadata_fail_before_transfer(self):
         self.bridge.send_skin_bands([(1, self.pixels)], self.mask, self.doc, source_icc=ICC)
@@ -295,7 +390,10 @@ class AdapterTests(unittest.TestCase):
         from shp_photocraft_tools.modules.dnb import ui_server as U
         old = object()
         broker, _ = paired()
-        with patch.dict(U.BRIDGE, {"b": old, "doc": {"index": 3}}), patch.dict(
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp, \
+                patch.object(U, "GLOBAL_SETTINGS", Path(temp) / "settings.json"), \
+                patch.object(U, "PRESETS", Path(temp) / "presets.json"), \
+                patch.dict(U.BRIDGE, {"b": old, "doc": {"index": 3}}), patch.dict(
                 U.EDITOR, {"selected": "photocraft", "photoshop": None, "broker": broker}):
             self.assertIs(U.bridge(), old)
             U.api_editor({"editor": "photoshop"})
@@ -354,7 +452,7 @@ class AdapterTests(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     thread.join()
-            U.api_editor({"editor": "photoshop"})
+            U.api_editor({})
             with patch.dict(U.STATE, {"source_kind": "photoshop", "icc": b"converted", "source_icc": ICC}):
                 with self.assertRaisesRegex(ValueError, "native sRGB"):
                     U.validate_editor_source({"mode": "dnb"})

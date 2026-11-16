@@ -81,6 +81,14 @@ def read_config(path):
     exiftool = config.get("exiftool")
     if exiftool is not None and (not isinstance(exiftool, str) or not Path(exiftool).is_file()):
         raise LaunchError(f"Configured ExifTool does not exist: {exiftool}")
+    pc = config.get("photocraft")
+    pc_paths = {"token_file", "exchange", "read_root", "executable", "editor_config"}
+    if pc is not None and (
+        not isinstance(pc, dict) or set(pc) != pc_paths | {"port"}
+        or type(pc["port"]) is not int or not 1024 <= pc["port"] <= 65535
+        or any(not isinstance(pc[key], str) or not Path(pc[key]).is_absolute() for key in pc_paths)
+    ):
+        raise LaunchError(f"Invalid saved PhotoCraft connection settings in {path}")
     return config
 
 

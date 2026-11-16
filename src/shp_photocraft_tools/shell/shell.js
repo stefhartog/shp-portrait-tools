@@ -88,7 +88,7 @@
     const source = frame.contentDocument.getElementById('generalSettingsContent');
     if (!source) return report('General settings are unavailable in this skin-tools view. Refresh Tools when work is saved.', true);
     // Restore native availability setters before controls leave the iframe's panel gating.
-    source.querySelectorAll('input,select').forEach(control => { delete control.disabled; });
+    source.querySelectorAll('button,input,select,textarea').forEach(control => { delete control.disabled; });
     $('generalSettingsHost').replaceChildren(...source.children);
     $('generalSettingsHost').hidden = false;
     frame.contentDocument.getElementById('generalSettings').hidden = true;

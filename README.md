@@ -73,9 +73,9 @@ and compare generated or retouched results, then save locally or send editable l
 back to PhotoCraft. PhotoCraft is optional; the main tools can work with local files.
 
 An experimental **Windows Photoshop 28.0 UXP connector** is available for Skin Tools.
-It adds local pairing and editable pixel-layer stacks without replacing PhotoCraft.
-It is a source preview, not a verified end-user installer: live Photoshop fidelity,
-group masks and CCX installation still need user-assisted validation. See
+It adds local pairing, editable layer stacks and native Hue Color Lookup without
+replacing PhotoCraft. Capture, layer sending and native Hue were user-confirmed;
+full Photoshop fidelity and group masks still need validation. See
 [Photoshop setup and limitations](docs/photoshop.md) before loading it.
 
 ## Dependencies

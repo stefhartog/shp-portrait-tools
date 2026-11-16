@@ -53,6 +53,17 @@ class LauncherTests(unittest.TestCase):
         self.config.write_text(json.dumps(dict(models=str(self.models), ports=self.ports,
                                               shell_port=self.shell_port, **overrides)))
 
+    def test_saved_photocraft_configuration_is_validated(self):
+        pc = dict(port=7878, token_file=str(self.root / "control.token"),
+                  exchange=str(self.root / "exchange"), read_root=str(self.root / "exchange"),
+                  executable=str(self.root / "photocraft.exe"), editor_config=str(self.root / "editor"))
+        self.write_config(photocraft=pc)
+        self.assertEqual(L.read_config(self.config)["photocraft"], pc)
+        for invalid in (dict(pc, port="7878"), dict(pc, token_file="relative"), {"port": 7878}):
+            self.write_config(photocraft=invalid)
+            with self.assertRaisesRegex(L.LaunchError, "Invalid saved PhotoCraft"):
+                L.read_config(self.config)
+
     def stop_servers(self):
         for pid in self.pids:
             try:

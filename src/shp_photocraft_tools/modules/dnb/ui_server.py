@@ -60,7 +60,7 @@ ROOT = DATA
 HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
 GLOBAL_SETTINGS = global_config_dir() / "settings.json"
-GLOBAL_SETTINGS_LOCK = threading.Lock()
+GLOBAL_SETTINGS_LOCK = threading.RLock()
 WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
@@ -179,8 +179,12 @@ def parse_params(p):
         if not math.isfinite(value) or not 0<=value<=100:
             raise ValueError(f"Combine {key} must be 0-100")
         mixes[key]=value
+    photoshop_hue = p.get("photoshop_hue", "native")
+    if photoshop_hue not in ("rendered", "native"):
+        raise ValueError("Photoshop Hue output must be rendered or native")
     return dict(
         combine=mixes,
+        photoshop_hue=photoshop_hue,
         band1_on=p.get("band1_on", True), second_band=D.second_band_settings(p.get("second_band")) if mode in ("dnb", "combine") else D.second_band_settings(),
         mode=mode, layer_blur_at_s181=layer_blur, frequency=FS.settings(p) if mode in ("frequency", "combine") else None,
         skintone=ST.settings(p) if mode in ("frequency", "combine") else None,
@@ -1324,12 +1328,33 @@ def api_editor(req):
     selected = req.get("editor", EDITOR["selected"])
     if selected not in ("photocraft", "photoshop"):
         raise ValueError("editor must be photocraft or photoshop")
+    if selected != EDITOR["selected"] and selected == "photoshop":
+        photoshop_broker()
+    if "editor" in req:
+        with GLOBAL_SETTINGS_LOCK:
+            settings = read_global_settings()
+            settings["source_editor"] = selected
+            write_global_settings(settings)
     if selected != EDITOR["selected"]:
-        if selected == "photoshop":
-            photoshop_broker()
         EDITOR["selected"] = selected
         BRIDGE["doc"] = None
-    return {"editor": selected}
+    return {"editor": selected, "photoshop_hue_native": True}
+
+
+def restore_editor_selection():
+    """Restore only the editor choice, without migrating settings or reconnecting an editor."""
+    with GLOBAL_SETTINGS_LOCK:
+        try:
+            settings = json.loads(GLOBAL_SETTINGS.read_text())
+        except FileNotFoundError:
+            settings = {}
+        if not isinstance(settings, dict):
+            raise ValueError("global settings must be an object")
+        selected = settings.get("source_editor", "photocraft")
+        if selected not in ("photocraft", "photoshop"):
+            raise ValueError("source editor must be photocraft or photoshop")
+    EDITOR["selected"] = selected
+    BRIDGE["doc"] = None
 
 
 def api_photoshop_pair(req):
@@ -1501,7 +1526,12 @@ def send_combined_layers(p):
     return bridge().send_skintone(rgb,settings,u8(mask),BRIDGE["doc"],STATE["source_icc"],
         transfer=p["frequency_transfer"],include_blur=p["frequency"]["on"], mask_placement=read_global_settings()["mask_placement"],
         blur_strength=p["frequency"]["blur_strength"],blur_masked=p["frequency"]["blur_mask"],
-        directional=directional,bands=payload,band_mask8=u8(mask) if payload else None,band_mix=p["combine"]["dnb_mix"])
+        directional=directional,bands=payload,band_mask8=u8(mask) if payload else None,band_mix=p["combine"]["dnb_mix"],
+        **photoshop_hue_options(p))
+
+
+def photoshop_hue_options(p):
+    return {"hue_output": p["photoshop_hue"]} if EDITOR["selected"] == "photoshop" else {}
 
 
 def send_skintone_parallel(p):
@@ -1523,7 +1553,7 @@ def send_skintone_parallel(p):
         return bridge().send_skintone(layers, p["skintone"], u8(mask), BRIDGE["doc"], STATE["source_icc"],
                                       transfer=p["frequency_transfer"], include_blur=f["on"], mask_placement=read_global_settings()["mask_placement"],
                                       blur_strength=f["blur_strength"], blur_masked=f["blur_mask"],
-                                      directional=(directional, directional_mask, strength))
+                                      directional=(directional, directional_mask, strength), **photoshop_hue_options(p))
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="skin-fs") as pool:
         mask_job = pool.submit(copy_context().run, progress.call, "Preparing shared mask", full_skin_mask, p)
         try:
@@ -1534,7 +1564,7 @@ def send_skintone_parallel(p):
                           for key, value in layers.items()}
                 return bridge().send_skintone(pixels, p["skintone"], u8(mask), BRIDGE["doc"],
                                               STATE["source_icc"], transfer=p["frequency_transfer"], include_blur=False,
-                                              mask_placement=read_global_settings()["mask_placement"])
+                                              mask_placement=read_global_settings()["mask_placement"], **photoshop_hue_options(p))
 
             def prepare_blur(color, skin):
                 blur = progress.call("Computing skin-aware Blur", FS.skin_filter,
@@ -1552,7 +1582,8 @@ def send_skintone_parallel(p):
                 return bridge().send_skintone(layers, p["skintone"], mask8, BRIDGE["doc"],
                                               STATE["source_icc"], blur_future=blur_job,
                                               transfer=p["frequency_transfer"], blur_strength=f["blur_strength"],
-                                              blur_masked=f["blur_mask"], mask_placement=read_global_settings()["mask_placement"])
+                                              blur_masked=f["blur_mask"], mask_placement=read_global_settings()["mask_placement"],
+                                              **photoshop_hue_options(p))
             finally:
                 blur_job.cancel()
         finally:
@@ -1642,6 +1673,8 @@ def read_global_settings():
             migrate = True
         if settings["mask_placement"] not in ("folder", "layers"):
             raise ValueError("mask placement must be folder or layers")
+        if settings.get("source_editor", "photocraft") not in ("photocraft", "photoshop"):
+            raise ValueError("source editor must be photocraft or photoshop")
         if migrate:
             write_global_settings(settings)
         return settings
@@ -1678,14 +1711,16 @@ def write_global_settings(settings):
 
 def api_global_settings(req):
     transfer = global_transfer_settings(req["layer_transfer"])
-    settings = read_global_settings()
-    pose_config = POSE.settings(req.get("pose", settings.get("pose")))
-    if "pose" in req and pose_config["backend"] in POSE.SCORED_BACKENDS:
-        POSE.prerequisites(pose_config)
-    placement = req.get("mask_placement", settings["mask_placement"])
-    if placement not in ("folder", "layers"):
-        raise ValueError("mask placement must be folder or layers")
+    if "pose" in req:
+        pose_config = POSE.settings(req["pose"])
+        if pose_config["backend"] in POSE.SCORED_BACKENDS:
+            POSE.prerequisites(pose_config)
     with GLOBAL_SETTINGS_LOCK:
+        settings = read_global_settings()
+        pose_config = POSE.settings(req.get("pose", settings.get("pose")))
+        placement = req.get("mask_placement", settings["mask_placement"])
+        if placement not in ("folder", "layers"):
+            raise ValueError("mask placement must be folder or layers")
         settings["layer_transfer"] = transfer
         settings["mask_placement"] = placement
         settings["pose"] = pose_config
@@ -1892,6 +1927,7 @@ def main():
     ap.add_argument("--dir", nargs="+", default=[])
     a = ap.parse_args()
     DIRS.extend(a.dir)
+    restore_editor_selection()
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
     srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")

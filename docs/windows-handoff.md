@@ -24,6 +24,19 @@ by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_phot
 `desktop/shp-photocraft-tools.svg` into `shp-photocraft-tools.ico` next to `launcher.json`. Run
 `--init-config` first.
 
+The normal shortcut/supervisor starts the same Skin Tools service that includes the Photoshop
+connector backend; no alternate startup command or new shortcut arguments are needed. Choose
+**Settings & Info > Source editor** in Skin Tools. That choice is stored as `source_editor` in the
+existing `%APPDATA%\shp-photocraft-tools\settings.json`, preserving other settings and the PhotoCraft
+transport. Older settings default to PhotoCraft. Restarts restore the choice, not a fetched document
+or connection; Photoshop must reconnect before Get Image, and disconnected Photoshop never silently
+falls back to PhotoCraft. The shortcut must target a durable installation containing the changes;
+quit Tools from its tray when work is finished, close other Tools browser windows, and open the
+updated shortcut to load the new service. An old controller's Restart or Reload UI does not
+switch to the new shortcut target.
+The session setup guide records this machine's user-local release, shortcut backups, and guarded
+rollback; no existing launcher configuration, pairing credentials or running process was changed.
+
 Verified (real runs, disposable data dir, real models read-only): launching
 `pythonw.exe -m shp_photocraft_tools.launcher --config ...` as the shortcut does leaves only
 `pythonw.exe` processes (no conhost/OpenConsole/cmd/python.exe, no console-class window), shows the
@@ -304,6 +317,14 @@ impersonate PhotoCraft. Keep the token and exchange private. Windows defaults us
 `SHP_PC_*` and module-specific `DNB_PC_*` overrides still apply. The Windows Launch
 endpoint requires an existing token file; PhotoCraft itself does not enforce a private
 Windows ACL. Do not use the Linux Flatpak verification settings on Windows.
+
+When a `photocraft` connection is saved in `launcher.json` by Windows setup, the
+normal Tools launcher passes its port, token-file path, exchange and read root to
+both modules. Existing explicit `SHP_PC_*` and module-specific overrides take
+precedence. Get Image fetches from the controlled PhotoCraft window when connected;
+when PhotoCraft is unavailable it offers the desktop's local-file picker instead.
+After updating launcher code, exit Tools completely and reopen it to replace the
+running supervisor and modules; a window refresh alone does not update their settings.
 
 For a first isolated setup, run the following in PowerShell from this checkout. It
 creates a **new** private directory, refusing to alter an existing directory or token.

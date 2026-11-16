@@ -5,20 +5,67 @@ import json
 import os
 import threading
 import time
+import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from pathlib import Path
 
 from shell_preview import fixture
 from shp_photocraft_tools.launcher import LaunchError
 from shp_photocraft_tools.shared.lifecycle import BrowserLifetime
 from shp_photocraft_tools.shared.supervision import ControlError, OwnerControl
-from shp_photocraft_tools.supervisor import external_status
+from shp_photocraft_tools.supervisor import Modules, external_status
+from shp_photocraft_tools.shared.photocraft.bridge import detect_config
 
 
 class GateTests(unittest.TestCase):
+    def test_saved_photocraft_config_reaches_both_children_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pc = {"port": 17878, "token_file": str(root / "private" / "control.token"),
+                  "exchange": str(root / "private" / "exchange"), "read_root": str(root / "private" / "exchange"),
+                  "executable": str(root / "photocraft.exe"), "editor_config": str(root / "private" / "editor")}
+            config = {"photocraft": pc, "models": str(root), "ports": {"crop": 18001, "dnb": 18002}}
+            clean_env = {key: value for key, value in os.environ.items()
+                         if not key.startswith(("SHP_PC_", "DNB_PC_", "SHPC_PC_", "PHOTOCRAFT_"))}
+            children = []
+            def spawn(*args, **kwargs):
+                children.append(kwargs["env"])
+                return Mock(pid=1234, poll=Mock(return_value=None))
+            with patch.dict(os.environ, clean_env, clear=True), \
+                 patch("shp_photocraft_tools.supervisor.probe", return_value=None), \
+                 patch("shp_photocraft_tools.supervisor.process_identity", return_value=(1234, 1)), \
+                 patch("shp_photocraft_tools.supervisor.adopt", return_value=(1234, 1)), \
+                 patch("shp_photocraft_tools.supervisor.subprocess.Popen", side_effect=spawn), \
+                 patch.object(Modules, "checked"), \
+                 patch("shp_photocraft_tools.supervisor.socket.create_connection") as connect:
+                modules = Modules(config, root / "data", root / "logs", "test")
+                modules.start("crop")
+                modules.start("dnb")
+                for child, prefix, module in zip(children, ("SHPC", "DNB"), ("crop", "dnb")):
+                    actual = detect_config(prefix, module, child)
+                    self.assertEqual(actual["port"], pc["port"])
+                    for key in ("token_file", "exchange", "read_root"):
+                        self.assertEqual(actual[key], Path(pc[key]))
+                    self.assertEqual(child["PHOTOCRAFT_BIN"], pc["executable"])
+                    self.assertEqual(child["PHOTOCRAFT_CONFIG_DIR"], pc["editor_config"])
+                status = external_status(environ=children[0])
+                self.assertEqual(status["photocraft_dnb"]["address"], "127.0.0.1:17878")
+                self.assertEqual(status["photocraft_crop"]["address"], "127.0.0.1:17878")
+                self.assertEqual(connect.call_count, 2)
+
+    def test_explicit_photocraft_environment_overrides_saved_config(self):
+        from shp_photocraft_tools.supervisor import photocraft_environment
+        pc = dict(port=7878, token_file="/saved/token", exchange="/saved/exchange",
+                  read_root="/saved/exchange", executable="/saved/photocraft", editor_config="/saved/editor")
+        env = photocraft_environment({"photocraft": pc}, {"SHP_PC_PORT": "9000", "DNB_PC_PORT": "9001"})
+        self.assertEqual(detect_config("SHPC", "crop", env)["port"], 9000)
+        self.assertEqual(detect_config("DNB", "dnb", env)["port"], 9001)
+        self.assertEqual(env["SHP_PC_TOKEN_FILE"], pc["token_file"])
+
     def test_shared_photocraft_endpoint_is_probed_once(self):
         with patch.dict(os.environ, {"SHPC_PC_PORT": "7878", "DNB_PC_PORT": "7878",
                                     "SHPC_COMFY": "http://127.0.0.1:8188"}):

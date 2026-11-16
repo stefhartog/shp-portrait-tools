@@ -28,12 +28,18 @@ const SkinProtocol = (() => {
         let total = 0, count = 0;
         for (const name of names) {
             const item = bundle.blobs[name];
-            check(identifier.test(name) && item && [1, 3].includes(item.components) &&
-                item.depth === (item.components === 1 ? 8 : doc.depth) &&
-                item.width === doc.width && item.height === doc.height &&
-                item.bytes === doc.width * doc.height * item.components * item.depth / 8,
-            "Invalid pixel/mask metadata.");
-            rows(item.width, item.components, item.depth);
+            check(identifier.test(name) && item, "Invalid binary object.");
+            if (item.kind === "icc-lut") {
+                check(Number.isInteger(item.bytes) && item.bytes >= 128 && item.bytes <= CHUNK,
+                    "Invalid Hue lookup metadata.");
+            } else {
+                check(item.kind === undefined && [1, 3].includes(item.components) &&
+                    item.depth === (item.components === 1 ? 8 : doc.depth) &&
+                    item.width === doc.width && item.height === doc.height &&
+                    item.bytes === doc.width * doc.height * item.components * item.depth / 8,
+                "Invalid pixel/mask metadata.");
+                rows(item.width, item.components, item.depth);
+            }
             total += item.bytes;
         }
         check(total <= 2 * 1024 ** 3, "Layer bundle exceeds 2 GiB limit.");
@@ -46,12 +52,17 @@ const SkinProtocol = (() => {
                 "Invalid layer metadata.");
                 function reference(name, components) {
                     check(typeof name === "string" && Object.prototype.hasOwnProperty.call(bundle.blobs, name) &&
-                        bundle.blobs[name].components === components, "Missing or incorrect binary object.");
+                        (components === "icc-lut" ? bundle.blobs[name].kind === components :
+                            bundle.blobs[name].kind === undefined && bundle.blobs[name].components === components),
+                    "Missing or incorrect binary object.");
                     used.add(name);
                 }
                 if (Object.prototype.hasOwnProperty.call(node, "children")) {
-                    check(!node.pixels, "A group cannot have pixel data.");
+                    check(!node.pixels && !node.lookup, "A group cannot have pixel or lookup data.");
                     visit(node.children, level + 1);
+                } else if (Object.prototype.hasOwnProperty.call(node, "lookup")) {
+                    check(!node.pixels && node.blend === "Normal", "Invalid Hue lookup layer.");
+                    reference(node.lookup, "icc-lut");
                 } else {
                     check(node.blend !== "Pass Through", "Pass Through is only valid on groups.");
                     reference(node.pixels, 3);
@@ -62,6 +73,44 @@ const SkinProtocol = (() => {
         visit(bundle.layers, 0);
         check(used.size === names.length, "Unreferenced binary objects.");
         return bundle;
+    }
+    function validateLookup(buffer) {
+        check(buffer instanceof ArrayBuffer && buffer.byteLength >= 128 && buffer.byteLength <= CHUNK,
+            "Invalid Hue device-link profile.");
+        const view = new DataView(buffer);
+        const ascii = (offset, text) => [...text].every((ch, index) => view.getUint8(offset + index) === ch.charCodeAt(0));
+        check(view.getUint32(0) === buffer.byteLength && ascii(12, "link") && ascii(16, "RGB ") &&
+            ascii(20, "RGB ") && ascii(36, "acsp") && buffer.byteLength >= 132, "Invalid Hue device-link header.");
+        const count = view.getUint32(128);
+        check(count <= 64 && 132 + count * 12 <= buffer.byteLength, "Invalid Hue device-link tag table.");
+        let found = false;
+        for (let i = 0; i < count; ++i) {
+            const pos = 132 + i * 12, offset = view.getUint32(pos + 4), length = view.getUint32(pos + 8);
+            check(offset >= 132 + count * 12 && offset <= buffer.byteLength &&
+                length <= buffer.byteLength - offset, "Invalid Hue device-link tag bounds.");
+            if (ascii(pos, "A2B0")) {
+                check(!found && length === 52 + 12 + 33 ** 3 * 3 * 2 + 12 && ascii(offset, "mft2") &&
+                    view.getUint8(offset + 8) === 3 && view.getUint8(offset + 9) === 3 &&
+                    view.getUint8(offset + 10) === 33 && view.getUint16(offset + 48) === 2 &&
+                    view.getUint16(offset + 50) === 2, "Invalid Hue device-link transform.");
+                found = true;
+            }
+        }
+        check(found, "Hue device-link transform is missing.");
+        return buffer;
+    }
+    function sameLookupTransform(first, second) {
+        function transform(buffer) {
+            validateLookup(buffer);
+            const view = new DataView(buffer);
+            for (let i = 0; i < view.getUint32(128); ++i) {
+                const pos = 132 + i * 12;
+                if (view.getUint32(pos) === 0x41324230)
+                    return new Uint8Array(buffer, view.getUint32(pos + 4), view.getUint32(pos + 8));
+            }
+        }
+        const a = transform(first), b = transform(second);
+        return a.length === b.length && a.every((value, index) => value === b[index]);
     }
     function padTile(image, data, bounds, width, top, height, depth) {
         check(image.componentSize === depth && image.colorSpace === "RGB" &&
@@ -84,6 +133,6 @@ const SkinProtocol = (() => {
         }
         return output;
     }
-    return {VERSION, CHUNK, MAX_PIXELS, check, rows, dimensions, validateBundle, padTile, identifier};
+    return {VERSION, CHUNK, MAX_PIXELS, check, rows, dimensions, validateBundle, validateLookup, sameLookupTransform, padTile, identifier};
 })();
 if (typeof module !== "undefined") module.exports = SkinProtocol;

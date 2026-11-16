@@ -32,6 +32,17 @@ from .comfy import ManagedComfy
 SHELL_PROTOCOL = 1
 
 
+def photocraft_environment(config, environ):
+    env = dict(environ)
+    pc = config.get("photocraft")
+    if pc is not None:
+        for key, name in (("port", "SHP_PC_PORT"), ("token_file", "SHP_PC_TOKEN_FILE"),
+                          ("exchange", "SHP_PC_EXCHANGE"), ("read_root", "SHP_PC_READ_ROOT"),
+                          ("executable", "PHOTOCRAFT_BIN"), ("editor_config", "PHOTOCRAFT_CONFIG_DIR")):
+            env.setdefault(name, str(pc[key]))
+    return env
+
+
 @dataclass
 class Module:
     process: subprocess.Popen | None = None
@@ -107,7 +118,8 @@ class Modules:
                 raise LaunchError(f"Port {port} is already occupied. This supervisor did not start that process; "
                                   "finish its work and stop it yourself, or configure a different port.")
             module.instance, module.token = uuid.uuid4().hex, secrets.token_hex(32)
-            env = dict(os.environ, SHPC_DATA=str(self.data / "crop"), DNB_DATA=str(self.data / "dnb"),
+            env = dict(photocraft_environment(self.config, os.environ),
+                       SHPC_DATA=str(self.data / "crop"), DNB_DATA=str(self.data / "dnb"),
                        DNB_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
                        SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=module.token,
                        SHP_SUPERVISOR_PID=str(os.getpid()),
@@ -229,7 +241,8 @@ class Modules:
 
     def monitor(self):
         while not self.finished.is_set():
-            status = external_status(self.comfy.url if self.comfy else None)
+            status = external_status(self.comfy.url if self.comfy else None,
+                                     photocraft_environment(self.config, os.environ))
             if self.comfy:
                 state = self.comfy.status()
                 status["comfy"].update(state)
@@ -319,7 +332,7 @@ class Modules:
             raise RuntimeError("; ".join(errors))
 
 
-def external_status(comfy_url=None):
+def external_status(comfy_url=None, environ=None):
     """TCP reachability only: no authentication, document access or service management."""
     def comfy_address():
         url = urlsplit(comfy_url or os.environ.get("SHPC_COMFY", "http://127.0.0.1:8188"))
@@ -327,8 +340,8 @@ def external_status(comfy_url=None):
             raise ValueError("SHPC_COMFY must be an HTTP(S) URL with a hostname")
         return url.hostname, url.port or (443 if url.scheme == "https" else 80)
 
-    targets = {"photocraft_crop": lambda: ("127.0.0.1", detect_config("SHPC", "crop")["port"]),
-               "photocraft_dnb": lambda: ("127.0.0.1", detect_config("DNB", "dnb")["port"]),
+    targets = {"photocraft_crop": lambda: ("127.0.0.1", detect_config("SHPC", "crop", environ)["port"]),
+               "photocraft_dnb": lambda: ("127.0.0.1", detect_config("DNB", "dnb", environ)["port"]),
                "comfy": comfy_address}
     result = {}
     probes = {}

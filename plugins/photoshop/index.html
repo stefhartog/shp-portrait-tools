@@ -1,22 +1,34 @@
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>
-body { padding: 14px; color: #ddd; background: #292929; font: 13px sans-serif; }
-button, input { margin: 5px 0; padding: 6px; width: 100%; }
-p { margin: 8px 0; } #status { white-space: pre-wrap; }
+body { margin: 0; height: 100vh; color: #ddd; background: #292929; font: 13px sans-serif; }
+#scroll { height: 100%; overflow-y: auto; }
+#content { padding: 10px; }
+h3, p { margin: 6px 0; }
+button, input { margin: 3px 0; padding: 6px; width: 95%; }
+#status { white-space: pre-wrap; }
 </style></head>
 <body>
+<div id="scroll"><div id="content">
 <h3>Skin Tools Connector (preview)</h3>
+<p id="status" role="status">Disconnected. Pair or connect below.</p>
 <p>Start Tools normally. In Skin Tools choose Photoshop and Create pairing code.</p>
 <input id="code" type="password" placeholder="One-time code from Tools">
 <button id="pair">Pair with local Tools</button>
 <button id="connect">Connect / resume</button>
 <button id="disconnect">Disconnect locally</button>
-<button id="profile">Select exact source ICC profile...</button>
+<button id="profile">Add exact ICC for active document...</button>
+<button id="adobeProfile">Add ICC from saved profile folder...</button>
+<button id="changeProfileFolder">Choose or change profile folder...</button>
+<p>First time, choose the Adobe profiles folder in the folder picker. Typical Windows location:</p>
+<input type="text" readonly value="C:\Program Files (x86)\Common Files\Adobe\Color\Profiles\Recommended">
 <p id="profileName">No ICC file selected.</p>
+<p>Saved ICC profiles: click one to explicitly use it for the active document.</p>
+<div id="profiles"></div>
+<p>A matching profile name does not prove byte-identical embedded ICC data. Choose the exact file assigned to the document.</p>
 <p>Keep this panel loaded. Reopen after restarting Photoshop. To revoke access, use Forget pairing in Tools.</p>
 <p>Preview: opaque RGB 8/16-bit only, up to 40 MP. Hue is an editable rendered pixel layer, not a live LUT adjustment.</p>
-<p id="status" role="status">Disconnected. Use disposable documents until live validation is complete.</p>
+</div></div>
 <script src="main.js"></script>
 </body>
 </html>

@@ -100,6 +100,7 @@ class Broker:
         self.lock = threading.RLock()
         self.operation = threading.Lock()
         self.session = None
+        self.capabilities = frozenset()
         self.last_seen = 0
         self.pairing = None
         self.pending = None
@@ -133,6 +134,7 @@ class Broker:
 
     def _invalidate(self, reason):
         self.session = None
+        self.capabilities = frozenset()
         if self.pending and not self.pending.complete.is_set():
             self.pending.state, self.pending.error = "uncertain", reason
             self.pending.complete.set()
@@ -142,14 +144,20 @@ class Broker:
             return bool(self.token and isinstance(header, str)
                         and hmac.compare_digest(header, "Bearer " + self.token))
 
-    def hello(self, session, version):
+    def hello(self, session, version, capabilities=None):
         if (type(version) is not int or version != PROTOCOL or not isinstance(session, str)
                 or not IDENTIFIER.fullmatch(session)):
             raise ValueError("Incompatible Photoshop connector protocol/session")
+        if capabilities is None:
+            capabilities = []
+        if (not isinstance(capabilities, list) or len(capabilities) > 16
+                or any(not isinstance(item, str) or not IDENTIFIER.fullmatch(item) for item in capabilities)):
+            raise ValueError("Invalid Photoshop connector capabilities")
         with self.lock:
             if session != self.session:
                 self._invalidate("Photoshop connector restarted; Get Image again")
                 self.session = session
+            self.capabilities = frozenset(capabilities)
             self.last_seen = self.clock()
         return {"protocol": PROTOCOL, "chunk_bytes": CHUNK, "max_pixels": MAX_PIXELS}
 
@@ -265,7 +273,8 @@ def handle_http(handler, broker):
     if not split.path.startswith("/api/photoshop/"):
         return False
     try:
-        if (handler.headers.get("Host") != f"127.0.0.1:{handler.server.server_port}"
+        if (handler.headers.get("Host") not in (f"127.0.0.1:{handler.server.server_port}",
+                                                f"localhost:{handler.server.server_port}")
                 or handler.client_address[0] != "127.0.0.1"
                 or handler.headers.get("Origin") not in (None, "null")):
             handler.send(403, b'{"error":"Loopback connector requests only"}', "application/json")
@@ -310,7 +319,7 @@ def handle_http(handler, broker):
                 if route == "pair":
                     result = broker.pair(value.get("code"))
                 elif route == "hello":
-                    result = broker.hello(value.get("session"), value.get("protocol"))
+                    result = broker.hello(value.get("session"), value.get("protocol"), value.get("capabilities"))
                 elif route == "reply":
                     result = broker.reply(value.get("request"), value.get("value"))
                 else:

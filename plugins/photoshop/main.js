@@ -1,11 +1,13 @@
 "use strict";
 const ps = require("photoshop"), uxp = require("uxp");
 const P = require("./protocol.js");
+const ProfileStore = require("./profile_store.js");
 const fs = uxp.storage.localFileSystem, binary = uxp.storage.formats.binary;
-const BASE = "http://127.0.0.1:18765/api/photoshop/";
+const BASE = "http://localhost:18765/api/photoshop/";
 const session = `ps-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-let token = null, connected = false, running = false, profileBytes = null;
+let token = null, connected = false, running = false, profileWorking = false, commandActive = false;
 let captures = new Map(), handled = new Map();
+const profileStore = new ProfileStore(fs, binary), selectedProfiles = new Map();
 const $ = id => document.getElementById(id);
 function status(text) { $("status").textContent = text; }
 function ensureConnected() { P.check(connected, "Connector disconnected; operation cancelled."); }
@@ -66,32 +68,56 @@ async function upload(job, name, bytes) {
 }
 
 async function capture(job) {
-    const doc = ps.app.activeDocument, info = documentInfo(doc);
-    P.check(profileBytes, "Select the exact document ICC file in this panel first. Tools verifies its description.");
-    const before = marker(doc);
+    await profileReady;
+    P.check(!profileWorking, "Finish selecting an ICC profile in the connector, then Get Image again.");
+    const {info, before} = await ps.core.executeAsModal(async context => {
+        P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+        const doc = ps.app.activeDocument, info = documentInfo(doc);
+        return {info, before: marker(doc)};
+    }, {commandName: "Prepare Skin Tools capture", timeOut: 1});
+    const chosen = selectedProfiles.get(info.index);
+    const matches = profileStore.matching(info.profile);
+    const selected = chosen && chosen.marker === before && matches.includes(chosen.entry) ? chosen.entry :
+        matches.length === 1 ? matches[0] : null;
+    P.check(selected, matches.length > 1 ?
+        `Multiple saved ICC files match "${info.profile}". In the connector choose the exact file or add it again for this document, then Get Image again.` :
+        `No saved ICC for "${info.profile}". In the connector add the exact ICC for this document, then Get Image again.`);
+    const profileBytes = await profileStore.read(selected);
+    $("profileName").textContent = `Using ${selected.label} for ${info.profile}. A matching name does not prove identical embedded ICC bytes.`;
+    function checkSource() {
+        const doc = Array.from(ps.app.documents).find(item => item.id === info.index);
+        P.check(doc && marker(doc) === before, "Document closed or changed during capture; Get Image again.");
+        return doc;
+    }
     const rows = P.rows(info.width, 4, info.depth);
     let offset = 0;
     for (let y = 0; y < info.height; y += rows) {
         ensureConnected();
-        P.check(marker(doc) === before, "Document changed during capture; Get Image again.");
         const height = Math.min(rows, info.height - y);
-        const captured = await ps.imaging.getPixels({documentID: doc.id,
-            sourceBounds: {left: 0, top: y, right: info.width, bottom: y + height},
-            componentSize: info.depth, applyAlpha: false});
-        let tile;
-        try {
-            P.check(captured.level === 0 && captured.imageData.colorProfile === info.profile,
-                "Photoshop returned downsampled or converted pixels.");
-            tile = P.padTile(captured.imageData, await captured.imageData.getData({fullRange: true}),
-                captured.sourceBounds, info.width, y, height, info.depth);
-        } finally { captured.imageData.dispose(); }
+        const tile = await ps.core.executeAsModal(async context => {
+            P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+            const doc = checkSource();
+            const captured = await ps.imaging.getPixels({documentID: doc.id,
+                sourceBounds: {left: 0, top: y, right: info.width, bottom: y + height},
+                componentSize: info.depth, applyAlpha: false});
+            try {
+                P.check(captured.level === 0 && captured.imageData.colorProfile === info.profile,
+                    "Photoshop returned downsampled or converted pixels.");
+                const data = await captured.imageData.getData({fullRange: true});
+                P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+                return P.padTile(captured.imageData, data, captured.sourceBounds, info.width, y, height, info.depth);
+            } finally { captured.imageData.dispose(); }
+        }, {commandName: "Capture Skin Tools pixels", timeOut: 1});
         const data = tile.buffer;
         await request(`chunk?request=${job.request}&name=pixels&offset=${offset}`, undefined, data);
         offset += data.byteLength;
         status(`Capturing ${Math.round((y + height) / info.height * 100)}%`);
     }
     await upload(job, "icc", profileBytes);
-    P.check(marker(doc) === before, "Document changed during capture; Get Image again.");
+    await ps.core.executeAsModal(async context => {
+        P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+        checkSource();
+    }, {commandName: "Verify Skin Tools capture", timeOut: 1});
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     captures.clear();
     captures.set(id, before);
@@ -100,11 +126,19 @@ async function capture(job) {
 
 async function stage(job, bundle) {
     const folder = await (await fs.getTemporaryFolder()).createFolder(job.request);
-    const tiles = {};
+    const tiles = {}, lookups = {};
     const total = Object.values(bundle.blobs).reduce((sum, blob) => sum + blob.bytes, 0);
     let downloaded = 0;
     try {
         for (const [name, blob] of Object.entries(bundle.blobs)) {
+            if (blob.kind === "icc-lut") {
+                ensureConnected();
+                const bytes = await request(`chunk?request=${job.request}&name=${name}&offset=0&length=${blob.bytes}`);
+                P.check(bytes.byteLength === blob.bytes, "Incomplete Hue lookup.");
+                lookups[name] = P.validateLookup(bytes);
+                downloaded += bytes.byteLength;
+                continue;
+            }
             tiles[name] = [];
             const stride = blob.width * blob.components * blob.depth / 8;
             const rows = P.rows(blob.width, blob.components, blob.depth);
@@ -120,7 +154,7 @@ async function stage(job, bundle) {
                 status(`Receiving editable layers ${Math.round(downloaded / total * 100)}%`);
             }
         }
-        return {folder, tiles};
+        return {folder, tiles, lookups};
     } catch (error) {
         await cleanup(folder);
         throw error;
@@ -154,17 +188,74 @@ async function writeTiles(doc, layer, name, bundle, staged, mask, context) {
     }
 }
 
+async function batch(command) {
+    const result = await ps.action.batchPlay([command], {});
+    P.check(Array.isArray(result) && result.length === 1, "Photoshop returned an invalid action result.");
+    const item = result[0];
+    P.check(item && String(item._obj || "").toLowerCase() !== "error" &&
+        !(typeof item.result === "number" && item.result < 0),
+    `Photoshop Color Lookup failed: ${item && item.message || "unknown action error"}`);
+    return item;
+}
+
+function returnedProfile(profile) {
+    if (profile instanceof ArrayBuffer) return profile;
+    const value = profile && profile._data;
+    if (value instanceof ArrayBuffer) return value;
+    if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    if (profile && profile._rawData === "base64" && typeof value === "string" && value.length <= P.CHUNK * 2) {
+        const decoded = atob(value), bytes = new Uint8Array(decoded.length);
+        for (let i = 0; i < decoded.length; ++i) bytes[i] = decoded.charCodeAt(i);
+        return bytes.buffer;
+    }
+    throw new Error("Photoshop did not return verifiable Hue lookup profile data.");
+}
+
+async function createLookup(doc, node, bytes) {
+    const existing = new Set();
+    function collect(layers) {
+        for (const layer of layers) {
+            existing.add(layer.id);
+            if (layer.kind === ps.constants.LayerKind.GROUP) collect(layer.layers);
+        }
+    }
+    collect(doc.layers);
+    await batch({_obj: "make", _target: [{_ref: "adjustmentLayer"}],
+        using: {_obj: "adjustmentLayer", type: {_class: "colorLookup"}, name: node.name},
+        _options: {dialogOptions: "silent"}});
+    const active = doc.activeLayers, layer = active[0];
+    P.check(ps.app.activeDocument.id === doc.id && active.length === 1 && layer &&
+        Number.isInteger(layer.id) && !existing.has(layer.id) && layer.kind === ps.constants.LayerKind.COLORLOOKUP,
+    "Photoshop did not select the new Hue Color Lookup adjustment.");
+    await batch({_obj: "set", _target: [{_ref: "adjustmentLayer", _enum: "ordinal", _value: "targetEnum"}],
+        to: {_obj: "colorLookup", lookupType: {_enum: "colorLookupType", _value: "deviceLinkProfile"},
+            name: "SHP Skin Tools Hue", profile: {_rawData: "binary", _data: bytes}},
+        _options: {dialogOptions: "silent"}});
+    const info = await batch({_obj: "get", _target: [{_property: "adjustment"},
+        {_ref: "layer", _id: layer.id}, {_ref: "document", _id: doc.id}]});
+    const entries = Array.isArray(info.adjustment) ? info.adjustment : [info.adjustment];
+    const lookup = entries.find(item => item && item._obj === "colorLookup");
+    P.check(lookup && lookup.lookupType && lookup.lookupType._value === "deviceLinkProfile",
+        "Photoshop did not confirm the Hue device-link adjustment.");
+    P.check(P.sameLookupTransform(bytes, returnedProfile(lookup.profile)),
+        "Photoshop returned a different Hue lookup transform.");
+    return layer;
+}
+
 async function apply(job) {
     const bundle = P.validateBundle(job.params, session);
-    target(bundle.doc);
+    await ps.core.executeAsModal(async context => {
+        P.check(!context.isCancelled, "Skin Tools import cancelled.");
+        target(bundle.doc);
+    }, {commandName: "Check Skin Tools target", timeOut: 1});
     const staged = await stage(job, bundle);
-    let result, importCommitted = false;
+    let result, importCommitted = false, importFailure;
     try {
         result = await ps.core.executeAsModal(async context => {
             ensureConnected();
             const doc = target(bundle.doc), previous = ps.app.activeDocument;
             const history = await context.hostControl.suspendHistory({documentID: doc.id, name: "Skin Tools"});
-            let committed = false;
+            let committed = false, importError;
             try {
                 ps.app.activeDocument = doc;
                 const modes = {"Normal": ps.constants.BlendMode.NORMAL, "Soft Light": ps.constants.BlendMode.SOFTLIGHT,
@@ -178,6 +269,7 @@ async function apply(job) {
                     for (const node of [...nodes].reverse()) {
                         P.check(!context.isCancelled, "Skin Tools import cancelled.");
                         const layer = node.children ? await doc.createLayerGroup({name: node.name}) :
+                            node.lookup ? await createLookup(doc, node, staged.lookups[node.lookup]) :
                             await doc.createPixelLayer({name: node.name});
                         if (parent) await layer.move(parent, ps.constants.ElementPlacement.PLACEINSIDE);
                         else if (doc.layers[0].id !== layer.id)
@@ -185,7 +277,7 @@ async function apply(job) {
                         layer.blendMode = modes[node.blend];
                         layer.opacity = node.opacity;
                         if (node.children) await create(node.children, layer);
-                        else await writeTiles(doc, layer, node.pixels, bundle, staged, false, context);
+                        else if (!node.lookup) await writeTiles(doc, layer, node.pixels, bundle, staged, false, context);
                         if (node.mask) await writeTiles(doc, layer, node.mask, bundle, staged, true, context);
                         context.reportProgress({value: ++completed / total, commandName: `Importing ${node.name}`});
                         created.unshift(layer.id);
@@ -200,20 +292,30 @@ async function apply(job) {
                 importCommitted = true;
                 captures.delete(bundle.doc.capture);
                 return {document: doc.name, layers: ids, request: job.request, sent: true};
+            } catch (error) {
+                importError = error;
+                throw error;
             } finally {
-                if (!committed) await context.hostControl.resumeHistory(history, false);
+                let rollbackError;
+                if (!committed) {
+                    try { await context.hostControl.resumeHistory(history, false); }
+                    catch (error) { rollbackError = error; }
+                }
                 if (previous && Array.from(ps.app.documents).some(item => item.id === previous.id))
                     ps.app.activeDocument = previous;
+                if (rollbackError)
+                    throw new Error(`${importError ? importError.message : "Import failed"}. Rollback failed: ${rollbackError.message}. Inspect the document before retrying.`);
             }
         }, {commandName: "Import Skin Tools layers", timeOut: 1});
     } catch (error) {
+        importFailure = error;
         if (importCommitted)
             throw new Error(`Layers were committed, but post-import handling failed: ${error.message}. Inspect the document; do not resend.`);
         throw error;
     } finally {
         try { await cleanup(staged.folder); }
         catch (error) {
-            throw new Error(`${importCommitted ? "Layers were committed" : "Import did not complete"}; temporary buffer cleanup failed: ${error.message}. Inspect the document; do not resend.`);
+            throw new Error(`${importFailure ? `${importFailure.message}. ` : ""}${importCommitted ? "Layers were committed" : "Import did not complete"}; temporary buffer cleanup failed: ${error.message}. Inspect the document; do not resend.`);
         }
     }
     return result;
@@ -225,10 +327,14 @@ async function perform(job) {
     if (handled.has(job.request)) return handled.get(job.request);
     // Record before executing: even if reporting fails, this command is never rerun.
     handled.set(job.request, {error: "Command outcome uncertain; inspect the document. Not replayed."});
+    commandActive = true;
     let value;
     try {
         if (job.kind === "status") {
-            const doc = ps.app.documents.length ? documentInfo(ps.app.activeDocument) : null;
+            const doc = await ps.core.executeAsModal(async context => {
+                P.check(!context.isCancelled, "Skin Tools status cancelled.");
+                return ps.app.documents.length ? documentInfo(ps.app.activeDocument) : null;
+            }, {commandName: "Check Skin Tools document", timeOut: 1});
             value = {result: {doc}};
         } else if (job.kind === "capture") value = {result: await capture(job)};
         else if (job.kind === "apply") value = {result: await apply(job)};
@@ -236,7 +342,7 @@ async function perform(job) {
     } catch (error) {
         console.error(error);
         value = {error: String(error.message || error).slice(0, 2000)};
-    }
+    } finally { commandActive = false; }
     handled.set(job.request, value);
     while (handled.size > 32) handled.delete(handled.keys().next().value);
     return value;
@@ -266,7 +372,7 @@ async function loop() {
 async function connect() {
     if (running) return;
     if (!token) token = String.fromCharCode(...await uxp.storage.secureStorage.getItem("tools-token"));
-    await request("hello", {session, protocol: P.VERSION});
+    await request("hello", {session, protocol: P.VERSION, capabilities: ["hue-lut-device-link-v1"]});
     connected = true;
     status("Connected to local Tools. Use Get Image in Skin Tools.");
     void loop();
@@ -276,7 +382,7 @@ function action(id, callback) {
     $(id).onclick = async () => {
         $(id).disabled = true;
         try { await callback(); }
-        catch (error) { console.error(error); status(error.message); }
+        catch (error) { console.error(error); status(error.message || String(error)); }
         finally { $(id).disabled = false; }
     };
 }
@@ -294,27 +400,117 @@ action("disconnect", async () => {
     captures.clear();
     status("Disconnected locally. Forget pairing in Tools to revoke the stored credential.");
 });
-action("profile", async () => {
-    P.check(!running, "Disconnect before changing the ICC file, then reconnect.");
-    const file = await fs.getFileForOpening({types: ["icc", "icm"]});
-    if (!file) return;
-    const metadata = await file.getMetadata();
-    P.check(metadata.size >= 128 && metadata.size <= 4 * 1024 * 1024, "ICC file must be 128 bytes to 4 MiB.");
-    profileBytes = await file.read({format: binary});
-    const saved = await (await fs.getDataFolder()).createFile("source-profile.icc", {overwrite: true});
-    await saved.write(profileBytes, {format: binary});
-    $("profileName").textContent = `ICC selected: ${file.name}. Tools verifies exact description on Get Image.`;
-});
-async function initialize() {
-    // Only plugin-owned storage is read at startup; never inspect a user's open documents.
-    const entries = await (await fs.getDataFolder()).getEntries();
-    const file = entries.find(entry => entry.name === "source-profile.icc");
-    if (file) {
-        const metadata = await file.getMetadata();
-        P.check(metadata.size >= 128 && metadata.size <= 4 * 1024 * 1024, "Cached ICC file is invalid; select it again.");
-        profileBytes = await file.read({format: binary});
-        $("profileName").textContent = "Saved ICC loaded. Tools verifies it against the captured document.";
-    }
-    status("Select the source ICC file if needed, then Pair or Connect. Use disposable RGB documents only (unverified preview).");
+async function activeProfile() {
+    return ps.core.executeAsModal(async context => {
+        P.check(!context.isCancelled, "ICC selection cancelled.");
+        const doc = ps.app.activeDocument;
+        return {info: documentInfo(doc), marker: marker(doc)};
+    }, {commandName: "Select Skin Tools ICC", timeOut: 1});
 }
-initialize().catch(error => { console.error(error); status(error.message); });
+
+async function chooseProfile(entry, info) {
+    const current = await activeProfile();
+    P.check(current.info.index === info.index && current.info.profile === info.profile,
+        "Active document or its profile changed; select the ICC again.");
+    P.check(entry.profile === null || entry.profile === current.info.profile,
+        `This saved ICC was selected for "${entry.profile}", not "${current.info.profile}". Add the exact ICC for this document.`);
+    const bytes = await profileStore.read(entry);
+    const selected = entry.profile === null ? await profileStore.save(bytes, entry.label, current.info.profile, entry) : entry;
+    selectedProfiles.set(current.info.index, {entry: selected, marker: current.marker});
+    $("profileName").textContent = `Selected ${selected.label} for ${current.info.profile}. Tools checks its description on Get Image; name matching does not prove identical embedded bytes.`;
+    renderProfiles();
+}
+
+function renderProfiles() {
+    const list = $("profiles");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    for (const entry of profileStore.entries) {
+        if (entry.profile === null && profileStore.entries.some(other => other.legacySource)) continue;
+        const button = document.createElement("button");
+        button.textContent = `${entry.label} (${entry.profile || "previous selection: confirm for active document"}) [${entry.id.slice(-8)}]`;
+        button.onclick = async () => {
+            if (profileWorking) { status("An ICC selection is already in progress."); return; }
+            if (commandActive) { status("Wait for the current Tools operation before selecting an ICC."); return; }
+            profileWorking = true;
+            try { await profileReady; await chooseProfile(entry, (await activeProfile()).info); }
+            catch (error) { console.error(error); status(error.message || String(error)); }
+            finally { profileWorking = false; }
+        };
+        list.appendChild(button);
+    }
+}
+
+const PROFILE_FOLDER_TOKEN = "profile-folder-token";
+
+async function chooseProfileFolder() {
+    status("Choose the Adobe profiles folder, or another folder containing your ICC files.");
+    const folder = await fs.getFolder();
+    if (!folder) {
+        status("No profile folder selected. You can still browse for an ICC file.");
+        return null;
+    }
+    P.check(folder.isFolder, "The selected profile location is not a folder.");
+    const persistent = await fs.createPersistentToken(folder);
+    P.check(typeof persistent === "string" && persistent.length > 0, "Could not remember the profile folder.");
+    localStorage.setItem(PROFILE_FOLDER_TOKEN, persistent);
+    status("Profile folder saved. Select the exact ICC for the active document.");
+    return folder;
+}
+
+async function savedProfileFolder() {
+    const persistent = localStorage.getItem(PROFILE_FOLDER_TOKEN);
+    if (!persistent) return chooseProfileFolder();
+    try {
+        const folder = await fs.getEntryForPersistentToken(persistent);
+        P.check(folder && folder.isFolder, "The saved location is not a folder.");
+        return folder;
+    } catch (error) {
+        throw new Error(`Saved profile folder is unavailable: ${error.message || String(error)}. Choose or change the profile folder again.`);
+    }
+}
+
+async function addProfile(selectFile) {
+    P.check(!profileWorking, "An ICC selection is already in progress.");
+    P.check(!commandActive, "Wait for the current Tools operation before selecting an ICC.");
+    profileWorking = true;
+    try {
+        await profileReady;
+        const {info} = await activeProfile();
+        const file = await selectFile();
+        if (!file) return;
+        const metadata = await file.getMetadata();
+        P.check(metadata.size >= 128 && metadata.size <= 4 * 1024 * 1024, "ICC file must be 128 bytes to 4 MiB.");
+        const bytes = await file.read({format: binary});
+        const current = await activeProfile();
+        P.check(current.info.index === info.index && current.info.profile === info.profile,
+            "Active document or its profile changed; select the ICC again.");
+        const selected = await profileStore.save(bytes, file.name, info.profile);
+        selectedProfiles.set(info.index, {entry: selected, marker: current.marker});
+        $("profileName").textContent = `Selected ${selected.label} for ${info.profile}. Tools checks its description on Get Image; name matching does not prove identical embedded bytes.`;
+        status("ICC selected. Use Get Image in Skin Tools.");
+        renderProfiles();
+    } finally { profileWorking = false; }
+}
+
+action("profile", () => addProfile(() => fs.getFileForOpening({types: ["icc", "icm"]})));
+action("adobeProfile", () => addProfile(async () => {
+    const folder = await savedProfileFolder();
+    if (!folder) return null;
+    try {
+        return await fs.getFileForOpening({types: ["icc", "icm"], initialLocation: folder});
+    } catch (error) {
+        throw new Error(`Cannot open the saved profile folder: ${error.message || String(error)}. Choose or change the profile folder again, or browse for an ICC file.`);
+    }
+}));
+action("changeProfileFolder", async () => {
+    P.check(!profileWorking, "An ICC selection is already in progress.");
+    P.check(!commandActive, "Wait for the current Tools operation before selecting an ICC.");
+    profileWorking = true;
+    try { await chooseProfileFolder(); }
+    finally { profileWorking = false; }
+});
+const profileReady = profileStore.initialize().then(() => {
+    renderProfiles();
+    if (profileStore.entries.length) $("profileName").textContent = "Saved ICC profiles loaded. Confirm the exact file for each document.";
+});
+profileReady.catch(error => { console.error(error); status(`Cannot load saved ICC profiles: ${error.message || String(error)}`); });

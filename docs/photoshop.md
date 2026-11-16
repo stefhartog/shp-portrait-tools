@@ -3,10 +3,21 @@
 ## Status and scope
 
 This branch implements a local UXP connector and a separate Skin Tools editor adapter.
-**It has not been loaded or run in real Photoshop. It is not a finished CCX release.**
+The user confirmed live image capture and layer sending with version 0.1.3.
+Version 0.1.6's experimental native Hue Color Lookup failed in Photoshop with
+`The command "Set" is not currently available`. Version 0.1.7 reached verification
+but rejected the returned profile. A separate disposable Photoshop diagnostic
+returned the exact fixture as a direct ArrayBuffer and changed 24 of 32 synthetic
+pixels. Version 0.1.8 accepts that observed representation while still validating
+the actual transform. The user subsequently confirmed native Hue works and looks
+acceptable with 0.1.8. This does not establish exact color fidelity, masks,
+rollback, every profile or bit depth, or a measured speedup. The
+cause of the 0.1.6 failure is not proven. Version 0.1.5's folder picker and the
+multiple-profile cache have not been tested live.
 Use only new disposable documents until the live checklist below passes.
-No Photoshop preferences, existing documents, photos, Lightroom catalogs or primary
-checkout were changed during implementation.
+No existing documents, photos, Lightroom catalogs or primary checkout were changed.
+After the user's approval, Adobe Developer Mode was enabled for packaging; the
+settings-file change and undo command are recorded below.
 
 The target is Windows desktop Photoshop **28.0**, with an installed, licensed copy.
 The plugin declares that minimum version; compatibility with other versions is not
@@ -23,6 +34,10 @@ Implemented source paths:
 These are relative to the repository; Python modules live under
 `src/shp_photocraft_tools`.
 
+If tabs remain disabled after selecting Photoshop in an older UI, save or finish
+Tools work and use the tray's **Reload UI** after updating both the shell and Skin
+Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
+
 ## Current limitations (not hidden conversions)
 
 - Only **opaque RGB 8/16-bit composites**, up to 40 megapixels and 2 GiB per bundle.
@@ -34,7 +49,12 @@ These are relative to the repository; Python modules live under
   An 8-bit target is explicitly quantized by rounding to 0..255; it cannot retain
   16-bit precision. Use a disposable RGB16 copy for fidelity work.
 - The Imaging API gives a profile **name**, not embedded ICC bytes. Select the exact
-  source ICC file once in the connector. It is cached in plugin-owned storage.
+  source ICC file for each document profile in the connector. Multiple selections
+  are cached in plugin-owned storage; one matching name is reused automatically.
+  If several cached files match, explicitly choose the exact file for the current
+  document, or add it again. A choice in that ambiguous case must be reconfirmed
+  if the document's history changes. The previous single cached ICC is preserved
+  as an unassigned selection until explicitly confirmed for the current document.
   Tools checks that it is an RGB ICC whose description exactly matches the source,
   retains its bytes and hashes that selection for subsequent output. No OS-wide
   profile search, guessed sRGB profile or silent name alias is used.
@@ -46,11 +66,17 @@ These are relative to the repository; Python modules live under
   D&B and Combine sending are blocked if analysis changed the profile. They currently
   require the existing native sRGB/Adobe RGB processing paths. No converted D&B
   correction is labelled as if it were native-source data.
-- Returned Color, Blur, Directional Blur, Detail, D&B and Hue are individually editable
-  **pixel layers**, with group/per-layer masks, opacity and blend modes. Hue uses the
-  existing trilinear LUT sampler to render its pixels, rather than an undocumented
-  Photoshop Color Lookup action descriptor. Editing a lower layer does not recompute
-  Hue. A live editable LUT adjustment is not implemented.
+- Returned Color, Blur, Directional Blur, Detail and D&B are individually editable
+  pixel layers. Hue defaults to **Native Color Lookup**, a generated RGB device-link
+  ICC adjustment which updates when lower layers change. In **Settings & Info >
+  Source editor > Hue layers**, **Rendered pixels** remains available; it uses the
+  existing trilinear sampler and does not recompute when lower layers change.
+  The selected method is remembered in the UI. Native output may differ visibly
+  from the preview due to interpolation or host handling and has no guaranteed
+  speedup. It requires the updated connector and Tools backend.
+  If Photoshop rejects the action or cannot return matching transform data, the
+  import requests rollback and reports any rollback failure; it never silently
+  switches methods.
 - Normal, Soft Light, Linear Light, Pass Through, nested groups and gray8 masks are
   represented. Group-mask support relies on `putLayerMask` and remains **live unverified**;
   failure is supposed to roll back, not silently omit the mask.
@@ -66,10 +92,10 @@ These are relative to the repository; Python modules live under
 
 ## Development setup and pairing
 
-This checkout has source, not a tested installer. Adobe UXP Developer Tool (UDT)
-was not discovered on PATH or in the checked Adobe installation locations.
-Available automation cannot click Photoshop/Creative Cloud consent or safely
-enable developer preferences. Those actions must be performed by the user.
+This checkout has connector 0.1.8 source. Adobe UXP Developer Tool
+(UDT) was not discovered in the checked Adobe installation locations. The official
+CLI service can package without loading into Photoshop. Package or manifest
+validation alone does not establish rendering fidelity.
 
 1. Install/open Adobe **UXP Developer Tool** through Adobe's supported workflow.
    If Photoshop/UDT requests developer-mode or connection consent, decide and
@@ -77,35 +103,51 @@ enable developer preferences. Those actions must be performed by the user.
 2. In UDT choose **Add Plugin / Add Existing Plugin**, select
    `plugins/photoshop/manifest.json`, and choose **Load** with Photoshop 28.0 running.
    Open **Plugins > Skin Tools Connector** in Photoshop.
-3. Start the Tools checkout normally. Its standard Windows Skin Tools service is
-   `http://127.0.0.1:18765`. For an isolated developer start without the desktop host:
+3. The normal Windows shortcut starts the same Skin Tools service. It must target
+   an installed release containing these changes; quit the old Tools instance
+   normally before relaunching. See the session setup guide for this machine's
+   persistent release, shortcut backups and rollback. The standard Skin Tools
+   service is `http://127.0.0.1:18765`. Updating a shortcut does not update an
+   already-running service: finish work, quit Tools from its tray and close
+   other Tools browser windows, then open the updated shortcut. Do not use the
+   old tray's Restart or Reload UI to switch installations. For a developer start:
 
    ```powershell
    python -m uv run shp-photocraft-dnb --port 18765
    ```
 
-   Do not start a second listener if Tools already owns that port. The connector
-   permits only this exact local endpoint, not arbitrary ports or remote hosts.
-4. In the connector, **Select exact source ICC profile** (only the selected file is
-   read). In Tools choose **Settings & Info > Source editor > Photoshop (UXP preview)**,
-   then **Create pairing code**.
+   The connector uses `http://localhost:18765`, while Tools remains bound to
+   `127.0.0.1`. An older Tools process must be restarted from an updated checkout
+   to accept that exact Host header. Do not start a second listener on the port.
+4. Open the intended document. In the connector, choose **Add exact ICC for active
+   document** and select its exact ICC file. Alternatively, choose **Add ICC from
+   saved profile folder** and select a folder once when prompted. On Windows the
+   Adobe profiles may be in `C:\Program Files (x86)\Common Files\Adobe\Color\Profiles\Recommended`.
+   UXP remembers the user-granted folder and suggests it in later ICC pickers; the
+   system picker may choose a different initial location. Use **Choose or change
+   profile folder** if the saved grant expires. The folder picker grants access to
+   its contents; this connector uses it only as a picker location and reads the
+   file you explicitly choose. Manual browsing remains available. The previously cached ICC is available
+   as **Previously selected ICC**; click it to explicitly associate it with the
+   active document. In Tools choose **Settings & Info > Source editor > Photoshop
+   (UXP preview)**, then **Create pairing code**.
 5. In Photoshop paste that code and click **Pair with local Tools**. The code is
    single-use, expires in 120 seconds and allows at most five guesses. The panel
    must display **Connected**.
-6. Create a **new disposable**, opaque RGB8 or RGB16 document, with an explicit
-   matching profile. Use **Get Image** in Tools, process it, then **Send Layers** or
+6. With that **new disposable**, opaque RGB8 or RGB16 document and its explicit
+   matching profile active, use **Get Image** in Tools, process it, then **Send Layers** or
    **Send Result**. Nothing saves the Photoshop document.
 
 Pairing persists across launches using Windows user-bound DPAPI in Tools and UXP
 secureStorage in the plugin. After Photoshop restart, open the panel and click
-**Connect / resume**; the selected ICC is restored from plugin-owned storage.
+**Connect / resume**; saved ICC files are restored from plugin-owned storage.
 **Disconnect locally** stops panel work and discards snapshots, but retains pairing.
 **Forget pairing** in Tools revokes the stored credential and target. Pair again to
 connect. It is not a promise to interrupt a modal import already being committed.
-Editor selection is service-local and resets to PhotoCraft when Tools restarts.
+Editor selection is saved in existing Tools settings and restored on service restart.
 
-If Get reports an ICC mismatch, disconnect, select the exact matching file,
-reconnect and Get again. If a timeout/lost response occurs, **inspect the document
+If Get reports an ICC mismatch or ambiguity, select the exact matching file for
+the current document and Get again. If a timeout/lost response occurs, **inspect the document
 before doing anything else**. The connector does not silently replay a mutation.
 
 ## Small disposable real-API check (user action required)
@@ -173,7 +215,10 @@ Automated checks run without desktop Photoshop or user photographs:
   the Tools processing lock is held.
 - Node host-free UXP mocks: full-range capture, alpha/trim rejection, nested ordering,
   original target after tab switch, buffer disposal, rollback/cancel, stale/closed/
-  resized source and duplicate suppression. Mocks are **not host rendering evidence**.
+  resized source, duplicate suppression, ICC cache migration, matching and ambiguity.
+  Mocks are **not host rendering evidence**.
+- Editor selection tests use temporary settings, including an isolated Windows
+  service restart, and do not alter the user's configured editor.
 - Focused existing suite: 69 tests, 9 skips, **2 existing failures** in
   `test_skin_tools.SkinApiTests` whose fake bridges do not accept `mask_placement`.
   The same failures were reproduced with the unchanged HEAD fetch/send functions.
@@ -204,35 +249,63 @@ actual composite tolerances (not yet measured for the full Photoshop stack);
 tab switching/edit/resize/close/modal conflicts; lost response/reconnect; both app
 restarts; hide/reopen behavior; and real 24-40 MP memory/time.
 
-## Packaging and non-developer installation (blocked)
+## Packaging and non-developer installation
 
 The supplied ZIP is a **source bundle**, not an installer. Renaming a ZIP to CCX
-is not Adobe's supported packaging workflow and was not done.
+is not Adobe's supported workflow and was not done. Separately, the official Adobe
+CLI generated this package in the development session:
+
+```text
+files\ccx-preview-0.1.8-final\shp.skin-tools.connector_PS.ccx
+```
+
+The package and separate manifest validation commands reported success with Photoshop
+28.0 connected. The CCX archive's CRC, embedded manifest, Photoshop host target and
+icon references were inspected. The user confirmed capture and layer sending with
+0.1.3, and native Hue in 0.1.8; using the folder shortcut remains unverified in Photoshop.
+
 The source bundle overlays this repository's source paths; it is not a standalone
 Tools application distribution.
 
-The official `@adobe/uxp-devtools-cli` alternative was also attempted in an isolated
-temporary npm environment. Its published package omitted required `tar` and
-`@adobe/uxp-devtools-app` dependencies; supplying those reached a further missing
-`yarn` build step. No developer-access enable command was run. Rather than modify
-Adobe's toolchain or user preferences, packaging is left to supported UDT loading/
-packaging with user consent. These failures are not Photoshop plugin test results.
+The official `@adobe/uxp-devtools-cli` 1.2.0 was installed in session-local storage.
+Its package omitted a runtime `tar` dependency; Adobe's own native-helper extraction
+then succeeded after supplying `tar` and the referenced helper package locally.
+The official `@adobe/uxp-devtools-cli` 1.2.0 and Adobe native helper were used from
+session-local storage. Adobe's signed helper created
+`%CommonProgramFiles%\Adobe\UXP\Developer\settings.json` with exactly
+`{"developer": true}`. That file did not exist beforehand; this was the only global
+developer setting changed, after explicit user approval. The Developer Service ran
+on `127.0.0.1:14001` during packaging and has been stopped after use.
 
-Once live validation passes, use UDT's plugin **Actions > Package**, selecting
-this manifest, to produce the real `.ccx`. The stable ID `shp.skin-tools.connector`
-is an independent-development ID, not an Adobe Marketplace listing or entitlement.
+Adobe CLI's `devtools disable` command overwrites the settings file with
+`{"developer": false}`. If the file has since acquired other settings, back up and
+preserve them before using it. When it still contains only `developer`, run this
+command to disable Developer Mode; it requests administrator approval:
+
+```powershell
+python -m uv tool run --from nodejs-wheel node "C:\Users\stefh\.copilot\session-state\38f4ba4b-e119-48c7-ac6d-65fb8b90c947\files\adobe-uxp-tooling\node_modules\@adobe\uxp-devtools-cli\src\uxp.js" devtools disable
+```
+
+Adobe's supported alternative when its developer website is blank is Creative Cloud
+Desktop > **All apps** > **UXP Developer Tools**. UDT requires administrator
+privileges and prompts for Developer Mode on first launch. However, the CCX can be
+installed through Creative Cloud Desktop without UDT: open
+`shp.skin-tools.connector_PS.ccx` with Creative Cloud Desktop and approve the
+requested permissions. Installation was performed by the user for live validation.
+
+The stable ID `shp.skin-tools.connector` is an independent-development ID, not an
+Adobe Marketplace listing or entitlement.
 Marketplace publication needs the portal-assigned ID; do not claim that listing.
 Per current Adobe documentation independent distribution can use a separate stable ID.
 
-Test a fresh install by double-clicking the UDT-produced CCX through Creative Cloud
-Desktop, approving the requested permissions manually, then opening the connector
-from Photoshop's Plugins menu. Test pairing, normal launches and update/revoke again
-without UDT. **No CCX has been produced, installed or verified here**. User-assisted
-UDT loading, consent and packaged installation are the exact remaining blockers;
-a source preview is not a substitute for that acceptance criterion.
+Further live testing of profile reuse and migration should use new disposable documents.
+Exact compositing, masks, Undo, panel lifecycle and the revised cache remain
+unverified. A source preview or successful
+archive check is not a substitute for that acceptance criterion.
 
 Adobe references:
 
+- [UXP file picker and persistent tokens](https://developer.adobe.com/photoshop/uxp/2022/uxp-api/reference-js/modules/uxp/persistent-file-storage/file-system-provider)
 - [Imaging API](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/imaging)
 - [Modal execution / history rollback](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/media/executeasmodal)
 - [Document DOM](https://developer.adobe.com/photoshop/uxp/2022/ps-reference/classes/document)

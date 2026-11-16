@@ -135,10 +135,12 @@
         <summary>Source editor</summary>
         <div class="row"><label for="editorSelect">editor</label><select id="editorSelect"><option value="photocraft">PhotoCraft / local files</option><option value="photoshop">Photoshop (UXP preview)</option></select></div>
         <div id="photoshopPairing" hidden>
+          <div class="row"><label for="photoshopHueMode">Hue layers</label><select id="photoshopHueMode"><option value="native" disabled hidden>Native Color Lookup (default)</option><option value="rendered">Rendered pixels</option></select></div>
+          <p class="hint">Native Hue updates when lower layers change. Its interpolation can differ from the preview; requires the updated connector.</p>
           <button id="photoshopPair">Create pairing code</button>
           <button id="photoshopRevoke">Forget pairing</button>
           <p class="hint" id="photoshopPairCode" role="status"></p>
-          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit, exact source ICC file required; Hue is a rendered pixel layer. Get Image again after each Send. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's binary transport.</p>
+          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit, exact source ICC file required. Get Image again after each Send. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's binary transport.</p>
         </div>
       </details>
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
@@ -319,7 +321,8 @@
 <script>
 const generalSettingIds = new Set(['maskPrecache','transferFormat','transferCompression','transferAlpha',
   'transferParallel','transferHint','maskPlacement','calculationLogText',
-  'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint']);
+  'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint',
+  'editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode','photoshopHueMode']);
 const $ = (id) => document.getElementById(id) ||
   (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
@@ -1139,7 +1142,7 @@ function syncPanelAvailability() {
       const entry={value:control.disabled,descriptor};
       panelIntrinsicDisabled.set(control,entry);
       // Preserve each control's own availability when operation/panel gating changes.
-      Object.defineProperty(control,'disabled',{get(){return descriptor.get.call(this);},
+      Object.defineProperty(control,'disabled',{configurable:true,get(){return descriptor.get.call(this);},
         set(value){entry.value=!!value;syncPanelAvailability();}});
     }
     const entry=panelIntrinsicDisabled.get(control);
@@ -1166,7 +1169,7 @@ function setBusy(b, operation=true) {
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
-  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b;
+  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b; $('photoshopHueMode').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -1205,7 +1208,7 @@ function analysisFlags() { return {detect: $('anDetect').getAttribute('aria-pres
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).setAttribute('aria-pressed', String(v === '1')); });
 function params() {
-  return { mode: uiMode(state.mode), combine:{...state.combine}, band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: uiMode(state.mode), photoshop_hue: $('photoshopHueMode').value, combine:{...state.combine}, band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -1404,15 +1407,37 @@ async function pcSend(layers=false) {
 }
 $('pcGet').onclick = pcGet; $('pcSend').onclick = ()=>pcSend(); $('pcSendLayers').onclick=()=>pcSend(true);
 $('editorSelect').onchange = async () => {
+  let refreshFailed = false;
   setBusy(true);
   try {
     const r = await api('/api/editor', {editor:$('editorSelect').value});
-    $('photoshopPairing').hidden = r.editor !== 'photoshop';
+    setEditorUi(r);
     state.pcConnected = null;
     setStatus('Editor selected. Get Image again before sending.');
-  } catch (e) { setStatus(e.message, true); }
-  finally { setBusy(false); }
+  } catch (e) {
+    setStatus(e.message, true);
+    try {
+      const r = await api('/api/editor', {});
+      setEditorUi(r);
+    } catch (refreshError) {
+      refreshFailed = true;
+      setStatus(`${e.message} Could not restore the editor selection: ${refreshError.message}. Reload Tools.`, true);
+    }
+  }
+  finally {
+    setBusy(false);
+    if (refreshFailed) $('editorSelect').disabled = true;
+  }
 };
+function setEditorUi(r) {
+  $('editorSelect').value = r.editor;
+  $('photoshopPairing').hidden = r.editor !== 'photoshop';
+  const native = $('photoshopHueMode').querySelector('option[value="native"]');
+  native.hidden = native.disabled = r.photoshop_hue_native !== true;
+  const saved = localStorage.getItem('shp-photoshop-hue-mode');
+  $('photoshopHueMode').value = native.disabled ? 'rendered' : saved === 'rendered' ? 'rendered' : 'native';
+}
+$('photoshopHueMode').onchange = () => localStorage.setItem('shp-photoshop-hue-mode', $('photoshopHueMode').value);
 $('photoshopPair').onclick = async () => {
   try {
     const r = await api('/api/editor/pair', {});
@@ -1428,8 +1453,7 @@ $('photoshopRevoke').onclick = async () => {
   } catch (e) { setStatus(e.message, true); }
 };
 api('/api/editor', {}).then(r => {
-  $('editorSelect').value = r.editor;
-  $('photoshopPairing').hidden = r.editor !== 'photoshop';
+  setEditorUi(r);
 }).catch(e => setStatus(e.message, true));
 let watchFolderErrors = '';
 let watchFolderLoadError = '';

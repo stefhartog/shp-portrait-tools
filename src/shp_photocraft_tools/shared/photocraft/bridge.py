@@ -31,13 +31,14 @@ class AuthenticationError(ControlError):
     code = "authentication"
 
 
-def detect_config(prefix, module):
+def detect_config(prefix, module, environ=None):
     """Module-specific env overrides shared SHP_PC_*; existing OpenFill auth is reused."""
+    environ = os.environ if environ is None else environ
     own = (global_config_dir() if sys.platform == "win32"
            else Path.home() / ".config" / "shp-photocraft-tools") / module
 
     def env(key, default=None):
-        return os.environ.get(f"{prefix}_PC_{key}", os.environ.get(f"SHP_PC_{key}", default))
+        return environ.get(f"{prefix}_PC_{key}", environ.get(f"SHP_PC_{key}", default))
 
     port = int(env("PORT", "7878"))
     token = env("TOKEN_FILE")

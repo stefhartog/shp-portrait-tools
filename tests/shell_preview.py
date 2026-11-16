@@ -39,6 +39,7 @@ def fixture(comfy=None):
         if comfy:
             config["comfy"] = comfy
         env = {"SHPC_DATA": str(root / "crop"), "DNB_DATA": str(root / "dnb"),
+               "APPDATA": str(root / "config"),
                "SHP_PC_PORT": "1", "SHP_PC_TOKEN_FILE": str(root / "token"),
                "SHP_PC_EXCHANGE": str(root / "exchange"), "SHP_PC_READ_ROOT": str(root),
                "SHPC_COMFY": "http://127.0.0.1:1"}

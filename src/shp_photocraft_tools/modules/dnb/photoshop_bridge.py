@@ -11,7 +11,7 @@ from PIL import ImageCms
 
 from shp_photocraft_tools.shared.photocraft import ControlError
 from shp_photocraft_tools.shared.photoshop import CHUNK, MAX_PIXELS, MAX_TRANSFER, PROTOCOL
-from . import frequency_separation as FS, skintone as ST
+from . import frequency_separation as FS, skintone as ST, photoshop_lut
 from .photocraft_bridge import tagged_rgb16, transfer_settings
 
 
@@ -122,9 +122,22 @@ class Bridge:
                 return name
 
             def encode(node):
+                nonlocal size
                 result = {key: node[key] for key in ("name", "blend", "opacity")}
                 if "children" in node:
                     result["children"] = [encode(child) for child in node["children"]]
+                elif "lookup" in node:
+                    name = f"b{len(blobs)}"
+                    payload = node["lookup"]
+                    size_in_bytes = len(payload)
+                    if not 128 <= size_in_bytes <= CHUNK:
+                        raise ControlError("Invalid Photoshop Hue lookup size")
+                    size += size_in_bytes
+                    if size > MAX_TRANSFER:
+                        raise ControlError("Photoshop layer bundle exceeds the 2 GiB safety limit")
+                    job.blob(name).write_bytes(payload)
+                    blobs[name] = {"kind": "icc-lut", "bytes": size_in_bytes}
+                    result["lookup"] = name
                 else:
                     result["pixels"] = binary(node["pixels"], 3)
                 if node.get("mask") is not None:
@@ -179,13 +192,18 @@ class Bridge:
 
     def send_skintone(self, layers, settings, mask8, doc, source_icc, *, blur_future=None, transfer=None,
                       include_blur=True, blur_strength=100, blur_masked=True, directional=None,
-                      bands=None, band_mask8=None, band_mix=100, mask_placement="folder"):
+                      bands=None, band_mask8=None, band_mix=100, mask_placement="folder", hue_output="native"):
         transfer_settings(transfer)
         shape = (doc["height"], doc["width"])
         _mask(mask8, shape)
         _opacity(blur_strength)
         if mask_placement not in ("folder", "layers") or type(blur_masked) is not bool:
             raise ControlError("Invalid Photoshop mask placement/Blur mask setting")
+        if hue_output not in ("rendered", "native"):
+            raise ControlError("Invalid Photoshop Hue output mode")
+        if (hue_output == "native" and settings.get("on", True)
+                and "hue-lut-device-link-v1" not in self.broker.capabilities):
+            raise ControlError("Native Hue requires the updated Photoshop connector; install it and reconnect.")
         layers = dict(layers)
         if blur_future is not None:
             if not include_blur:
@@ -197,11 +215,12 @@ class Bridge:
             _pixels(pixels, shape)
         per_layer = mask_placement == "layers"
         children = [self._layer("Color", layers["color"])]
-        # Hue is a rendered, editable pixel correction, not an undocumented LUT descriptor.
-        base = layers["color"].astype(np.float32) / 65535
+        render_hue = settings.get("on", True) and hue_output == "rendered"
+        base = layers["color"].astype(np.float32) / 65535 if render_hue else None
         if include_blur:
-            region = mask8.astype(np.float32) / 255 if per_layer and blur_masked else np.ones(shape, np.float32)
-            base += (layers["blur"].astype(np.float32) / 65535 - base) * (region * blur_strength / 100)[..., None]
+            if render_hue:
+                region = mask8.astype(np.float32) / 255 if per_layer and blur_masked else np.ones(shape, np.float32)
+                base += (layers["blur"].astype(np.float32) / 65535 - base) * (region * blur_strength / 100)[..., None]
             children.insert(0, self._layer("Blur", layers["blur"], opacity=blur_strength,
                                            mask=mask8 if per_layer and blur_masked else None))
         if directional is not None:
@@ -209,14 +228,19 @@ class Bridge:
             _pixels(pixels, shape)
             _mask(region, shape)
             _opacity(strength)
-            alpha = region.astype(np.float32) / 255 if per_layer else np.ones(shape, np.float32)
-            base += (pixels.astype(np.float32) / 65535 - base) * (alpha * strength / 100)[..., None]
+            if render_hue:
+                alpha = region.astype(np.float32) / 255 if per_layer else np.ones(shape, np.float32)
+                base += (pixels.astype(np.float32) / 65535 - base) * (alpha * strength / 100)[..., None]
             children.insert(0, self._layer("Directional Blur", pixels, opacity=strength, mask=region if per_layer else None))
         if settings.get("on", True):
             hue, = ST.tables(dict(settings, hue_amount=100))
-            corrected = ST.sample(np.ascontiguousarray(base[..., ::-1]), hue)[..., ::-1]
-            children.insert(0, self._layer("Hue", FS.rgb16(corrected), opacity=settings["hue_amount"],
-                                           mask=mask8 if per_layer else None))
+            if render_hue:
+                corrected = ST.sample(np.ascontiguousarray(base[..., ::-1]), hue)[..., ::-1]
+                children.insert(0, self._layer("Hue", FS.rgb16(corrected), opacity=settings["hue_amount"],
+                                               mask=mask8 if per_layer else None))
+            else:
+                children.insert(0, {"name": "Hue", "blend": "Normal", "opacity": _opacity(settings["hue_amount"]),
+                                    "lookup": photoshop_lut.device_link(hue), "mask": mask8 if per_layer else None})
         children.insert(0, self._layer("Detail", layers["detail"], "Linear Light"))
         bands = [] if bands is None else bands
         if bands:
