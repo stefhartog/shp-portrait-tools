@@ -126,9 +126,17 @@ def probe(port):
     return result
 
 
+def interpreter_key(path):
+    """python.exe and pythonw.exe of one venv are the same interpreter for identity purposes."""
+    value = str(path or "")
+    return value[:-len("pythonw.exe")] + "python.exe" if value.lower().endswith("pythonw.exe") else value
+
+
 def verify(found, expected, port):
     for key in ("application", "module", "package", "python", "data", "models"):
-        if found.get(key) != expected.get(key):
+        same = (interpreter_key(found.get(key)) == interpreter_key(expected.get(key)) if key == "python"
+                else found.get(key) == expected.get(key))
+        if not same:
             raise LaunchError(f"Port {port} belongs to a different server/configuration ({key} mismatch). "
                               "No process was stopped; choose different ports in launcher.json.")
 
@@ -176,7 +184,7 @@ def ensure_shell(config_path, data, config, logs):
     log_path = logs / "shell.log"
     with log_path.open("ab") as log:
         process = subprocess.Popen(
-            [sys.executable, "-u", "-m", "shp_photocraft_tools.supervisor",
+            [background_python(), "-u", "-m", "shp_photocraft_tools.supervisor",
              "--config", str(config_path.resolve()), "--data", str(data), "--state", str(logs)],
             env=env, cwd=str(data), stdout=log, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, **detached_options(),
@@ -207,6 +215,14 @@ def ensure_shell(config_path, data, config, logs):
         process.kill()
         process.wait()
     raise LaunchError(f"Tools supervisor did not become ready. See {log_path}. {failure or ''}")
+
+
+def background_python():
+    """Interpreter for processes that must never own a console window (pythonw.exe on Windows)."""
+    if sys.platform == "win32":
+        from .shared.windows_process import background_python as windows_python
+        return windows_python()
+    return sys.executable
 
 
 def detached_options():
@@ -268,7 +284,7 @@ def write_default_config(path):
 
 def desktop_command(url, data):
     if sys.platform == "win32":
-        command = [sys.executable, "-m", "shp_photocraft_tools.desktop.windows_controller",
+        command = [background_python(), "-m", "shp_photocraft_tools.desktop.windows_controller",
                    "--url", url, "--data-dir", str(data / "webview")]
         checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30,
                                  creationflags=subprocess.CREATE_NO_WINDOW)
@@ -313,7 +329,7 @@ def launch(config_path, no_browser=False, browser=False):
     urls = [f"http://127.0.0.1:{config['shell_port']}/"]
     command = None if no_browser else (chromium_command(config, urls) if browser else desktop_command(urls[0], data))
     if command and not browser:
-        command.extend(["--launcher-python", sys.executable, "--launcher-config", str(config_path.resolve())])
+        command.extend(["--launcher-python", background_python(), "--launcher-config", str(config_path.resolve())])
     log_name = "chromium.log" if browser else "desktop.log"
     with file_lock(state / "launcher.lock"):
         shell = ensure_shell(config_path, data, config, state)
@@ -329,6 +345,26 @@ def launch(config_path, no_browser=False, browser=False):
         if code not in (0, None):
             raise LaunchError(f"Tools window exited with status {code}. Servers remain available; see {state / log_name}")
     return {"urls": urls, "servers": {"shell": shell["pid"]}, "logs": str(state)}
+
+
+def has_console():
+    return sys.stderr is not None and os.path.basename(sys.executable).lower() != "pythonw.exe"
+
+
+def report_windows_failure(message):
+    """Startup failures under pythonw have no console: always log them and show a MessageBox there."""
+    try:
+        state = tools_dirs()[1]
+        state.mkdir(parents=True, exist_ok=True)
+        with (state / "launcher.log").open("a", encoding="utf-8") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {message}\n")
+    except OSError:
+        pass
+    if has_console():
+        print(message, file=sys.stderr)
+    else:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message[:1500], APP, 0x10)  # MB_ICONERROR
 
 
 def main():
@@ -357,11 +393,21 @@ def main():
         result = launch(args.config, args.no_browser, args.browser)
     except (LaunchError, OSError) as error:
         message = f"{APP}: {error}"
-        print(message, file=sys.stderr)
+        if sys.platform == "win32":
+            report_windows_failure(message)
+        else:
+            print(message, file=sys.stderr)
         if shutil.which("notify-send"):
             subprocess.run(["notify-send", "--urgency=critical", APP, str(error)], check=False)
         raise SystemExit(1)
-    print(json.dumps(result), flush=True)
+    except Exception:
+        if sys.platform != "win32":
+            raise
+        import traceback
+        report_windows_failure(f"{APP}: unexpected startup error\n\n{traceback.format_exc()}")
+        raise SystemExit(1)
+    if sys.stdout is not None:
+        print(json.dumps(result), flush=True)
 
 
 if __name__ == "__main__":

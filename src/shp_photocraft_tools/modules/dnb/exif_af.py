@@ -16,7 +16,8 @@ def af_point(path, width, height):
         raise FileNotFoundError(f"DNB_EXIFTOOL does not exist: {tool}")
     try:
         out = subprocess.run(["perl", str(tool), "-s3", "-Sony:FocusLocation", str(path)],
-                             capture_output=True, text=True, timeout=30).stdout.split()
+                             capture_output=True, text=True, timeout=30,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.split()
         sw, sh, x, y = (float(v) for v in out[:4])
     except Exception:
         return None

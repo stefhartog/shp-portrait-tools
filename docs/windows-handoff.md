@@ -1,3 +1,38 @@
+#### No-console launch and Start Menu shortcut
+
+Why `python -m uv run --no-sync shp-photocraft-tools` used to leave extra terminal windows: the venv
+`python.exe` is a console-subsystem redirector that starts the real interpreter as a child. The
+supervisor and the desktop host were spawned detached (no console), so each real child allocated a
+brand-new console, which Windows Terminal showed as a window (observed: the redirector had no console
+host, its child had a conhost + a Windows Terminal window, for the supervisor and the desktop host; the
+`uv`/console-script wrapper is your own terminal). `CREATE_NO_WINDOW` on the redirector does not reach
+its child. Fix: the supervisor, services and desktop host are started with `pythonw.exe` (GUI
+subsystem, never gets a console) via `shared/windows_process.background_python()`; stdout/stderr still go to the
+log files. `--check`/`--init-config` still run from a console with `python.exe`. Linux is unchanged. The
+launcher compares `python.exe` and `pythonw.exe` of the same venv as the same interpreter. Under
+`pythonw` a startup failure is appended to `<data>\state\launcher.log` and shown in a MessageBox.
+
+```powershell
+python -m uv run --no-sync python scripts/install_windows_shortcut.py --dry-run     # preview, changes nothing
+python -m uv run --no-sync python scripts/install_windows_shortcut.py --desktop     # Start Menu (+ Desktop) shortcut
+python -m uv run --no-sync python scripts/install_windows_shortcut.py --remove --desktop
+```
+
+It never overwrites an existing shortcut without `--force`; `--output-dir <dir>` writes elsewhere (used
+by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_photocraft_tools.launcher
+--config %APPDATA%\shp-photocraft-tools\launcher.json`, start in `<repo>`, icon drawn from
+`desktop/shp-photocraft-tools.svg` into `shp-photocraft-tools.ico` next to `launcher.json`. Run
+`--init-config` first.
+
+Verified (real runs, disposable data dir, real models read-only): launching
+`pythonw.exe -m shp_photocraft_tools.launcher --config ...` as the shortcut does leaves only
+`pythonw.exe` processes (no conhost/OpenConsole/cmd/python.exe, no console-class window), shows the
+WebUI window, Skin Tools answers 200 on 18765; `tests/windows_host_smoke.py` passes (tray created, quit
+leaves nothing listening); a bad config under pythonw logs and shows the MessageBox; the installer's
+dry-run/create/force/remove run in a temp dir (unit tests). Not verified: the `.lnk` itself launched from the
+Start Menu/Explorer, the shortcut icon rendering, the real tray right-click Quit (the same code path is
+smoke-tested), and that killing the desktop host leaves the supervisor until its lease expires
+(pre-existing behaviour; it was still running after ~50 s).
 # Windows port handoff
 
 ## Baseline and scope

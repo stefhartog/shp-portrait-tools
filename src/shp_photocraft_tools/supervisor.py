@@ -19,7 +19,7 @@ from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .launcher import MODULES, LaunchError, probe, read_config, verify, set_startup
+from .launcher import MODULES, LaunchError, background_python, probe, read_config, verify, set_startup
 from .shared.health import identity
 from .shared.lifecycle import BrowserHandler, BrowserServer, script
 from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
@@ -120,7 +120,7 @@ class Modules:
             log_path = self.logs / f"{name}.log"
             with log_path.open("ab") as log:
                 module.process = subprocess.Popen(
-                    [sys.executable, "-u", "-m", "shp_photocraft_tools.modules." + MODULES[name],
+                    [background_python(), "-u", "-m", "shp_photocraft_tools.modules." + MODULES[name],
                      "--port", str(port)], env=env, cwd=str(self.data),
                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **spawn_options())
             module.process_identity = adopt(module.process) or process_identity(module.process.pid)

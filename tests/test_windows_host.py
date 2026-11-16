@@ -102,5 +102,73 @@ class ProtocolTests(unittest.TestCase):
         self.assertIsNone(answer_open_prompt("SHP_OPEN_BATCH_SOURCE_V1", Fake(None)))
 
 
+@unittest.skipUnless(sys.platform == "win32", "Windows only")
+class NoConsoleTests(unittest.TestCase):
+    def test_background_python_prefers_pythonw(self):
+        from shp_photocraft_tools.shared.windows_process import background_python
+        with tempfile.TemporaryDirectory() as directory:
+            python, pythonw = Path(directory, "python.exe"), Path(directory, "pythonw.exe")
+            python.touch()
+            self.assertEqual(background_python(str(python)), str(python))
+            pythonw.touch()
+            self.assertEqual(background_python(str(python)), str(pythonw))
+            self.assertEqual(background_python(str(pythonw)), str(pythonw))
+
+    def test_spawn_flags_hide_console(self):
+        from shp_photocraft_tools.shared import windows_process as wp
+        for flags in (wp.spawn_options(), wp.detached_options()):
+            self.assertTrue(flags["creationflags"] & subprocess.CREATE_NO_WINDOW)
+
+    def test_launcher_uses_background_python_for_children(self):
+        from shp_photocraft_tools import launcher
+        self.assertTrue(Path(launcher.background_python()).name.lower() in ("pythonw.exe", Path(sys.executable).name.lower()))
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows only")
+class ShortcutInstallerTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import install_windows_shortcut as installer
+        self.installer = installer
+        self.addCleanup(sys.path.pop, 0)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.repo = root / "repo"
+        (self.repo / ".venv" / "Scripts").mkdir(parents=True)
+        (self.repo / ".venv" / "Scripts" / "pythonw.exe").touch()
+        self.out = root / "out"
+        self.base = ["--output-dir", str(self.out), "--repo", str(self.repo), "--config", str(root / "launcher.json"), "--desktop"]
+        self.links = [self.out / "Start Menu" / "SHP Portrait Tools.lnk", self.out / "Desktop" / "SHP Portrait Tools.lnk"]
+
+    def run_installer(self, *extra):
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return self.installer.main([*self.base, *extra])
+
+    def test_dry_run_writes_nothing(self):
+        self.assertEqual(self.run_installer("--dry-run"), 0)
+        self.assertFalse(self.out.exists())
+
+    def test_create_refuse_force_remove(self):
+        self.assertEqual(self.run_installer(), 0)
+        self.assertTrue(all(link.exists() for link in self.links))
+        details = self.installer.read_shortcut(self.links[0])
+        self.assertEqual(details["target"], str(self.repo / ".venv" / "Scripts" / "pythonw.exe"))
+        self.assertIn("-m shp_photocraft_tools.launcher --config", details["arguments"])
+        self.assertEqual(details["cwd"], str(self.repo))
+        self.assertTrue((self.out / "shp-photocraft-tools.ico").exists())
+        self.links[0].write_bytes(b"keep")
+        self.assertEqual(self.run_installer(), 1)
+        self.assertEqual(self.links[0].read_bytes(), b"keep")
+        self.assertEqual(self.run_installer("--force"), 0)
+        self.assertNotEqual(self.links[0].read_bytes(), b"keep")
+        self.assertEqual(self.run_installer("--remove", "--dry-run"), 0)
+        self.assertTrue(self.links[0].exists())
+        self.assertEqual(self.run_installer("--remove"), 0)
+        self.assertFalse(any(link.exists() for link in self.links))
+
+
 if __name__ == "__main__":
     unittest.main()

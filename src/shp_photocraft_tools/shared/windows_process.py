@@ -242,6 +242,18 @@ def detached_options():
     return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW}
 
 
+def background_python(executable=None):
+    """pythonw.exe next to the interpreter, or the interpreter itself.
+
+    The venv python.exe is a console-subsystem redirector whose real child gets its own console (a visible
+    Windows Terminal window when the parent has none, regardless of CREATE_NO_WINDOW on the redirector).
+    pythonw.exe is GUI-subsystem, so neither it nor its child ever gets a console."""
+    import os
+    executable = executable or sys.executable
+    candidate = os.path.join(os.path.dirname(executable), "pythonw.exe")
+    return candidate if os.path.basename(executable).lower() == "python.exe" and os.path.exists(candidate) else executable
+
+
 class SingleInstance:
     """Named mutex plus a named event used to ask the first instance to show its window."""
 
