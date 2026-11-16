@@ -79,6 +79,31 @@ python -m uv run --no-sync python -m unittest test_combine test_transfer_options
 python -m uv run --no-sync python -m unittest test_windows_output test_windows_service -q
 ```
 
+### Verified end to end with real models (2026-11-16)
+
+Standalone service on 8765 with the three ONNX models in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`
+(SHA-256 checked) and a disposable `DNB_DATA`/`DNB_WATCH_DIRECTORY`. Test image: scikit-image's
+`astronaut.png` (public domain NASA photo, 512x512; a real face, not a user photo). Same-origin
+JSON calls to `/api/load`, `/api/run` (Skin Mask, FS & Tone, Dodge & Burn, Combine) and `/api/save`
+(Dodge & Burn, Combine) all succeeded with no Windows-specific errors:
+
+- Load/analysis 29.8 s on first use, including a ~203 MB rtmlib weight download (YOLOX-m and
+  RTMW-x downloaded automatically to `~\.cache\rtmlib`); YuNet found the face (IPD 43 px, scale
+  S 43.3, confidence "high", mask 2.8%). Previews took 0.1-0.5 s. Saves wrote the expected PNG
+  files and `settings.json` under the data directory.
+- **Provider:** `CUDAExecutionProvider` (then CPU) is the provider list in use. `get_providers()` on the
+  live face-landmark session and on the rtmlib YOLOX and RTMW sessions returned
+  `['CUDAExecutionProvider', 'CPUExecutionProvider']`; ONNX Runtime warned that some shape ops stay on CPU,
+  which is normal. The selfie-segmentation session is created with the same list but was not
+  inspected individually. YuNet runs through OpenCV's `FaceDetectorYN` on CPU.
+- `DNB_DATA` also relocates the default model directory (`<DNB_DATA>\models`); set `DNB_MODELS`
+  to keep models elsewhere.
+- The six-module test command still gives `Ran 58 tests ... OK (skipped=10)`.
+
+Not covered by that run: portrait accuracy/quality and speed on larger (multi-megapixel) images,
+profiles beyond sRGB, multiple faces, CPU-only provider path end to end, WebUI interaction in a
+browser, batch/PhotoCraft send.
+
 ### Not verified / assumptions / blockers
 
 - **`--extra gpu` does not resolve on Windows:** `uv.lock` pins `nvidia-cublas==13.8.2.12`,
@@ -86,11 +111,10 @@ python -m uv run --no-sync python -m unittest test_windows_output test_windows_s
   `required-environments` entry for win32/AMD64 and a relock. The GPU check above used manually
   installed wheels (cublas 13.10.0.20, cuda-runtime 13.4.92, cudnn 9.27.0.42, cufft 12.4.0.43,
   curand 10.4.4.72) outside the lock; the lock file was not changed.
-- **Model weights absent:** nothing was in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`.
-  Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and `selfie_multiclass_256x256.onnx`
-  there (or in `DNB_MODELS`) per MODELS.md (URLs, sizes, SHA-256); rtmlib downloads the pose
-  weights (YOLOX-m, RTMW-x) to `~/.cache/rtmlib` on first use. Real portrait inference, the
-  speed and accuracy on Windows are therefore **not verified**; only a synthetic CUDA session was.
+- **Model weights:** not bundled. Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and
+  `selfie_multiclass_256x256.onnx` in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models` (or
+  `DNB_MODELS`) per MODELS.md; rtmlib downloads the pose weights on first use. Inference was
+  verified on one public-domain face (see above); accuracy and speed on real-size portraits are **not verified**.
 - Not tested: symlink semantics (needs Developer Mode/elevation), CPU-only fallback end to end,
   network/cross-volume paths, locked-file behavior beyond the unit tests, antivirus interaction,
   the WebUI beyond fetching `/`, PhotoCraft/ComfyUI/LightCraft, launcher/tray/desktop.
