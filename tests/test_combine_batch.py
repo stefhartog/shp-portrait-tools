@@ -1,5 +1,6 @@
 """Local Combine batch analysis, output safety and mixed-outcome regressions."""
 import json
+import sys
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 import test_combine as T
+from winlinks import directory_alias, file_symlink, require_file_symlink
 from test_dnb import synthetic_image
 from shp_photocraft_tools.modules.dnb import ui_server as U, progress
 from shp_photocraft_tools.shared.local_output import batch_output
@@ -179,6 +181,7 @@ class BatchApiTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 403)
 
     def test_symbolic_input_is_reported_and_no_photocraft_fetch_is_used(self):
+        require_file_symlink(self, self.root)
         link = self.root / "link.png"
         link.symlink_to(self.image)
         with patch.object(U, "bridge", side_effect=AssertionError("batch must not contact PhotoCraft")):
@@ -271,7 +274,7 @@ class BatchOutputTests(unittest.TestCase):
     def test_unique_directories_same_stem_and_existing_output_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / "shpcombine_batch_001").symlink_to(root, target_is_directory=True)
+            directory_alias(root / "shpcombine_batch_001", root)
             with batch_output(root) as (folder, write, write_preset):
                 self.assertEqual(folder.name, "shpcombine_batch_002")
                 first = write(1, "same.jpg", b"png1")
@@ -327,15 +330,25 @@ class BatchOutputTests(unittest.TestCase):
                         write_preset({"batch": {"items": [{"status": "success"}]}})
                 self.assertEqual((folder / "preset.json").read_bytes(), before)
                 self.assertFalse((folder / ".preset.json.tmp").exists())
-                folder.rename(root / "moved-output")
-                folder.mkdir()
-                with self.assertRaisesRegex(ValueError, "output folder changed"):
-                    write(1, "image.png", b"wrong place")
+                if sys.platform == "win32":
+                    # Windows pins the folders open without FILE_SHARE_DELETE, so replacement is refused outright.
+                    with self.assertRaises(OSError):
+                        folder.rename(root / "moved-output")
+                    self.assertEqual(write(1, "image.png", b"still right place").split("\\")[-2], folder.name)
+                else:
+                    folder.rename(root / "moved-output")
+                    folder.mkdir()
+                    with self.assertRaisesRegex(ValueError, "output folder changed"):
+                        write(1, "image.png", b"wrong place")
             with batch_output(root) as (_, write, _):
-                root.rename(Path(temp) / "moved-input")
-                root.mkdir()
-                with self.assertRaisesRegex(ValueError, "input folder changed"):
-                    write(1, "image.png", b"wrong place")
+                if sys.platform == "win32":
+                    with self.assertRaises(OSError):
+                        root.rename(Path(temp) / "moved-input")
+                else:
+                    root.rename(Path(temp) / "moved-input")
+                    root.mkdir()
+                    with self.assertRaisesRegex(ValueError, "input folder changed"):
+                        write(1, "image.png", b"wrong place")
 
     def test_scoped_colour_does_not_change_editor_colour(self):
         original = U.D.COLOUR.copy()
@@ -351,7 +364,7 @@ class BatchOutputTests(unittest.TestCase):
             source = root / "keep.json"
             source.write_text("keep")
             with batch_output(root) as (folder, _, write_preset):
-                (folder / "preset.json").symlink_to(source)
+                file_symlink(folder / "preset.json", source)
                 with self.assertRaises(FileExistsError):
                     write_preset({})
                 self.assertEqual(source.read_text(), "keep")
