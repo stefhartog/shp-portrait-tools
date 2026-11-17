@@ -41,7 +41,7 @@ class EditorSelectionTests(unittest.TestCase):
         U.BRIDGE["doc"] = {"index": 7}
         before = self.settings.read_bytes()
         U.restore_editor_selection()
-        self.assertEqual(U.api_editor({}), {"editor": "photoshop", "photoshop_hue_native": True})
+        self.assertEqual(U.api_editor({}), {"editor": "photoshop", "photoshop_hue_native": True, "photoshop_png_capture": True})
         self.assertIsNone(U.EDITOR["broker"])
         self.assertIsNone(U.BRIDGE["doc"])
         self.assertEqual(self.settings.read_bytes(), before)

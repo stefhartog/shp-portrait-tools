@@ -49,7 +49,7 @@ class StandaloneServiceTests(unittest.TestCase):
             request = Request(origin + "/api/editor", b"{}", {
                 "Content-Type": "application/json", "Origin": origin})
             with urlopen(request, timeout=10) as response:
-                self.assertEqual(json.load(response), {"editor": "photoshop", "photoshop_hue_native": True})
+                self.assertEqual(json.load(response), {"editor": "photoshop", "photoshop_hue_native": True, "photoshop_png_capture": True})
             self.assertEqual(settings.read_bytes(), before)
             second = start(port, data, inbox)
             try:

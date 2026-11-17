@@ -5,11 +5,14 @@ const ProfileStore = require("./profile_store.js");
 const fs = uxp.storage.localFileSystem, binary = uxp.storage.formats.binary;
 const BASE = "http://localhost:18765/api/photoshop/";
 const session = `ps-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-let token = null, connected = false, running = false, profileWorking = false, commandActive = false;
+let token = null, connected = false, running = false, connecting = false;
+let profileWorking = false, commandActive = false, autoConnectEnabled = true, panelUnloaded = false;
+let reconnectTimer = null, retryDelay = 1000, pollTimer = null, pollWake = null;
+const MAX_RETRY_DELAY = 30000;
 let captures = new Map(), handled = new Map();
 const profileStore = new ProfileStore(fs, binary), selectedProfiles = new Map();
 const $ = id => document.getElementById(id);
-function status(text) { $("status").textContent = text; }
+function status(text) { if (!panelUnloaded) $("status").textContent = text; }
 function ensureConnected() { P.check(connected, "Connector disconnected; operation cancelled."); }
 
 async function request(route, value, bytes) {
@@ -52,10 +55,16 @@ function marker(doc) {
 }
 
 function target(source) {
-    P.check(source.session === session && captures.get(source.capture) === source.marker,
+    const capture = captures.get(source.capture);
+    const fields = ["index", "name", "width", "height", "depth", "mode", "profile", "alpha", "session", "protocol"];
+    P.check(capture && source.session === session && source.marker === capture.marker &&
+        fields.every(key => source[key] === capture.info[key]),
         "Source snapshot expired; Get Image again.");
     const doc = Array.from(ps.app.documents).find(item => item.id === source.index);
-    P.check(doc && marker(doc) === source.marker, "Source closed or changed since Get Image; no layers inserted.");
+    P.check(doc, "Source document closed; no layers inserted.");
+    const current = documentInfo(doc);
+    P.check(["index", "width", "height", "depth", "mode", "profile"].every(key => current[key] === capture.info[key]),
+        "Source dimensions, mode, depth or profile changed; Get Image again.");
     return doc;
 }
 
@@ -68,60 +77,140 @@ async function upload(job, name, bytes) {
 }
 
 async function capture(job) {
+    captures.clear();
     await profileReady;
     P.check(!profileWorking, "Finish selecting an ICC profile in the connector, then Get Image again.");
+    const format = job.params && job.params.format || "raw";
+    P.check(format === "raw" || format === "png", "Invalid capture format.");
     const {info, before} = await ps.core.executeAsModal(async context => {
         P.check(!context.isCancelled, "Skin Tools capture cancelled.");
         const doc = ps.app.activeDocument, info = documentInfo(doc);
         return {info, before: marker(doc)};
     }, {commandName: "Prepare Skin Tools capture", timeOut: 1});
-    const chosen = selectedProfiles.get(info.index);
-    const matches = profileStore.matching(info.profile);
-    const selected = chosen && chosen.marker === before && matches.includes(chosen.entry) ? chosen.entry :
-        matches.length === 1 ? matches[0] : null;
-    P.check(selected, matches.length > 1 ?
-        `Multiple saved ICC files match "${info.profile}". In the connector choose the exact file or add it again for this document, then Get Image again.` :
-        `No saved ICC for "${info.profile}". In the connector add the exact ICC for this document, then Get Image again.`);
-    const profileBytes = await profileStore.read(selected);
-    $("profileName").textContent = `Using ${selected.label} for ${info.profile}. A matching name does not prove identical embedded ICC bytes.`;
     function checkSource() {
         const doc = Array.from(ps.app.documents).find(item => item.id === info.index);
         P.check(doc && marker(doc) === before, "Document closed or changed during capture; Get Image again.");
         return doc;
     }
-    const rows = P.rows(info.width, 4, info.depth);
-    let offset = 0;
-    for (let y = 0; y < info.height; y += rows) {
-        ensureConnected();
-        const height = Math.min(rows, info.height - y);
-        const tile = await ps.core.executeAsModal(async context => {
-            P.check(!context.isCancelled, "Skin Tools capture cancelled.");
-            const doc = checkSource();
-            const captured = await ps.imaging.getPixels({documentID: doc.id,
-                sourceBounds: {left: 0, top: y, right: info.width, bottom: y + height},
-                componentSize: info.depth, applyAlpha: false});
-            try {
-                P.check(captured.level === 0 && captured.imageData.colorProfile === info.profile,
-                    "Photoshop returned downsampled or converted pixels.");
-                const data = await captured.imageData.getData({fullRange: true});
+    let pngBytes;
+    if (format === "png") {
+        pngBytes = await capturePng(job, info, before, checkSource);
+    } else {
+        const chosen = selectedProfiles.get(info.index);
+        const matches = profileStore.matching(info.profile);
+        const selected = chosen && chosen.marker === before && matches.includes(chosen.entry) ? chosen.entry :
+            matches.length === 1 ? matches[0] : null;
+        P.check(selected, matches.length > 1 ?
+            `Multiple saved ICC files match "${info.profile}". In the connector choose the exact file or add it again for this document, then Get Image again.` :
+            `No saved ICC for "${info.profile}". In the connector add the exact ICC for this document, then Get Image again.`);
+        const profileBytes = await profileStore.read(selected);
+        $("profileName").textContent = `Using ${selected.label} for ${info.profile}. A matching name does not prove identical embedded ICC bytes.`;
+        const rows = P.rows(info.width, 4, info.depth);
+        let offset = 0;
+        for (let y = 0; y < info.height; y += rows) {
+            ensureConnected();
+            const height = Math.min(rows, info.height - y);
+            const tile = await ps.core.executeAsModal(async context => {
                 P.check(!context.isCancelled, "Skin Tools capture cancelled.");
-                return P.padTile(captured.imageData, data, captured.sourceBounds, info.width, y, height, info.depth);
-            } finally { captured.imageData.dispose(); }
-        }, {commandName: "Capture Skin Tools pixels", timeOut: 1});
-        const data = tile.buffer;
-        await request(`chunk?request=${job.request}&name=pixels&offset=${offset}`, undefined, data);
-        offset += data.byteLength;
-        status(`Capturing ${Math.round((y + height) / info.height * 100)}%`);
+                const doc = checkSource();
+                const captured = await ps.imaging.getPixels({documentID: doc.id,
+                    sourceBounds: {left: 0, top: y, right: info.width, bottom: y + height},
+                    componentSize: info.depth, applyAlpha: false});
+                try {
+                    P.check(captured.level === 0 && captured.imageData.colorProfile === info.profile,
+                        "Photoshop returned downsampled or converted pixels.");
+                    const data = await captured.imageData.getData({fullRange: true});
+                    P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+                    return P.padTile(captured.imageData, data, captured.sourceBounds, info.width, y, height, info.depth);
+                } finally { captured.imageData.dispose(); }
+            }, {commandName: "Capture Skin Tools pixels", timeOut: 1});
+            const data = tile.buffer;
+            await request(`chunk?request=${job.request}&name=pixels&offset=${offset}`, undefined, data);
+            offset += data.byteLength;
+            status(`Capturing ${Math.round((y + height) / info.height * 100)}%`);
+        }
+        await upload(job, "icc", profileBytes);
     }
-    await upload(job, "icc", profileBytes);
     await ps.core.executeAsModal(async context => {
         P.check(!context.isCancelled, "Skin Tools capture cancelled.");
         checkSource();
     }, {commandName: "Verify Skin Tools capture", timeOut: 1});
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     captures.clear();
-    captures.set(id, before);
-    return {doc: {...info, marker: before, capture: id}};
+    captures.set(id, {info, marker: before});
+    return {doc: {...info, marker: before, capture: id}, ...(format === "png" ? {png_bytes: pngBytes} : {})};
+}
+
+async function capturePng(job, info, before, checkSource) {
+    const folder = await (await fs.getTemporaryFolder()).createFolder(job.request.slice(0, 20));
+    let failure;
+    try {
+        const file = await folder.createFile("capture.png", {overwrite: false});
+        await ps.core.executeAsModal(async context => {
+            P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+            const doc = checkSource(), previous = ps.app.activeDocument;
+            const saved = doc.saved, path = doc.path, name = doc.name;
+            let copy, registered = false, primaryError;
+            try {
+                ps.app.activeDocument = doc;
+                const candidate = await doc.duplicate("ST capture", true);
+                P.check(candidate && candidate.id !== doc.id, "Photoshop did not create an independent capture copy.");
+                copy = candidate;
+                await context.hostControl.registerAutoCloseDocument(copy.id);
+                registered = true;
+                const copied = documentInfo(copy);
+                P.check(copied.width === info.width && copied.height === info.height &&
+                    copied.depth === info.depth && copied.profile === info.profile,
+                "Photoshop changed the capture copy's dimensions, depth or profile.");
+                P.check(ps.app.activeDocument.id === copy.id, "Photoshop did not select the capture copy.");
+                await copy.saveAs.png(file, {}, true);
+                P.check(!context.isCancelled, "Skin Tools capture cancelled.");
+                P.check(marker(doc) === before && doc.saved === saved && doc.path === path && doc.name === name,
+                    "Photoshop changed the source while exporting the copy; inspect the document.");
+            } catch (error) {
+                primaryError = error;
+                throw error;
+            } finally {
+                try {
+                    if (copy && !context.isCancelled) {
+                        await copy.closeWithoutSaving();
+                        if (registered) await context.hostControl.unregisterAutoCloseDocument(copy.id);
+                    }
+                    if (!context.isCancelled && previous &&
+                        Array.from(ps.app.documents).some(item => item.id === previous.id))
+                        ps.app.activeDocument = previous;
+                } catch (error) {
+                    throw new Error(`${primaryError ? primaryError.message + ". " : ""}Temporary Photoshop document cleanup failed: ${error.message}. Inspect open documents.`);
+                }
+            }
+        }, {commandName: "Export Skin Tools PNG copy", timeOut: 1});
+        const metadata = await file.getMetadata();
+        const size = metadata.size, limit = Math.min(2 * 1024 ** 3, info.width * info.height * 8 + 4 * 1024 ** 2);
+        P.check(Number.isSafeInteger(size) && size > 0 && size <= limit,
+            "Photoshop PNG copy is empty or too large; choose raw capture.");
+        const nodefs = require("fs"), fd = await nodefs.open(fs.getFsUrl(file), "r");
+        try {
+            let offset = 0;
+            while (offset < size) {
+                ensureConnected();
+                const buffer = new ArrayBuffer(Math.min(P.CHUNK, size - offset));
+                const result = await nodefs.read(fd, buffer, 0, buffer.byteLength, offset);
+                P.check(Number.isInteger(result.bytesRead) && result.bytesRead > 0 && result.bytesRead <= buffer.byteLength,
+                    "Photoshop PNG copy was truncated while reading.");
+                await request(`chunk?request=${job.request}&name=png&offset=${offset}`, undefined,
+                    result.bytesRead === buffer.byteLength ? buffer : buffer.slice(0, result.bytesRead));
+                offset += result.bytesRead;
+                status(`Transferring PNG copy ${Math.round(offset / size * 100)}%`);
+            }
+        } finally { await nodefs.close(fd); }
+        return size;
+    } catch (error) {
+        failure = error;
+        throw error;
+    } finally {
+        try { await cleanup(folder); }
+        catch (error) { throw new Error(`${failure ? failure.message + ". " : ""}Temporary PNG cleanup failed: ${error.message}`); }
+    }
 }
 
 async function stage(job, bundle) {
@@ -243,7 +332,16 @@ async function createLookup(doc, node, bytes) {
 }
 
 async function apply(job) {
-    const bundle = P.validateBundle(job.params, session);
+    const capture = job.params && job.params.doc && job.params.doc.capture;
+    try {
+        return await applyValidated(job, P.validateBundle(job.params, session));
+    } catch (error) {
+        if (typeof capture === "string") captures.delete(capture);
+        throw error;
+    }
+}
+
+async function applyValidated(job, bundle) {
     await ps.core.executeAsModal(async context => {
         P.check(!context.isCancelled, "Skin Tools import cancelled.");
         target(bundle.doc);
@@ -261,7 +359,10 @@ async function apply(job) {
                 const modes = {"Normal": ps.constants.BlendMode.NORMAL, "Soft Light": ps.constants.BlendMode.SOFTLIGHT,
                     "Linear Light": ps.constants.BlendMode.LINEARLIGHT, "Pass Through": ps.constants.BlendMode.PASSTHROUGH};
                 const count = nodes => nodes.reduce((sum, node) => sum + 1 + (node.children ? count(node.children) : 0), 0);
-                const total = count(bundle.layers);
+                const nodes = bundle.layers.length === 1 && bundle.layers[0].children
+                    ? bundle.layers
+                    : [{name: "SkinTools", blend: "Pass Through", opacity: 100, children: bundle.layers}];
+                const total = count(nodes);
                 let completed = 0;
                 async function create(nodes, parent) {
                     const created = [];
@@ -284,13 +385,12 @@ async function apply(job) {
                     }
                     return created;
                 }
-                const ids = await create(bundle.layers, null);
+                const ids = await create(nodes, null);
                 ensureConnected();
                 P.check(!context.isCancelled, "Skin Tools import cancelled.");
                 await context.hostControl.resumeHistory(history, true);
                 committed = true;
                 importCommitted = true;
-                captures.delete(bundle.doc.capture);
                 return {document: doc.name, layers: ids, request: job.request, sent: true};
             } catch (error) {
                 importError = error;
@@ -318,7 +418,7 @@ async function apply(job) {
             throw new Error(`${importFailure ? `${importFailure.message}. ` : ""}${importCommitted ? "Layers were committed" : "Import did not complete"}; temporary buffer cleanup failed: ${error.message}. Inspect the document; do not resend.`);
         }
     }
-    return result;
+    return {...result, repeatable: true};
 }
 
 async function perform(job) {
@@ -348,34 +448,137 @@ async function perform(job) {
     return value;
 }
 
+function clearReconnectTimer() {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+}
+
+function stopConnectionTimers() {
+    clearReconnectTimer();
+    if (pollTimer !== null) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+        const wake = pollWake;
+        pollWake = null;
+        if (wake) wake();
+    }
+}
+
+function waitForNextPoll() {
+    return new Promise(resolve => {
+        pollWake = resolve;
+        pollTimer = setTimeout(() => {
+            pollTimer = null;
+            pollWake = null;
+            resolve();
+        }, 750);
+    });
+}
+
+function connectionErrorStatus(error) {
+    const match = String(error && error.message || error).match(/Local Tools HTTP (\d{3}):/);
+    return match ? Number(match[1]) : null;
+}
+
+function scheduleReconnect(reason) {
+    if (!autoConnectEnabled || panelUnloaded || reconnectTimer !== null) return;
+    const delay = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+    status(`${reason ? reason + "\n" : ""}Waiting for local Tools. Retrying in ${Math.ceil(delay / 1000)}s.`);
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect(true);
+    }, delay);
+}
+
+function reportConnectionFailure(error) {
+    const code = connectionErrorStatus(error);
+    const message = String(error && error.message || error);
+    if (code !== null && code < 500 && !(code === 400 && /session expired/i.test(message))) {
+        if (code === 401 || code === 403) {
+            status("Tools rejected the saved pairing. If it was revoked, create a new pairing code in Tools and pair again.");
+        } else {
+            status(`Tools rejected the connector handshake (HTTP ${code}). Update Tools or the connector; pairing was not changed.`);
+        }
+        return;
+    }
+    scheduleReconnect(message);
+}
+
+async function savedToken() {
+    const secure = uxp.storage.secureStorage;
+    if (secure.length === 0) return null;
+    const value = await secure.getItem("tools-token");
+    if (!value || value.length === 0) return null;
+    return typeof value === "string" ? value : String.fromCharCode(...value);
+}
+
 async function loop() {
     if (running) return;
     running = true;
     try {
-        while (connected) {
+        while (connected && !panelUnloaded) {
             const job = await request("poll");
+            if (!connected || panelUnloaded) break;
             if (job) {
                 const value = await perform(job);
                 // Never replay a mutation on a lost reply. Tools exposes request status for inspection.
                 await request("reply", {request: job.request, value});
-                status(value.error || "Completed. Get Image again before sending another result.");
+                status(value.error || (job.kind === "apply"
+                    ? "Sent. You can send again from the same Get; corrections may stack."
+                    : "Completed."));
             }
-            await new Promise(resolve => setTimeout(resolve, 750));
+            await waitForNextPoll();
         }
     } catch (error) {
         connected = false;
-        status(`${error.message}\nDisconnected. Inspect any in-flight import before reconnecting; it will not be replayed.`);
+        captures.clear();
         console.error(error);
+        if (autoConnectEnabled && !panelUnloaded) {
+            reportConnectionFailure(new Error(`Connection lost. Inspect any in-flight import before continuing; it will not be replayed. ${error.message || String(error)}`));
+        }
     } finally { running = false; }
 }
 
-async function connect() {
-    if (running) return;
-    if (!token) token = String.fromCharCode(...await uxp.storage.secureStorage.getItem("tools-token"));
-    await request("hello", {session, protocol: P.VERSION, capabilities: ["hue-lut-device-link-v1"]});
-    connected = true;
-    status("Connected to local Tools. Use Get Image in Skin Tools.");
-    void loop();
+async function connect(automatic = false) {
+    if (panelUnloaded) return;
+    if (!automatic) {
+        autoConnectEnabled = true;
+        retryDelay = 1000;
+        clearReconnectTimer();
+    }
+    if (!autoConnectEnabled || connected || running || connecting) return;
+    connecting = true;
+    captures.clear();
+    let readingCredential = false;
+    try {
+        if (!token) {
+            readingCredential = true;
+            const saved = await savedToken();
+            readingCredential = false;
+            if (panelUnloaded || !autoConnectEnabled) return;
+            if (!token && saved) token = saved;
+        }
+        if (!token) {
+            status("Not paired with Tools yet. Create a pairing code in Skin Tools and pair once.");
+            return;
+        }
+        await request("hello", {session, protocol: P.VERSION,
+            capabilities: ["hue-lut-device-link-v1", "png-capture-v1", "repeat-send-v1"]});
+        if (panelUnloaded || !autoConnectEnabled) return;
+        connected = true;
+        retryDelay = 1000;
+        status("Connected to local Tools. Use Get Image in Skin Tools.");
+        void loop();
+    } catch (error) {
+        console.error(error);
+        if (panelUnloaded || !autoConnectEnabled) return;
+        if (readingCredential) {
+            status(`Cannot read the saved Tools pairing: ${error.message || String(error)}. Pair again if needed.`);
+        } else {
+            reportConnectionFailure(error);
+        }
+    } finally { connecting = false; }
 }
 
 function action(id, callback) {
@@ -388,6 +591,7 @@ function action(id, callback) {
 }
 action("pair", async () => {
     P.check(!running, "Disconnect before pairing again.");
+    P.check(!connecting, "Wait for the current Tools connection attempt to finish.");
     const response = await request("pair", {code: $("code").value.trim()});
     token = response.token;
     await uxp.storage.secureStorage.setItem("tools-token", token);
@@ -396,10 +600,36 @@ action("pair", async () => {
 });
 action("connect", connect);
 action("disconnect", async () => {
+    autoConnectEnabled = false;
     connected = false;
     captures.clear();
+    stopConnectionTimers();
     status("Disconnected locally. Forget pairing in Tools to revoke the stored credential.");
 });
+
+function unloadPanel() {
+    if (panelUnloaded) return;
+    panelUnloaded = true;
+    autoConnectEnabled = false;
+    connected = false;
+    captures.clear();
+    stopConnectionTimers();
+}
+
+function autoConnectOnLoad() {
+    if (!panelUnloaded && autoConnectEnabled) void connect(true);
+}
+
+window.addEventListener("unload", unloadPanel, {once: true});
+if (uxp.entrypoints && typeof uxp.entrypoints.setup === "function") {
+    uxp.entrypoints.setup({panels: {skinTools: {
+        create: autoConnectOnLoad,
+        show: autoConnectOnLoad,
+        destroy: unloadPanel
+    }}});
+}
+if (document.readyState === "complete") autoConnectOnLoad();
+else window.addEventListener("load", autoConnectOnLoad, {once: true});
 async function activeProfile() {
     return ps.core.executeAsModal(async context => {
         P.check(!context.isCancelled, "ICC selection cancelled.");

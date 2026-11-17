@@ -82,7 +82,7 @@ class SkinToolsTransferTests(unittest.TestCase):
         path.unlink()
         return pixels
 
-    def test_dnb_bands_only_are_one_masked_skintools_folder(self):
+    def test_dnb_bands_only_are_masked_in_a_corrections_subfolder(self):
         target, icc = self.new_target()
         path,_=self.bridge.fetch(self.root/"band-source")
         source=cv2.imread(str(path),-1)[...,:3].astype(np.float32)/65535
@@ -96,11 +96,15 @@ class SkinToolsTransferTests(unittest.TestCase):
         folder = inspection["layers"][0]
         self.assertEqual(folder["id"], result["layer"])
         self.assertEqual(folder["name"], "SkinTools")
-        self.assertEqual([layer["name"] for layer in folder["children"]], ["D&B band 2"])
-        self.assertEqual(folder["children"][0]["blend"], "Soft Light")
-        self.assertTrue(folder["hasMask"])
-        self.assertFalse(folder["children"][0]["hasMask"])
-        self.assertAlmostEqual(folder["children"][0]["opacity"], 0.65, places=2)
+        self.assertFalse(folder["hasMask"])
+        self.assertEqual([layer["name"] for layer in folder["children"]], ["Corrections"])
+        corrections = folder["children"][0]
+        self.assertEqual(corrections["blend"], "Pass Through")
+        self.assertTrue(corrections["hasMask"])
+        self.assertEqual([layer["name"] for layer in corrections["children"]], ["D&B band 2"])
+        self.assertEqual(corrections["children"][0]["blend"], "Soft Light")
+        self.assertFalse(corrections["children"][0]["hasMask"])
+        self.assertAlmostEqual(corrections["children"][0]["opacity"], 0.65, places=2)
         self.assertEqual(folder["blend"],"Pass Through")
         actual=self.save_pixels("band-result.png")[...,:3].astype(np.float32)/65535
         expected=source+(D.softlight(source,band.astype(np.float32)/65535)-source)*.65
@@ -127,20 +131,25 @@ class SkinToolsTransferTests(unittest.TestCase):
         folder = inspection["layers"][0]
         self.assertEqual(folder["id"], result["layer"])
         self.assertEqual(folder["name"], "SkinTools")
-        children = folder["children"]
+        self.assertFalse(folder["hasMask"])
+        self.assertEqual([layer["name"] for layer in folder["children"]],
+                         ["Detail", "Corrections", "Color"])
+        detail, corrections, color = folder["children"]
+        self.assertEqual(detail["blend"], "Linear Light")
+        self.assertEqual(color["blend"], "Normal")
+        self.assertEqual(corrections["blend"], "Pass Through")
+        self.assertTrue(corrections["hasMask"])
+        children = corrections["children"]
         self.assertEqual([layer["name"] for layer in children],
-                         ["D&B band 2", "D&B band 1", "Detail", "Hue", "Directional Blur", "Blur", "Color"])
+                         ["D&B band 2", "D&B band 1", "Hue", "Directional Blur", "Blur"])
         for layer in children[:2]:
             self.assertEqual(layer["blend"], "Soft Light")
             self.assertFalse(layer["hasMask"])
             self.assertAlmostEqual(layer["opacity"], 0.55, places=2)
-        self.assertEqual(children[2]["blend"], "Linear Light")
-        self.assertTrue(folder["hasMask"])
+        self.assertFalse(children[2]["hasMask"])
         self.assertFalse(children[3]["hasMask"])
+        self.assertAlmostEqual(children[3]["opacity"],.37,places=2)
         self.assertFalse(children[4]["hasMask"])
-        self.assertAlmostEqual(children[4]["opacity"],.37,places=2)
-        self.assertFalse(children[5]["hasMask"])
-        self.assertFalse(children[6]["hasMask"])
         self.assertEqual(len(self.bridge.session()["documents"]), 1)
         self.assertEqual(list(self.bridge.exchange.iterdir()), [])
         self.client.call("doc.save", path="combined.png")
@@ -148,7 +157,7 @@ class SkinToolsTransferTests(unittest.TestCase):
             self.assertEqual(image.info["icc_profile"], icc)
         (self.bridge.exchange / "combined.png").unlink()
 
-    def test_legacy_masks_remain_on_ingredients_not_folder(self):
+    def test_per_layer_masks_stay_inside_corrections_subgroup(self):
         target, icc = self.new_target()
         mask = np.full((8, 8), 128, np.uint8)
         pixels = np.full((8, 8, 3), 32768, np.uint16)
@@ -158,7 +167,10 @@ class SkinToolsTransferTests(unittest.TestCase):
             directional=(pixels, mask, 37), bands=[(1, pixels)], band_mask8=mask)
         group = self.client.run("document.inspect")["layers"][0]
         self.assertFalse(group["hasMask"])
-        self.assertEqual({layer["name"] for layer in group["children"] if layer["hasMask"]},
+        corrections = group["children"][1]
+        self.assertEqual(corrections["name"], "Corrections")
+        self.assertFalse(corrections["hasMask"])
+        self.assertEqual({layer["name"] for layer in corrections["children"] if layer["hasMask"]},
                          {"D&B band 1", "Hue", "Directional Blur", "Blur"})
         self.assertEqual(list(self.bridge.exchange.iterdir()), [])
         self.client.run("file.close", document=target["index"])
@@ -167,7 +179,10 @@ class SkinToolsTransferTests(unittest.TestCase):
                                     mask_placement="layers")
         group = self.client.run("document.inspect")["layers"][0]
         self.assertFalse(group["hasMask"])
-        self.assertTrue(group["children"][0]["hasMask"])
+        corrections = group["children"][0]
+        self.assertEqual(corrections["name"], "Corrections")
+        self.assertFalse(corrections["hasMask"])
+        self.assertTrue(corrections["children"][0]["hasMask"])
 
     def test_send_result_is_full_rgb16_normal_layer_without_a_folder(self):
         target, icc = self.new_target()
@@ -255,7 +270,12 @@ class SkinToolsTransferTests(unittest.TestCase):
         np.testing.assert_allclose(actual,expected,atol=.002)
         folder=self.client.run("document.inspect")["layers"][0]
         self.assertEqual(folder["name"],"SkinTools")
+        self.assertFalse(folder["hasMask"])
         self.assertEqual([layer["name"] for layer in folder["children"]],
-                         ["D&B band 2","D&B band 1","Detail","Blur","Color"])
+                         ["Detail","Corrections","Color"])
+        corrections=folder["children"][1]
+        self.assertEqual([layer["name"] for layer in corrections["children"]],
+                         ["D&B band 2","D&B band 1","Blur"])
+        self.assertTrue(corrections["hasMask"])
         self.assertEqual(len(self.bridge.session()["documents"]),1)
         self.assertEqual(list(self.bridge.exchange.iterdir()),[])

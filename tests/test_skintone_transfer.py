@@ -66,14 +66,18 @@ class SkintoneTransferTests(unittest.TestCase):
                     self.bridge.send_skintone(layers, p, mask, doc, icc)
                 outputs.append(self.save_pixels("result.png"))
                 if not legacy:
-                    self.assertEqual(groups, ["SkinTools"])
+                    self.assertEqual(groups, ["Corrections", "SkinTools"])
                     self.assertEqual(sum("mask" in rel for rel in opened), int(mask.any()))
-                    self.assertEqual(len(masks), 2 if mask.any() else 0)
+                    self.assertEqual(len(masks), int(mask.any()))
                     group = self.client.run("document.inspect")["layers"][0]
-                    hue = group["children"][1]
+                    self.assertFalse(group["hasMask"])
+                    corrections = group["children"][1]
+                    self.assertEqual(corrections["name"], "Corrections")
+                    self.assertEqual(corrections["hasMask"], bool(mask.any()))
+                    hue = corrections["children"][0]
                     self.assertEqual(hue["name"], "Hue")
                     self.assertEqual(hue["adjustment"]["kind"], "colorLookup")
-                    self.assertTrue(hue["hasMask"])
+                    self.assertFalse(hue["hasMask"])
                     self.assertNotIn("children", hue)
                 self.assertEqual(len(self.bridge.session()["documents"]), 1)
                 self.assertEqual(list(self.bridge.exchange.iterdir()), [])
@@ -112,12 +116,14 @@ class SkintoneTransferTests(unittest.TestCase):
                     self.assertEqual(group["id"], result["layer"])
                     self.assertEqual(group["blend"], "Normal")
                     self.assertFalse(group["hasMask"])
-                    self.assertEqual([a["name"] for a in group["children"]], ["Detail", "Hue", "Blur", "Color"])
-                    detail,correction,blur,color=group["children"]
+                    self.assertEqual([a["name"] for a in group["children"]], ["Detail", "Corrections", "Color"])
+                    detail,corrections,color=group["children"]
+                    self.assertTrue(corrections["hasMask"])
+                    correction,blur=corrections["children"]
                     self.assertFalse(detail["hasMask"]);self.assertFalse(color["hasMask"])
                     self.assertEqual(detail["blend"],"Linear Light");self.assertEqual(color["blend"],"Normal")
-                    self.assertEqual(correction["blend"],"Normal");self.assertTrue(correction["hasMask"])
-                    self.assertEqual(blur["blend"],"Normal");self.assertTrue(blur["hasMask"])
+                    self.assertEqual(correction["blend"],"Normal");self.assertFalse(correction["hasMask"])
+                    self.assertEqual(blur["blend"],"Normal");self.assertFalse(blur["hasMask"])
                     self.assertEqual(correction["adjustment"]["kind"], "colorLookup")
                     self.assertNotIn("children", correction)
                     after = self.save_pixels("after.png")[..., :3]
@@ -145,7 +151,8 @@ class SkintoneTransferTests(unittest.TestCase):
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("manifest.json"))
             stored_group = next(a for a in manifest["document"]["layers"] if a["name"] == "SkinTools")
-            hue = next(a for a in stored_group["content"]["children"] if a["name"] == "Hue")
+            corrections = next(a for a in stored_group["content"]["children"] if a["name"] == "Corrections")
+            hue = next(a for a in corrections["content"]["children"] if a["name"] == "Hue")
             lut = hue["content"]["adjustment"]["ColorLookup"]
             self.assertEqual(len(lut["lut"]), 33**3*3)
             self.assertIn("SHP Skintone", lut["name"])
@@ -154,7 +161,7 @@ class SkintoneTransferTests(unittest.TestCase):
         after = self.save_pixels("after.png")
         np.testing.assert_array_equal(after, before)
         group = self.client.run("document.inspect")["layers"][0]
-        hue = group["children"][1]
+        hue = group["children"][1]["children"][0]
         identity = ST.tables(ST.settings({"skintone": {"hue_amount": 0}}))[0]
         self.client.run("layer.setAdjustment", layer=hue["id"],
                         data=ST.cube_text(identity, "Hue"), fileName="identity.cube",

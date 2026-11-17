@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+import zlib
 
 import cv2
 import numpy as np
@@ -24,7 +25,7 @@ from shp_photocraft_tools.shared.photoshop import (
 )
 from shp_photocraft_tools.shared.photocraft import ControlError
 from shp_photocraft_tools.modules.dnb.photoshop_bridge import Bridge
-from shp_photocraft_tools.modules.dnb import frequency_separation as FS, skintone as ST, photoshop_lut
+from shp_photocraft_tools.modules.dnb import frequency_separation as FS, skintone as ST, photoshop_lut, progress
 
 ICC = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 PROFILE = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(ICC))).strip()
@@ -211,9 +212,13 @@ class RecordingBroker:
                 self.captured = (job.params, {p.name: p.read_bytes() for p in job.directory.iterdir()})
             if finish:
                 doc, pixels, icc = self.inputs
-                job.blob("pixels").write_bytes(pixels)
-                job.blob("icc").write_bytes(icc)
-                return finish(job, {"doc": doc})
+                if params.get("format") == "png":
+                    job.blob("png").write_bytes(pixels)
+                    return finish(job, {"doc": doc, "png_bytes": len(pixels)})
+                else:
+                    job.blob("pixels").write_bytes(pixels)
+                    job.blob("icc").write_bytes(icc)
+                    return finish(job, {"doc": doc})
             return {"document": "Disposable", "sent": True}
 
 
@@ -280,6 +285,18 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(image.info["icc_profile"], ICC)
             self.assertEqual(doc["profile_hash"], hashlib.sha256(ICC).hexdigest())
 
+    def test_capture_reports_separate_transfer_and_input_preparation_timings(self):
+        self.broker.inputs = (self.doc, self.pixels[..., ::-1].astype("<u2").tobytes(), ICC)
+        token = "photoshop-capture-timing-test"
+        with tempfile.TemporaryDirectory() as directory, progress.operation(token):
+            path, _ = self.bridge.fetch(directory)
+            np.testing.assert_array_equal(cv2.imread(str(path), -1), self.pixels)
+        steps = progress.snapshot(token, consume=True)["steps"]
+        self.assertEqual([step["label"] for step in steps], [
+            "Photoshop capture and transfer", "Photoshop input PNG encoding",
+            "Photoshop input PNG write", "Photoshop input validation and preparation (total)"])
+        self.assertTrue(all(step["seconds"] >= 0 and step["error"] is None for step in steps))
+
     def test_capture_rgb8_is_expanded_exactly_and_wrong_icc_rejected(self):
         pixels = ((self.pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
         self.broker.inputs = ({**self.doc, "depth": 8}, pixels[..., ::-1].tobytes(), ICC)
@@ -292,6 +309,60 @@ class AdapterTests(unittest.TestCase):
             self.broker.inputs = (self.doc, self.pixels.tobytes()[:-1], ICC)
             with self.assertRaisesRegex(ControlError, "byte count"):
                 self.bridge.fetch(directory)
+
+    def test_png_capture_preserves_depth_pixels_and_embedded_icc(self):
+        from shp_photocraft_tools.modules.dnb.photocraft_bridge import tagged_rgb16
+        self.broker.capabilities = frozenset(["png-capture-v1"])
+        for depth in (8, 16):
+            pixels = self.pixels if depth == 16 else ((self.pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
+            if depth == 16:
+                png = tagged_rgb16(pixels, ICC, {"opaque_alpha": False})
+            else:
+                out = io.BytesIO()
+                Image.fromarray(pixels[..., ::-1]).save(out, format="PNG", icc_profile=ICC)
+                png = out.getvalue()
+            self.broker.inputs = ({**self.doc, "depth": depth}, png, b"")
+            with tempfile.TemporaryDirectory() as directory:
+                path, doc = self.bridge.fetch(directory, capture_format="png")
+                np.testing.assert_array_equal(cv2.imread(str(path), -1),
+                                              pixels if depth == 16 else pixels.astype(np.uint16) * 257)
+                with Image.open(path) as image:
+                    self.assertEqual(image.info["icc_profile"], ICC)
+                self.assertEqual(doc["profile_hash"], hashlib.sha256(ICC).hexdigest())
+
+    def test_png_capture_rejects_missing_icc_corruption_transparency_and_old_connector(self):
+        from shp_photocraft_tools.modules.dnb.photocraft_bridge import tagged_rgb16
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ControlError, "updated Photoshop connector"):
+                self.bridge.fetch(directory, capture_format="png")
+            self.broker.capabilities = frozenset(["png-capture-v1"])
+            valid = tagged_rgb16(self.pixels, ICC, {"opaque_alpha": False})
+            missing = io.BytesIO()
+            Image.fromarray(np.zeros((3, 8, 3), np.uint8)).save(missing, format="PNG")
+            invalid_size = io.BytesIO()
+            Image.fromarray(np.zeros((3, 8, 3), np.uint8)).save(invalid_size, format="PNG", icc_profile=b"x")
+            chunk = b"iCCP" + b"bad\0\0not-zlib"
+            malformed_icc = (missing.getvalue()[:33] + struct.pack(">I", len(chunk) - 4) + chunk
+                             + struct.pack(">I", zlib.crc32(chunk)) + missing.getvalue()[33:])
+            alpha = io.BytesIO()
+            rgba = np.full((3, 8, 4), 255, np.uint8)
+            rgba[0, 0, 3] = 0
+            Image.fromarray(rgba).save(alpha, format="PNG", icc_profile=ICC)
+            cases = [
+                ({**self.doc, "depth": 8}, missing.getvalue(), "no embedded ICC"),
+                ({**self.doc, "depth": 8}, malformed_icc, "embedded ICC profile is corrupt or unreadable"),
+                ({**self.doc, "depth": 8}, invalid_size.getvalue(), "embedded ICC profile has an invalid size"),
+                (self.doc, valid[:-4], "cannot be verified"),
+                (self.doc, b"", "empty, oversized or incomplete"),
+                ({**self.doc, "depth": 8}, alpha.getvalue(), "non-opaque"),
+                ({**self.doc, "profile": "Wrong profile"}, valid, "ICC identity"),
+                ({**self.doc, "depth": 8}, valid, "full-depth"),
+            ]
+            for doc, data, message in cases:
+                with self.subTest(message=message):
+                    self.broker.inputs = (doc, data, b"")
+                    with self.assertRaisesRegex(ControlError, message):
+                        self.bridge.fetch(directory, capture_format="png")
 
     def test_result_numeric_rgb_quantization_and_profile_guard(self):
         for depth in (8, 16):
@@ -317,13 +388,20 @@ class AdapterTests(unittest.TestCase):
             params, blobs = self.broker.captured
             group = params["layers"][0]
             self.assertEqual([node["name"] for node in group["children"]],
-                             ["D&B band 2", "D&B band 1", "Detail", "Hue", "Directional Blur", "Blur", "Color"])
-            self.assertEqual([node["blend"] for node in group["children"]],
-                             ["Soft Light", "Soft Light", "Linear Light", "Normal", "Normal", "Normal", "Normal"])
-            self.assertEqual([node["opacity"] for node in group["children"][:3]], [65, 65, 100])
-            self.assertEqual("mask" in group, placement == "folder")
-            for node in group["children"]:
-                self.assertEqual("mask" in node, placement == "layers" and node["name"] not in ("Color", "Detail"))
+                             ["Detail", "Corrections", "Color"])
+            detail, corrections, color = group["children"]
+            self.assertEqual(detail["blend"], "Linear Light")
+            self.assertEqual(color["blend"], "Normal")
+            self.assertEqual(corrections["blend"], "Pass Through")
+            self.assertEqual([node["name"] for node in corrections["children"]],
+                             ["D&B band 2", "D&B band 1", "Hue", "Directional Blur", "Blur"])
+            self.assertEqual([node["blend"] for node in corrections["children"]],
+                             ["Soft Light", "Soft Light", "Normal", "Normal", "Normal"])
+            self.assertEqual([node["opacity"] for node in corrections["children"][:2]], [65, 65])
+            self.assertNotIn("mask", group)
+            self.assertEqual("mask" in corrections, placement == "folder")
+            for node in corrections["children"]:
+                self.assertEqual("mask" in node, placement == "layers")
             for name, metadata in params["blobs"].items():
                 self.assertEqual(len(blobs[name]), metadata["bytes"])
                 if metadata["components"] == 1:
@@ -335,7 +413,7 @@ class AdapterTests(unittest.TestCase):
         self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False,
                                   mask_placement="layers", hue_output="rendered")
         params, blobs = self.broker.captured
-        hue = params["layers"][0]["children"][1]
+        hue = params["layers"][0]["children"][1]["children"][0]
         actual = np.frombuffer(blobs[hue["pixels"]], "<u2").reshape(3, 8, 3)[..., ::-1]
         table, = ST.tables(dict(settings, hue_amount=100))
         expected = FS.rgb16(ST.sample(self.pixels[..., ::-1].astype(np.float32) / 65535, table)[..., ::-1])
@@ -348,7 +426,7 @@ class AdapterTests(unittest.TestCase):
             self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False)
         self.broker.capabilities = frozenset(["hue-lut-device-link-v1"])
         self.bridge.send_skintone(layers, settings, self.mask, self.doc, ICC, include_blur=False)
-        default_hue = self.broker.captured[0]["layers"][0]["children"][1]
+        default_hue = self.broker.captured[0]["layers"][0]["children"][1]["children"][0]
         self.assertIn("lookup", default_hue)
         for placement in ("folder", "layers"):
             with patch.object(ST, "sample", side_effect=AssertionError("rendered unexpectedly")):
@@ -356,11 +434,14 @@ class AdapterTests(unittest.TestCase):
                                           mask_placement=placement, hue_output="native")
             params, blobs = self.broker.captured
             group = params["layers"][0]
-            self.assertEqual([node["name"] for node in group["children"]], ["Detail", "Hue", "Color"])
-            hue = group["children"][1]
+            self.assertEqual([node["name"] for node in group["children"]], ["Detail", "Corrections", "Color"])
+            corrections = group["children"][1]
+            self.assertEqual([node["name"] for node in corrections["children"]], ["Hue"])
+            hue = corrections["children"][0]
             self.assertEqual((hue["blend"], hue["opacity"]), ("Normal", 47))
             self.assertNotIn("pixels", hue)
-            self.assertEqual("mask" in group, placement == "folder")
+            self.assertNotIn("mask", group)
+            self.assertEqual("mask" in corrections, placement == "folder")
             self.assertEqual("mask" in hue, placement == "layers")
             self.assertEqual(params["blobs"][hue["lookup"]]["kind"], "icc-lut")
             self.assertEqual(blobs[hue["lookup"]], photoshop_lut.device_link(ST.tables(dict(settings, hue_amount=100))[0]))
@@ -378,7 +459,17 @@ class AdapterTests(unittest.TestCase):
 
     def test_bands_group_and_bad_metadata_fail_before_transfer(self):
         self.bridge.send_skin_bands([(1, self.pixels)], self.mask, self.doc, source_icc=ICC)
-        self.assertEqual(self.broker.captured[0]["layers"][0]["blend"], "Pass Through")
+        params, blobs = self.broker.captured
+        group = params["layers"][0]
+        self.assertEqual(group["blend"], "Pass Through")
+        self.assertNotIn("mask", group)
+        corrections = group["children"][0]
+        self.assertEqual(corrections["name"], "Corrections")
+        self.assertEqual(corrections["blend"], "Pass Through")
+        mask_blob = corrections["mask"]
+        self.assertEqual(params["blobs"][mask_blob]["components"], 1)
+        np.testing.assert_array_equal(np.frombuffer(blobs[mask_blob], np.uint8).reshape(3, 8), self.mask)
+        self.assertEqual([node["name"] for node in corrections["children"]], ["D&B band 1"])
         with self.assertRaisesRegex(ControlError, "unique"):
             self.bridge.send_skin_bands([(1, self.pixels), (1, self.pixels)], self.mask, self.doc, source_icc=ICC)
         with self.assertRaisesRegex(ControlError, "opacity"):

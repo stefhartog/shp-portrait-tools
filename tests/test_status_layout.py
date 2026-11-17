@@ -805,7 +805,8 @@ class StatusLayoutTests(unittest.TestCase):
         command("WebDriver:ExecuteScript",script="""
           const $=id=>document.getElementById(id),state={loaded:true,busy:false};
           let settingsRevision=0,requests=0;
-          const syncPanelAvailability=()=>{},invalidateMaskCacheStatus=()=>{},renderAnalysisSummary=()=>{},drawProfile=()=>{};
+          let layerSettingsRevision=0;
+          const resetCacheTabs=()=>{},syncPanelAvailability=()=>{},invalidateMaskCacheStatus=()=>{},invalidateLayerPrecache=()=>{},renderAnalysisSummary=()=>{},drawProfile=()=>{};
           const apply=()=>{requests++;};
         """+helper+"""
           document.querySelectorAll('input').forEach(e=>e.oninput=markDirty);

@@ -48,7 +48,33 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
   range** for 16-bit. Python/OpenCV's BGR ordering is reversed only at the boundary.
   An 8-bit target is explicitly quantized by rounding to 0..255; it cannot retain
   16-bit precision. Use a disposable RGB16 copy for fidelity work.
-- The Imaging API gives a profile **name**, not embedded ICC bytes. Select the exact
+- The default Get Image path uses raw pixel tiles. An experimental **PNG copy**
+  option creates a merged temporary Photoshop duplicate, exports its lossless PNG,
+  and reads the embedded ICC instead of asking for a manually selected profile.
+  The PNG must be full-size RGB8/16, opaque and contain a valid RGB ICC matching
+  the document's profile description; otherwise it fails explicitly. No profile
+  is guessed and there is no automatic raw fallback. Until a disposable Photoshop
+  host test confirms exact pixels, embedded ICC and unchanged source state, use
+  this option only with disposable documents. It requires the updated backend and
+  connector. One user reported a first PNG capture succeeded and a second had no
+  valid ICC; the precise cause is unconfirmed. Adobe's documented PNG save options
+  provide no ICC embedding switch, and an older Photoshop bug report describes
+  first-save-only ICC embedding. Use raw capture if PNG capture fails.
+- **Calculation timings** in Skin Tools shows connection, capture and transfer,
+  input encoding and decoding, profile preparation, face and body detection,
+  landmarks, masks and preview stages. Durations labeled **total** include their
+  child stages and should not be added to them. Detection timings include any
+  model initialization; capture and transfer are combined, and do not separately
+  measure Photoshop's modal or pixel-read time. These wall-clock timings do not
+  isolate GPU synchronization.
+- Photoshop's internal RGB16 inbox PNG uses lossless run-length-oriented
+  compression and is decoded once for loading. Pixel values and the verified ICC
+  are preserved. The PNG can be larger than with the previous compression strategy;
+  inbox files are retained as before.
+- Photoshop Get checks the connector as part of the capture request rather than
+  sending a separate status command first. Capture still checks the document and
+  connector and reports any errors; PhotoCraft's connection check is unchanged.
+- For raw capture, the Imaging API gives a profile **name**, not embedded ICC bytes. Select the exact
   source ICC file for each document profile in the connector. Multiple selections
   are cached in plugin-owned storage; one matching name is reused automatically.
   If several cached files match, explicitly choose the exact file for the current
@@ -60,7 +86,7 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
   profile search, guessed sRGB profile or silent name alias is used.
   **Matching descriptions are not proof that an independently supplied ICC is
   byte-identical to Photoshop's embedded profile**; correct file selection is a user
-  requirement. Direct embedded-profile extraction is not implemented.
+  requirement. The Imaging API does not expose the embedded profile bytes directly.
 - FS & Tone retains native numeric source pixels. The existing analysis preview may
   convert other RGB profiles to sRGB; that is reported by the existing colour note.
   D&B and Combine sending are blocked if analysis changed the profile. They currently
@@ -83,16 +109,16 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
 - The panel must be loaded and explicitly connected. Hidden-panel persistence,
   reopen, Photoshop restart and packaged lifecycle behavior remain unverified.
   There is no promise of automatic headless/background startup.
-- Each successful import consumes its captured snapshot. **Get Image again after
-  each Send**, even if only changing settings. This deliberately prevents reusing a
-  stale target or inserting duplicate corrections on top of a modified source.
+- Connector 0.1.10 allows repeated Sends from the original Get, appending groups
+  that can stack. Photoshop content edits may not be detected; Get again to use
+  the current composite. A reconnect requires a new Get.
 - Native FS diagnostic and watch-folder editor handoff remain PhotoCraft-only.
   PNG/TIFF/compression transfer options remain for PhotoCraft/files; Photoshop uses
-  raw lossless binary tiles. Processing math is shared and unchanged.
+  raw lossless binary tiles for editable layers. Processing math is shared and unchanged.
 
 ## Development setup and pairing
 
-This checkout has connector 0.1.8 source. Adobe UXP Developer Tool
+This checkout has connector 0.1.10 source. Adobe UXP Developer Tool
 (UDT) was not discovered in the checked Adobe installation locations. The official
 CLI service can package without loading into Photoshop. Package or manifest
 validation alone does not establish rendering fidelity.
@@ -119,7 +145,7 @@ validation alone does not establish rendering fidelity.
    The connector uses `http://localhost:18765`, while Tools remains bound to
    `127.0.0.1`. An older Tools process must be restarted from an updated checkout
    to accept that exact Host header. Do not start a second listener on the port.
-4. Open the intended document. In the connector, choose **Add exact ICC for active
+4. For raw capture, open the intended document. In the connector, choose **Add exact ICC for active
    document** and select its exact ICC file. Alternatively, choose **Add ICC from
    saved profile folder** and select a folder once when prompted. On Windows the
    Adobe profiles may be in `C:\Program Files (x86)\Common Files\Adobe\Color\Profiles\Recommended`.
@@ -140,7 +166,11 @@ validation alone does not establish rendering fidelity.
 
 Pairing persists across launches using Windows user-bound DPAPI in Tools and UXP
 secureStorage in the plugin. After Photoshop restart, open the panel and click
-**Connect / resume**; saved ICC files are restored from plugin-owned storage.
+the panel automatically resumes the saved pairing and retries while Tools is
+offline; no Connect / resume click is needed. The manual button remains available
+after **Disconnect locally**. Automatic connection starts only once the panel code
+is running; it does not launch Tools or create a pairing. Saved ICC files are
+restored from plugin-owned storage.
 **Disconnect locally** stops panel work and discards snapshots, but retains pairing.
 **Forget pairing** in Tools revokes the stored credential and target. Pair again to
 connect. It is not a promise to interrupt a modal import already being committed.
@@ -185,7 +215,7 @@ Commands are status, capture and apply, each with a request ID, protocol and plu
 session. Captures carry document ID, dimensions, depth, profile, alpha policy,
 snapshot token and a history-state fingerprint. Capture checks that fingerprint
 before/after reads. Import resolves the **original document ID**, checks its
-fingerprint again *inside* the modal scope, and refuses closed, resized, edited,
+identity again *inside* the modal scope, and refuses closed, resized,
 mode/depth/profile-changed or expired-session sources. Switching tabs cannot choose
 a different target.
 
@@ -242,7 +272,7 @@ The isolated environment lacks CUDA DLLs and emits existing ONNX Runtime warning
 these host-free checks do not run neural analysis or claim GPU validation.
 
 Before calling this production-ready, on **new disposable documents only**, verify
-the smoke script; complete Get -> FS & Tone/D&B/Combine -> Send; gray masks and
+complete Get -> FS & Tone/D&B/Combine -> Send; gray masks and
 group masks; one Undo; cancellation and partial-import rollback; native sRGB and
 Adobe RGB plus deliberate custom-profile rejection/mismatch; 8/16-bit quantization;
 actual composite tolerances (not yet measured for the full Photoshop stack);
@@ -253,16 +283,17 @@ restarts; hide/reopen behavior; and real 24-40 MP memory/time.
 
 The supplied ZIP is a **source bundle**, not an installer. Renaming a ZIP to CCX
 is not Adobe's supported workflow and was not done. Separately, the official Adobe
-CLI generated this package in the development session:
+CLI generated the current 0.1.11 auto-connect package in the development session:
 
 ```text
-files\ccx-preview-0.1.8-final\shp.skin-tools.connector_PS.ccx
+files\ccx-preview-0.1.11-autoconnect\shp.skin-tools.connector_PS.ccx
 ```
 
-The package and separate manifest validation commands reported success with Photoshop
-28.0 connected. The CCX archive's CRC, embedded manifest, Photoshop host target and
-icon references were inspected. The user confirmed capture and layer sending with
-0.1.3, and native Hue in 0.1.8; using the folder shortcut remains unverified in Photoshop.
+The CLI packaged 0.1.11 and reported validation against Photoshop 28.0. Its
+embedded manifest, Photoshop host target and network allowlist were inspected.
+The user confirmed capture and layer sending with
+0.1.3, and native Hue in 0.1.8; repeated Send, PNG copy and the folder shortcut remain unverified
+in Photoshop.
 
 The source bundle overlays this repository's source paths; it is not a standalone
 Tools application distribution.

@@ -263,10 +263,11 @@ Band 2 **invert** reverses its layer to enhance rather than reduce tonal
 differences. **Layer blur**, **edge** and **tau** are shared advanced controls;
 leave them alone until you understand the band adjustment.
 
-**Important:** **Band 1**, **Band 1 + mask**, **Band 2** and **Band 2 + mask**
-diagnostic previews are always exaggerated **8 times** around neutral gray.
-That is only a viewing aid. Result, saved photographs and sent layers use actual
-strength. Band 2 preview tabs can remain visible when its contribution is off.
+**Important:** The **Band 1 (masked)** and **Band 2 (masked)** previews show
+each band through the shared skin mask, with **8x contrast around neutral gray**
+for visibility only. This does not change the result, saved image or sent
+layers; neutral gray means no change. Band 2's preview can remain visible when
+its contribution is off.
 
 ### Combine: judge the final mix
 
@@ -309,13 +310,52 @@ an error; it does not silently become a local export.
 
 Choose **Send Result** when exact calculated appearance is the priority.
 Choose **Send Layers** when you want editable components in PhotoCraft:
-Color, optional Blur/Directional Blur/Hue, Detail, and enabled D&B bands as
-appropriate to the current mode.
+Color and Detail remain direct children of the **SkinTools** folder. Enabled
+Blur, Directional Blur, Hue and D&B bands sit in a **Corrections** subgroup
+between them. The default shared skin mask is attached to **Corrections**, not
+the whole SkinTools folder; the alternative per-layer setting masks correction
+layers individually.
+
+After a settled preview on any skin tab, **precache full-resolution layers**
+prepares eligible FS, standalone D&B and Combine components serially in the
+background. The status appears
+in the tab headers: a circular arrow means queued or preparing, a check means
+the matching components remain cached, an empty circle means not checked or no
+longer retained, and an exclamation mark means unavailable or skipped. Hover a tab for details.
+Skin Mask shows the shared full-resolution mask; FS & Tone, D&B and Combine
+show their own eligible layer components. Combine and standalone D&B use
+different D&B inputs, so each variant is prepared and tracked separately.
+FS components are shared with Combine. Indicators update as each set is ready.
+Pixel-affecting settings changes reset indicators until the next preview checks
+them; mix-only changes keep unrelated preparation running. Combine reuses its
+preview-sized mask and layer components when only its mixes change. These
+preview entries share a 192 MiB budget with other cached previews. Cached
+full-resolution data is retained where applicable, and only changed dependencies
+need to be recalculated. Each D&B band is cached separately. Image analysis
+also shows preparation details and Send Layers reports components actually
+reused. Preparation can use substantial CPU and temporary
+RAM; it is skipped unless free RAM exceeds 4 GiB plus 128 bytes per source
+pixel at each stage. You can turn it off in Settings & Info. A foreground action
+normally supersedes preparation. A mix-only preview instead lets it continue
+after yielding at the end of the current calculation. Median Fast preparation uses
+multiple CPU cores; OpenCV controls parallelism for its other operations.
+
+Send Layers reuses matching Color, Detail, Blur and D&B pixels, whether prepared
+in advance or by an earlier send. Mix and Blur opacity changes do not invalidate
+them. The retained layer cache is limited to 2 GiB with LRU eviction and is
+separate from the 256 MiB skin-mask cache; temporary computation memory is not
+included in those limits. If all requested components cannot fit, the status
+reports the estimated requirement and some may be evicted. Entries survive Get or Load only as long as space and
+memory permit, and match exact source pixels, profile, relevant masks and
+settings. Directional Blur is not precached. The updated Photoshop connector can
+send repeatedly from the original Get; corrections may stack and content edits
+may not be detected. Get again to use the current composite.
 
 Editable Combine output can differ from its flattened photograph because of
-nonlinear hue adjustments, clipping and rounding. The default **Mask on top
-folder** also applies the shared skin mask to the whole stack, which can look
-different from masks on individual ingredients. Editable does not mean identical.
+nonlinear hue adjustments, clipping and rounding. The default **Mask on
+Corrections folder** applies the shared skin mask to correction layers, leaving
+Color and Detail unmasked; the alternative per-layer setting applies masks to
+correction ingredients individually. Editable does not mean identical.
 
 Under **Settings & Info > Result file / PhotoCraft layer-transfer options**:
 
@@ -323,8 +363,8 @@ Under **Settings & Info > Result file / PhotoCraft layer-transfer options**:
   output for flattened skin results and supported layer transfers.
 - **exclude opaque alpha**, on for new settings, omits an all-opaque alpha channel.
   This is not a switch for removing a meaningful mask.
-- **send layers mask** chooses **Mask on top folder** (default) or
-  **Mask on every layer** (ingredient-specific masks; Color/Detail stay unmasked).
+- **send layers mask** chooses **Mask on Corrections folder** (default) or
+  **Keep per-layer masks** (Color/Detail stay unmasked).
 - **parallel encoding (two encoders)** applies to supported multi-layer transfers,
   not simultaneous batch images.
 

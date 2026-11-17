@@ -11,8 +11,8 @@ button, input { margin: 3px 0; padding: 6px; width: 95%; }
 <body>
 <div id="scroll"><div id="content">
 <h3>Skin Tools Connector (preview)</h3>
-<p id="status" role="status">Disconnected. Pair or connect below.</p>
-<p>Start Tools normally. In Skin Tools choose Photoshop and Create pairing code.</p>
+<p id="status" role="status">Checking for a saved Tools connection...</p>
+<p>Start Tools normally. This panel automatically resumes an existing pairing and retries while Tools is offline. For first-time pairing, choose Photoshop in Skin Tools and create a pairing code.</p>
 <input id="code" type="password" placeholder="One-time code from Tools">
 <button id="pair">Pair with local Tools</button>
 <button id="connect">Connect / resume</button>
@@ -26,7 +26,7 @@ button, input { margin: 3px 0; padding: 6px; width: 95%; }
 <p>Saved ICC profiles: click one to explicitly use it for the active document.</p>
 <div id="profiles"></div>
 <p>A matching profile name does not prove byte-identical embedded ICC data. Choose the exact file assigned to the document.</p>
-<p>Keep this panel loaded. Reopen after restarting Photoshop. To revoke access, use Forget pairing in Tools.</p>
+<p>Automatic connection starts when this panel is running; it does not launch Tools or create a pairing. After using Disconnect locally, click Connect / resume to reconnect. To revoke access, use Forget pairing in Tools.</p>
 <p>Preview: opaque RGB 8/16-bit only, up to 40 MP. Hue is an editable rendered pixel layer, not a live LUT adjustment.</p>
 </div></div>
 <script src="main.js"></script>

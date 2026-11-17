@@ -135,15 +135,18 @@
         <summary>Source editor</summary>
         <div class="row"><label for="editorSelect">editor</label><select id="editorSelect"><option value="photocraft">PhotoCraft / local files</option><option value="photoshop">Photoshop (UXP preview)</option></select></div>
         <div id="photoshopPairing" hidden>
+          <div class="row"><label for="photoshopCaptureMode">Get Image</label><select id="photoshopCaptureMode"><option value="raw">Raw pixels (default)</option><option value="png" disabled hidden>PNG copy (experimental)</option></select></div>
+          <p class="hint">PNG copy is not yet Photoshop-verified. Use only a disposable document; if rejected, choose Raw pixels and Get Image again.</p>
           <div class="row"><label for="photoshopHueMode">Hue layers</label><select id="photoshopHueMode"><option value="native" disabled hidden>Native Color Lookup (default)</option><option value="rendered">Rendered pixels</option></select></div>
           <p class="hint">Native Hue updates when lower layers change. Its interpolation can differ from the preview; requires the updated connector.</p>
           <button id="photoshopPair">Create pairing code</button>
           <button id="photoshopRevoke">Forget pairing</button>
           <p class="hint" id="photoshopPairCode" role="status"></p>
-          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit, exact source ICC file required. Get Image again after each Send. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's binary transport.</p>
+          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit; raw capture requires the exact source ICC file. The updated connector can send repeatedly from the original Get, appending groups that can stack. Photoshop content edits may not be detected; Get again to use the current composite. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's layer transport.</p>
         </div>
       </details>
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
+      <div class="row"><label style="width:auto" title="After a settled preview on any skin tab, prepare reusable full-resolution FS, standalone D&amp;B and Combine layers serially when enough RAM is available. Foreground operations may wait for a calculation already in progress."><input id="layerPrecache" type="checkbox" checked> precache full-resolution layers</label></div>
       <details id="g-pose">
         <summary>Pose analysis backend</summary>
         <div class="row"><label for="poseBackend">backend</label><select id="poseBackend"><option value="rtmlib">rtmpose / rtmlib (default)</option><option value="google-full">google full (experimental, isolated)</option><option value="opencv-zoo">opencv zoo mediapipe (experimental, cpu)</option></select></div>
@@ -158,7 +161,7 @@
         <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
         <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">lossless compressed</option><option value="none">uncompressed</option></select></div>
         <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> exclude opaque alpha</label></div>
-        <div class="row"><label for="maskPlacement">send layers mask</label><select id="maskPlacement"><option value="folder">Mask on top folder</option><option value="layers">Mask on every layer</option></select></div>
+        <div class="row"><label for="maskPlacement">send layers mask</label><select id="maskPlacement"><option value="folder">Mask on Corrections folder</option><option value="layers">Keep per-layer masks</option></select></div>
         <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> parallel encoding (two encoders)</label></div>
         <p class="hint" id="transferHint"></p>
         <p class="hint">Global options for flattened standalone/batch results and supported PhotoCraft layer transfers. RGB16 retains the captured ICC; masks remain grayscale PNG8. Previews, standalone ingredient layers and Crop are unchanged. Parallel encoding applies to multi-layer transfers, not a single flattened image. PhotoCraft calls stay serialized; source must remain opaque.</p>
@@ -257,6 +260,7 @@
       <div id="maskOperations">
         <div class="row" id="maskPrecacheRow"><span>Full-resolution skin mask</span> <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></div>
       </div>
+      <div class="row"><span>Full-resolution layers</span> <span id="layerCacheStatus" role="status" aria-live="polite">not prepared</span></div>
       <div id="standaloneLoad" hidden>
         <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
         <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
@@ -301,10 +305,8 @@
       <button class="tab" data-k="dnb_result" hidden title="Configured D&amp;B result before Combine mix.">D&amp;B result</button>
       <button class="tab on" data-k="mask" title="The one mask: skin x color range x light range x structure protection.">Mask</button>
       <button class="tab" data-k="analysis" title="Detections, skin mask and structure drawn on the original.">Analysis</button>
-      <button class="tab" data-k="layer" title="The soft light layer as it is sent: no mask applied.">Band 1</button>
-      <button class="tab" data-k="layerm" title="The soft light layer through the mask: 50% gray (no change) where the mask is 0.">Band 1 + mask</button>
-      <button class="tab" data-k="layer2" hidden>Band 2</button>
-      <button class="tab" data-k="layer2m" hidden>Band 2 + mask</button>
+      <button class="tab" data-k="layer" title="Band 1 preview with the skin mask applied and 8x contrast for visibility only; 50% gray means no change.">Band 1 (masked)</button>
+      <button class="tab" data-k="layer2" hidden title="Band 2 preview with the skin mask applied and 8x contrast for visibility only; 50% gray means no change.">Band 2 (masked)</button>
       <button class="tab" data-k="color" hidden title="Full-image low frequencies, no skin mask.">Color</button>
       <button class="tab" data-k="detail" hidden title="Full-image residual encoded for PhotoCraft Linear Light, no skin mask.">Detail</button>
       <button class="tab" data-k="directional_region" hidden title="Blue overlay of Directional Blur's feathered region union intersected with the shared skin mask.">Region</button></div>
@@ -319,10 +321,10 @@
 </div>
 
 <script>
-const generalSettingIds = new Set(['maskPrecache','transferFormat','transferCompression','transferAlpha',
+const generalSettingIds = new Set(['maskPrecache','layerPrecache','transferFormat','transferCompression','transferAlpha',
   'transferParallel','transferHint','maskPlacement','calculationLogText',
   'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint',
-  'editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode','photoshopHueMode']);
+  'editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode','photoshopHueMode','photoshopCaptureMode']);
 const $ = (id) => document.getElementById(id) ||
   (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
@@ -355,6 +357,25 @@ const state = {
 };
 let landmarkEdit = null;
 let settingsRevision = 0;
+let mixOnlyPending = false, lastLayerPrecacheInfo = null;
+let shellConnected = false, shellUiReady = false;
+const layerCacheSession = crypto.randomUUID();
+let layerSettingsRevision = 0;
+const layerCacheStamp = () => `${layerCacheSession}:${layerSettingsRevision}`;
+const cacheTabs = Object.fromEntries(['mask','frequency','dnb','combine'].map(mode =>
+  [mode,{state:'idle',label:'Cache not checked for current settings'}]));
+function announceCacheTabs() {
+  if (shellConnected) parent.postMessage({type:'shp-skin-cache',tabs:cacheTabs}, location.origin);
+}
+function resetCacheTabs() {
+  for (const mode of Object.keys(cacheTabs))
+    cacheTabs[mode] = {state:'idle',label:'Cache not checked for current settings'};
+  announceCacheTabs();
+}
+function setCacheTab(mode, status, label) {
+  cacheTabs[mode] = {state:status,label};
+  announceCacheTabs();
+}
 
 /* ---------- small helpers ---------- */
 async function api(path, body) {
@@ -468,9 +489,22 @@ document.addEventListener('pointerdown',event=>{
 },true);
 ['pointerup','pointercancel','lostpointercapture'].forEach(type=>document.addEventListener(type,finishSliderDrag,true));
 window.addEventListener('blur',()=>finishSliderDrag());
-function markDirty() {
+function markDirty(modeChange=false, mixOnly=false) {
+  if (mixOnly) {
+    mixOnlyPending = !state.dirty || mixOnlyPending;
+    if (lastLayerPrecacheInfo?.stamp === layerCacheStamp()
+        && lastLayerPrecacheInfo.generation === state.imageGeneration)
+      watchLayerPrecache(lastLayerPrecacheInfo, state.loadEpoch);
+  } else {
+    mixOnlyPending = false;
+    if (modeChange !== true) {
+      layerSettingsRevision++;
+      resetCacheTabs();
+    }
+    invalidateMaskCacheStatus();
+    invalidateLayerPrecache();
+  }
   syncPanelAvailability();
-  invalidateMaskCacheStatus();
   renderAnalysisSummary();
   settingsRevision++;
   if (typeof updateStar === 'function' && $('presetSel').options.length) updateStar();
@@ -508,7 +542,7 @@ $('blurMask').onchange = () => { state.frequency.blur_mask = $('blurMask').check
 const combineSliders={};
 for(const [key,label] of [['fs_mix','FS mix'],['dnb_mix','D&B mix']]){
   combineSliders[key]=slider($('combineSliders'),label,0,100,1,state.combine[key],
-    value=>{state.combine[key]=value;markDirty();});
+    value=>{state.combine[key]=value;markDirty(false,true);});
 }
 const directionalSegments = [
   ['directionalLeft','left','left upper leg','hip to knee'],
@@ -768,7 +802,6 @@ function drawSkintone(data) {
     });
   });
 }
-let shellConnected = false, shellUiReady = false;
 function announceMode(request=null) {
   if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:uiMode(state.mode), request}, location.origin);
 }
@@ -778,7 +811,7 @@ function switchMode(mode, request=null) {
   if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
   if (state.mode !== mode) {
-    state.mode = mode; syncMode(); state.version = 0; markDirty();
+    state.mode = mode; syncMode(); state.version = 0; markDirty(true);
     clearTimeout(markDirty.t);
     if (state.loaded && !state.busy) apply({quiet:true});
   }
@@ -793,6 +826,7 @@ window.addEventListener('message', event => {
     if (shellUiReady) parent.postMessage({type:'shp-skin-ready'}, location.origin);
   } else if (data.type === 'shp-tools-connect') {
     shellConnected = true; $('toolModeRow').hidden = true; announceMode();
+    announceCacheTabs();
     parent.postMessage({type:'shp-skin-busy',busy:state.busy}, location.origin);
   } else if (shellConnected && data.type === 'shp-tools-mode' &&
              ['mask','skintone','frequency','dnb','combine'].includes(data.mode) && Number.isSafeInteger(data.request)) {
@@ -976,18 +1010,19 @@ async function operationApi(path, body, sending=false) {
         `${step.label}: ${step.seconds.toFixed(2)}s${step.error ? ' — '+step.error : ''}`).join('\n'));
       return;
     }
-    const completed = {'Loading image / preparing profile':'Image loaded',
-      'Analyzing image / estimating S':'Image analyzed',
+    const completed = {'Loading image / preparing profile':'Image loading and profile preparation (total)',
+      'Analyzing image / estimating S':'Image analysis (total)',
       'Generating shared skin mask':'Mask generated',
-      'Getting merged image from PhotoCraft':'Image fetched from PhotoCraft'};
+      'Getting merged image from PhotoCraft':'PhotoCraft export and file transfer',
+      'Getting merged image from Photoshop':'Photoshop Get (total)'};
     const lines = snapshot.steps.map(step =>
       `${step.error ? step.label+' failed: '+step.error : completed[step.label] || step.label} in ${step.seconds.toFixed(2)}s`);
     if (snapshot.active) lines.push(snapshot.active+'...');
-    if (snapshot.done) lines.push(`${sending ? 'Send' : 'Load/Get'} ${snapshot.error ? 'failed' : 'completed'} in ${snapshot.seconds.toFixed(2)}s`);
+    if (snapshot.done) lines.push(`${sending ? 'Send' : 'Backend Load/Get'} ${snapshot.error ? 'failed' : 'completed'} in ${snapshot.seconds.toFixed(2)}s`);
     if (operation.pollError) lines.push('Live progress unavailable: '+operation.pollError);
     if (sending) temporaryLog.send = lines.join('\n');
     else if (progress === loadProgress) {
-      progress.steps = lines; progress.streamed = true; renderLoadTimings();
+      progress.steps = [...(progress.prefixSteps || []), ...lines]; progress.streamed = true; renderLoadTimings();
     }
     renderTemporaryLog();
     if (snapshot.active) setStatus(snapshot.active+'...');
@@ -1026,6 +1061,8 @@ function renderLoadTimings() {
 }
 function beginLoadTimings(message) {
   invalidateMaskCacheStatus();
+  invalidateLayerPrecache();
+  resetCacheTabs();
   if (temporaryLog.load) recordCalculation(temporaryLog.load);
   loadProgress = {started:performance.now(), steps:[message]};
   renderLoadTimings();
@@ -1165,11 +1202,11 @@ function setBusy(b, operation=true) {
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = panelOperationBusy;
-  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache','poseBackend','posePython','poseModel','poseSave'].forEach(id => { $(id).disabled = panelOperationBusy; });
+  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache','layerPrecache','poseBackend','posePython','poseModel','poseSave'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
-  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b; $('photoshopHueMode').disabled=b;
+  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b; $('photoshopHueMode').disabled=b; $('photoshopCaptureMode').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -1231,6 +1268,7 @@ async function apply({quiet=false}={}) {
   const processingStarted = loadingPreview ? progress.started : started;
   const feedback = previewFeedback(quiet);
   try {
+    await layerCancelPending;
     const token=crypto.randomUUID();
     let maskPoll=null,maskPolling=true;
     const pollMask=async()=>{
@@ -1246,12 +1284,13 @@ async function apply({quiet=false}={}) {
     maskPoll=setTimeout(pollMask,100);
     let r;
     try {
-      r=await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked,_progress:token});
+      r=await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked,precache_layers:$('layerPrecache').checked,layer_cache_revision:layerCacheStamp(),mix_only:mixOnlyPending,_progress:token});
     } finally {
       maskPolling=false;clearTimeout(maskPoll);previewMaskBusy=false;syncPanelAvailability();
     }
     if (epoch === state.loadEpoch && revision === settingsRevision) {
       state.version = r.version; state.avers = r.avers; state.dirty = false; $('apply').classList.remove('dirty');
+      mixOnlyPending = false;
       if (loadingPreview && progress === loadProgress) recordLoadStage('Preview computed', (performance.now()-started)/1000);
       if (state.mode === 'frequency') drawSkintone(r.stats.skintone);
       feedback.stage('Loading preview images...');
@@ -1271,6 +1310,7 @@ async function apply({quiet=false}={}) {
           setStatus('Preview restored from cache.', false, true);
         } else finishProcessing(processingStarted);
         watchMaskPrecache(r.mask_precache, epoch);
+        watchLayerPrecache(r.layer_precache, epoch);
       } else if (loadingPreview && progress === loadProgress && !displayed) {
         recordLoadStage('Preview display failed or was replaced.'); progress.finished = true;
       }
@@ -1301,6 +1341,9 @@ function renderMaskCacheStatus(value) {
   symbol.classList.toggle('running', running);
   symbol.title = label;
   symbol.setAttribute('aria-label', label);
+  const cacheState = running || value.status === 'queued' ? 'warming'
+    : cached ? 'ready' : value.enabled === false || value.error || value.status === 'skipped' ? 'unavailable' : 'idle';
+  setCacheTab('mask', cacheState, label);
 }
 function invalidateMaskCacheStatus() {
   ++maskPrecacheWatch;
@@ -1312,6 +1355,91 @@ $('maskPrecache').onchange = () => {
   localStorage.setItem('shp-mask-precache', $('maskPrecache').checked ? '1' : '0');
   markDirty();
 };
+let layerPrecacheWatch = 0, layerWorkActive = false, layerCancelPending = Promise.resolve();
+$('layerPrecache').checked = localStorage.getItem('shp-layer-precache') !== '0';
+$('layerPrecache').onchange = () => {
+  localStorage.setItem('shp-layer-precache', $('layerPrecache').checked ? '1' : '0');
+  markDirty();
+};
+function invalidateLayerPrecache() {
+  lastLayerPrecacheInfo = null;
+  ++layerPrecacheWatch;
+  clearTimeout(watchLayerPrecache.timer);
+  $('layerCacheStatus').textContent = 'not prepared';
+  for (const mode of ['frequency','dnb','combine']) {
+    if (cacheTabs[mode].state === 'warming')
+      cacheTabs[mode] = {state:'idle',label:'Preparation stopped; cache not checked'};
+  }
+  announceCacheTabs();
+  if (layerWorkActive) {
+    layerWorkActive = false;
+    layerCancelPending = api('/api/layer-precache/cancel', {}).catch(e => logNote('Layer preparation cancellation failed: '+e.message));
+  }
+}
+function watchLayerPrecache(info, epoch) {
+  if (!info) return;
+  const watch = ++layerPrecacheWatch;
+  clearTimeout(watchLayerPrecache.timer);
+  const display = value => {
+    if (watch !== layerPrecacheWatch || epoch !== state.loadEpoch) return;
+    lastLayerPrecacheInfo = value;
+    layerWorkActive = ['queued','running'].includes(value.status);
+    const labels = {idle:'Not prepared; waiting for a preview', queued:'Queued after preview',
+                    running:'Preparing layers', ready:'Prepared (entries may be evicted)',
+                    superseded:'Preparation superseded', skipped:'Not prepared'};
+    const message = value.error ? 'Preparation failed: '+value.error
+      : value.message || labels[value.status] || value.status;
+    $('layerCacheStatus').textContent = message;
+    if (value.stamp === layerCacheStamp() && value.generation === state.imageGeneration) {
+      for (const mode of ['frequency','dnb','combine']) {
+        const record = value.records?.[mode], tab = value.tabs?.[mode];
+        const matching = record?.stamp === layerCacheStamp() && record.generation === state.imageGeneration;
+        if (mode === 'combine') {
+          const needsFs = state.combine.fs_mix > 0;
+          const needsBands = state.combine.dnb_mix > 0 && (state.band1On || state.secondBand.on);
+          const required = [...(needsFs ? [value.records?.frequency] : []),
+                            ...(needsBands ? [value.records?.combine_bands] : [])];
+          const cached = required.every(item => item?.stamp === layerCacheStamp()
+            && item.generation === state.imageGeneration && item.cached);
+          if (!required.length) cacheTabs[mode] = {state:'unavailable',label:'No enabled Combine components'};
+          else if (cached) cacheTabs[mode] = {state:'ready',label:'Matching Combine components are cached'};
+          else if (needsFs && value.tabs?.frequency?.state === 'unavailable')
+            cacheTabs[mode] = {state:'unavailable',label:value.tabs.frequency.message};
+          else if (layerWorkActive) cacheTabs[mode] = {state:'warming',label:'Preparing Combine components'};
+          else if (value.status === 'skipped' || value.status === 'error')
+            cacheTabs[mode] = {state:'unavailable',label:message};
+          else cacheTabs[mode] = {state:'idle',label:value.budget_note || 'Matching Combine components are not retained'};
+          continue;
+        }
+        if (tab?.state === 'unavailable') cacheTabs[mode] = {state:'unavailable',label:tab.message};
+        else if (matching && record.cached) cacheTabs[mode] = {state:'ready',label:tab?.message || 'Matching components are cached'};
+        else if (layerWorkActive && tab?.state === 'queued')
+          cacheTabs[mode] = {state:'warming',label:tab.message};
+        else if (value.status === 'skipped' || value.status === 'error')
+          cacheTabs[mode] = {state:'unavailable',label:message};
+        else cacheTabs[mode] = {state:'idle',label:value.budget_note || 'Matching components are not retained'};
+      }
+    }
+    if (value.budget_note) $('layerCacheStatus').textContent += ' '+value.budget_note;
+    announceCacheTabs();
+    if (layerWorkActive || Object.values(value.records || {}).some(record =>
+        record.stamp === layerCacheStamp() && record.generation === state.imageGeneration))
+      watchLayerPrecache.timer = setTimeout(poll, layerWorkActive ? 700 : 2500);
+  };
+  const poll = async () => {
+    try { display(await api('/api/layer-precache')); }
+    catch (e) {
+      if (watch === layerPrecacheWatch && epoch === state.loadEpoch) {
+        for (const mode of ['frequency','dnb','combine'])
+          cacheTabs[mode] = {state:'unavailable',label:'Layer cache status unavailable: '+e.message};
+        announceCacheTabs();
+        logNote('Layer preparation status failed: '+e.message);
+        watchLayerPrecache.timer = setTimeout(poll, 2500);
+      }
+    }
+  };
+  display(info);
+}
 function watchMaskPrecache(info, epoch) {
   if (!info) return;
   const watch = ++maskPrecacheWatch;
@@ -1360,20 +1488,29 @@ async function save() {
 async function pcGet() {
   if (state.busy) return;
   setBusy(true);
+  beginLoadTimings($('editorSelect').value === 'photoshop' ? 'Getting image from Photoshop...' : 'Checking editor connection...');
   let loaded = false;
   try {
-    const connection = await api('/api/pc/status', {});
-    state.pcConnected = connection.connected; syncTransferTitles();
+    const photoshop = $('editorSelect').value === 'photoshop';
     let path = null;
-    if (!connection.connected) {
-      if (connection.code === 'authentication' || $('editorSelect').value === 'photoshop') throw new Error(connection.message);
-      if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
-      path = window.prompt('SHP_OPEN_IMAGE_V1');
-      if (!path) return;
+    if (!photoshop) {
+      const connectionStarted = performance.now();
+      const connection = await api('/api/pc/status', {});
+      loadProgress.steps = [];
+      recordLoadStage('Editor connection checked', (performance.now()-connectionStarted)/1000);
+      loadProgress.prefixSteps = loadProgress.steps.slice();
+      state.pcConnected = connection.connected; syncTransferTitles();
+      if (!connection.connected) {
+        if (connection.code === 'authentication') throw new Error(connection.message);
+        if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
+        path = window.prompt('SHP_OPEN_IMAGE_V1');
+        if (!path) { recordLoadStage('Image selection cancelled'); loadProgress.finished = true; return; }
+      }
     }
     const message = path ? 'Opening local image...' : 'Getting image from selected editor...';
-    beginLoadTimings(message); setStatus(message);
-    const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', path ? {path} : {});
+    setStatus(message);
+    const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', path ? {path} :
+      photoshop ? {photoshop_capture:$('photoshopCaptureMode').value} : {});
     applyLoaded(r);
     loaded = true;
     await initializeHueCenter();
@@ -1397,10 +1534,18 @@ async function pcSend(layers=false) {
   try {
     const r = await operationApi(layers?'/api/pc/send_layers':'/api/send-result', {...p, generation:state.imageGeneration}, true);
     watchMaskPrecache(r.mask_precache, state.loadEpoch);
+    if (layers) {
+      watchLayerPrecache(r.layer_precache, state.loadEpoch);
+      const reused = new Set((r._progress?.steps || []).map(step => step.label).filter(label =>
+        ['Reusing cached Color and Detail', 'Reusing cached skin-aware Blur', 'Reusing cached D&B layers'].includes(label)));
+      $('layerCacheStatus').textContent = reused.size ? [...reused].join('; ') : 'Send used no cached layer pixels';
+    }
     logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
     if (r.saved) setStatus(`Saved result: ${r.path}`, false, true);
-    else if (state.sourceKind === 'photoshop') setStatus('Sent to Photoshop. Get Image again before sending another result.', false, true);
+    else if (state.sourceKind === 'photoshop') setStatus(r.repeatable === true
+      ? 'Sent to Photoshop. You can send again from the same Get; corrections may stack.'
+      : 'Sent to Photoshop. Get Image again before sending another result.', false, true);
   }
   catch (e) { setStatus(e.message, true); }
   setBusy(false);
@@ -1436,6 +1581,9 @@ function setEditorUi(r) {
   native.hidden = native.disabled = r.photoshop_hue_native !== true;
   const saved = localStorage.getItem('shp-photoshop-hue-mode');
   $('photoshopHueMode').value = native.disabled ? 'rendered' : saved === 'rendered' ? 'rendered' : 'native';
+  const png = $('photoshopCaptureMode').querySelector('option[value="png"]');
+  png.hidden = png.disabled = r.photoshop_png_capture !== true;
+  if (png.disabled && $('photoshopCaptureMode').value === 'png') $('photoshopCaptureMode').value = 'raw';
 }
 $('photoshopHueMode').onchange = () => localStorage.setItem('shp-photoshop-hue-mode', $('photoshopHueMode').value);
 $('photoshopPair').onclick = async () => {
@@ -1572,7 +1720,7 @@ $('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick 
 $('imgSel').onchange = () => { $('imgPath').value = ''; };
 const tabSel = {A: 'result', B: localStorage.getItem('dnb-tabB')};
 function rightPreviewKinds(mode) {
-  return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layerm', 'layer2', 'layer2m'] : ['mask', 'analysis'];
+  return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layer2'] : ['mask', 'analysis'];
 }
 function syncRightTabs() {
   const allowed = rightPreviewKinds(state.mode);
@@ -1584,8 +1732,7 @@ function syncLeftTabs() {
   $('tabsA').querySelectorAll('.tab').forEach(t => { t.hidden = mask && t.dataset.k === 'result'; });
 }
 function paneKinds() {
-  const diagnostic={layer:'layerx',layerm:'layermx',layer2:'layer2x',layer2m:'layer2mx'};
-  return [state.mode === 'mask' ? 'orig' : tabSel.A, state.mode==='dnb' ? diagnostic[tabSel.B] || tabSel.B : tabSel.B];
+  return [state.mode === 'mask' ? 'orig' : tabSel.A, tabSel.B];
 }
 function syncTabs() {
   syncLeftTabs();
@@ -1627,7 +1774,7 @@ function syncTransferTitles() {
   $('pcGet').title = $('editorSelect').value === 'photoshop' ? 'Get the active Photoshop document through the paired UXP connector.' : state.pcConnected === false ? 'Open a local image (Tools desktop native file chooser).' : 'Get the active PhotoCraft document; if disconnected, open a local image in the Tools desktop.';
   $('pcSend').title = state.sourceKind === 'local' ? 'Save one numbered full-resolution PNG beside the loaded source; never overwrite.' : state.mode === 'mask' ? 'Add a grayscale skin mask layer.' : 'Add the flattened corrected photograph as an RGB16 Normal layer.';
   $('pcSendLayers').hidden=!['photocraft','photoshop'].includes(state.sourceKind)||!['dnb','frequency','combine'].includes(state.mode);
-  $('pcSendLayers').title='Add one editable SkinTools folder: D&B above Detail, Hue, Directional Blur, Blur and Color; enabled effects only.';
+  $('pcSendLayers').title='Add one editable SkinTools folder with Color, a masked Corrections subgroup, and Detail. Enabled Hue, Blur, Directional Blur and D&B layers are inside Corrections.';
 }
 [['A', $('tabsA')], ['B', $('tabsB')]].forEach(([k, el]) => el.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   tabSel[k] = t.dataset.k; localStorage.setItem('dnb-tab' + k, t.dataset.k); syncTabs(); if (state.version) showImages();

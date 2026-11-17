@@ -9,6 +9,11 @@ body { display:flex; flex-direction:column; background:var(--bg, #17191c); color
 .shell-header [role="tab"][aria-selected="true"]::before { content:""; position:absolute; inset:-2px -1px -1px; z-index:-1; pointer-events:none; background:var(--panel); border:1px solid var(--line); border-bottom-color:var(--panel); border-radius:inherit; }
 .shell-header [role="tab"]:focus-visible { outline:2px solid var(--acc); outline-offset:-4px; }
 .shell-header [role="tab"][aria-busy="true"] { color:color-mix(in srgb, var(--dim) 70%, black); }
+.cache-indicator { display:inline-block; width:1em; margin-left:.4em; text-align:center; color:var(--dim); }
+.cache-indicator::before { content:"\25cb"; }
+.cache-indicator[data-state="warming"]::before { content:"\21bb"; color:var(--acc); }
+.cache-indicator[data-state="ready"]::before { content:"\2713"; color:#52a878; }
+.cache-indicator[data-state="unavailable"]::before { content:"!"; color:#d29550; }
 .shell-header [role="tab"]:disabled { cursor:default; color:var(--dim); opacity:.5; pointer-events:none; }
 .shell-header [role="tab"][aria-selected="false"]:disabled { color:color-mix(in srgb, var(--dim) 50%, black); }
 .shell-header [role="tab"]:disabled:active { background:var(--input); border-bottom-color:var(--line); }

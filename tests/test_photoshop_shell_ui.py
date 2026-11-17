@@ -23,6 +23,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
         skin = (ROOT / "modules" / "dnb" / "ui" / "index.html").read_text(encoding="utf-8")
         shell = (ROOT / "shell" / "index.html").read_text(encoding="utf-8")
         shell_js = (ROOT / "shell" / "shell.js").read_text(encoding="utf-8")
+        shell_css = (ROOT / "shell" / "shell.css").read_text(encoding="utf-8")
         lookup = "const generalSettingIds =" + skin.split("const generalSettingIds =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
         busy = "let panelOperationBusy =" + skin.split("let panelOperationBusy =", 1)[1].split("function previewFeedback", 1)[0]
         handlers = "$('editorSelect').onchange =" + skin.split("$('editorSelect').onchange =", 1)[1].split("let watchFolderErrors", 1)[0]
@@ -70,7 +71,36 @@ class PhotoshopShellUiTests(unittest.TestCase):
             const frame=document.querySelector('#panel-dnb iframe'), child=frame.contentWindow;
             const select=get('editorSelect');
             if(!select)throw Error('settings not mounted');
+            const tabRects=[...document.querySelectorAll('.shell-header [role=tab]:not([hidden])')]
+              .map(tab=>tab.getBoundingClientRect());
+            if(tabRects.some((rect,index)=>index && rect.left < tabRects[index-1].right-1))
+              throw Error('tab headers overlap at narrow width');
+            child.eval(`parent.postMessage({type:'shp-skin-cache',tabs:{
+              mask:{state:'ready',label:'Mask cached'},
+              frequency:{state:'warming',label:'Preparing FS'},
+              dnb:{state:'unavailable',label:'D&B skipped'},
+              combine:{state:'idle',label:'Combine not checked'}
+            }},parent.location.origin)`);
+            await wait(30);
+            for(const [mode,status,label] of [
+              ['mask','ready','Mask cached'],['frequency','warming','Preparing FS'],
+              ['dnb','unavailable','D&B skipped'],['combine','idle','Combine not checked']]) {
+              const tab=get('tab-'+mode);
+              if(tab.querySelector('.cache-indicator').dataset.state!==status ||
+                 !tab.getAttribute('aria-label').includes(label) || !tab.title.includes(label))
+                throw Error('incorrect cache indicator for '+mode);
+            }
+            window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:window,
+              data:{type:'shp-skin-cache',tabs:{mask:{state:'unavailable',label:'spoof'}}}}));
+            if(get('tab-mask').querySelector('.cache-indicator').dataset.state!=='ready')
+              throw Error('accepted cache status from wrong window');
             const hue=get('photoshopHueMode'), native=hue.querySelector('option[value="native"]');
+            const capture=get('photoshopCaptureMode'), png=capture.querySelector('option[value="png"]');
+            if(capture.value!=='raw'||!png.disabled||!png.hidden)throw Error('PNG exposed to stale backend');
+            child.setEditorUi({editor:'photoshop',photoshop_hue_native:true,photoshop_png_capture:true});
+            if(png.disabled||png.hidden||capture.value!=='raw')throw Error('PNG should be opt-in on updated backend');
+            capture.value='png';child.setEditorUi({editor:'photoshop'});
+            if(capture.value!=='raw'||!png.disabled)throw Error('stale backend did not disable PNG');
             if(!native.disabled || !native.hidden)throw Error('old backend exposes unsupported native option');
             child.setEditorUi({editor:'photoshop',photoshop_hue_native:true});
             if(native.disabled || native.hidden)throw Error('updated backend did not expose native option');
@@ -115,7 +145,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
             get('result').textContent='PASS';
           })().catch(error=>document.getElementById('result').textContent='FAIL: '+error.message);
         """
-        page = ('<!doctype html><meta charset="utf-8">' + body + '<pre id="result">PENDING</pre><script>'
+        page = ('<!doctype html><meta charset="utf-8"><style>' + shell_css + '</style>' + body + '<pre id="result">PENDING</pre><script>'
                 + fixture.replace("</script>", "<\\/script>") + shell_js + checks + "</script>")
         with tempfile.TemporaryDirectory(prefix="shp-editor-ui-") as directory:
             path = Path(directory)
@@ -126,6 +156,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
             try:
                 result = subprocess.run(
                     [str(EDGE), "--headless", "--disable-gpu", "--disable-extensions",
+                     "--window-size=640,700",
                      "--disable-background-networking", "--no-first-run", "--no-default-browser-check",
                      "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
                      f"--user-data-dir={path / 'profile'}", "--virtual-time-budget=5000", "--dump-dom",

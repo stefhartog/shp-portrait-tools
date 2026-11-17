@@ -8,6 +8,8 @@ import json
 import ctypes
 import ctypes.util
 import re
+import shutil
+import subprocess
 from importlib.resources import files
 
 import numpy as np
@@ -24,6 +26,253 @@ class ProgressTests(unittest.TestCase):
     close_server = T.DnbTests.close_server
     get = T.DnbTests.get
     post = T.DnbTests.post
+
+    def test_layer_send_reports_actual_cached_components_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        send = "async function pcSend(layers=false) {" + html.split(
+            "async function pcSend(layers=false) {", 1)[1].split("$('pcGet').onclick", 1)[0]
+        harness = r"""
+const state={busy:false,loaded:true,sourceKind:'photoshop',mode:'frequency',loadEpoch:1,imageGeneration:1};
+const controls={layerCacheStatus:{textContent:''}},$=id=>controls[id];
+const params=()=>({S:181}),setBusy=b=>state.busy=b,setStatus=()=>{},renderTemporaryLog=()=>{};
+const recordCalculation=()=>{},watchMaskPrecache=()=>{},logNote=()=>{},finishProcessing=()=>{};
+const temporaryLog={send:''},performance={now:()=>0};
+let layerPrecacheWatch=0,layerWorkActive=true,steps=[];
+const watchLayerPrecache=()=>{},clearTimeout=()=>{};
+const operationApi=async()=>({document:'test',mask_precache:{},_progress:{steps}});
+""" + send + r"""
+(async()=>{
+  steps=[{label:'Reusing cached Color and Detail'},{label:'Reusing cached skin-aware Blur'}];
+  await pcSend(true);
+  if(controls.layerCacheStatus.textContent!=='Reusing cached Color and Detail; Reusing cached skin-aware Blur')
+    throw Error('missing cache-hit status');
+  steps=[{label:'Reusing cached full-resolution skin mask'}];
+  await pcSend(true);
+  if(controls.layerCacheStatus.textContent!=='Send used no cached layer pixels')
+    throw Error('mask reuse must not count as a layer cache hit');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_layer_preparation_status_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        watcher = "function watchLayerPrecache(info, epoch) {" + html.split(
+            "function watchLayerPrecache(info, epoch) {", 1)[1].split("function watchMaskPrecache(", 1)[0]
+        harness = r"""
+const state={loadEpoch:1,imageGeneration:2,combine:{fs_mix:100,dnb_mix:100},band1On:true,secondBand:{on:false}},display={textContent:''},$=()=>display;
+let layerPrecacheWatch=0,layerWorkActive=false,lastLayerPrecacheInfo=null;
+const cacheTabs={frequency:{state:'idle'},dnb:{state:'idle'},combine:{state:'idle'}};
+const layerCacheStamp=()=> 'rev1',announceCacheTabs=()=>{};
+const setTimeout=()=>1,api=async()=>{},logNote=()=>{};
+""" + watcher + r"""
+for (const [info, expected, active] of [
+  [{status:'idle'}, 'Not prepared; waiting for a preview', false],
+  [{status:'queued'}, 'Queued after preview', true],
+  [{status:'running',message:'Checking or preparing Blur'}, 'Checking or preparing Blur', true],
+  [{status:'ready'}, 'Prepared (entries may be evicted)', false],
+  [{status:'skipped',message:'insufficient RAM'}, 'insufficient RAM', false],
+  [{status:'error',error:'failure'}, 'Preparation failed: failure', false]
+]) {
+  watchLayerPrecache(info,1);
+  if(display.textContent!==expected || layerWorkActive!==active) throw Error('incorrect layer status');
+}
+watchLayerPrecache({status:'running',mode:'mask',generation:2,stamp:'rev1',
+  message:'Preparing D&B',tabs:{frequency:{state:'ready',message:'FS ready'},
+  dnb:{state:'queued',message:'Preparing D&B'},combine:{state:'queued',message:'Waiting'}},
+  records:{frequency:{stamp:'rev1',generation:2,cached:true},
+  dnb:{stamp:'old',generation:2,cached:true}}},1);
+if(cacheTabs.combine.state!=='warming' || cacheTabs.frequency.state!=='ready' || cacheTabs.dnb.state!=='warming')
+  throw Error('incorrect component or stale revision mapping');
+watchLayerPrecache({status:'ready',mode:'combine',generation:2,stamp:'rev1',
+  tabs:{frequency:{state:'ready',message:'FS ready'},dnb:{state:'unavailable',message:'D&B skipped'},
+        combine:{state:'ready',message:'Combine ready'}},
+  records:{frequency:{stamp:'rev1',generation:2,cached:false},
+  combine_bands:{stamp:'rev1',generation:2,cached:true}}},1);
+if(cacheTabs.frequency.state!=='idle' || cacheTabs.combine.state!=='idle' || cacheTabs.dnb.state!=='unavailable')
+  throw Error('eviction or combine mapping failed');
+state.combine.fs_mix=0;
+watchLayerPrecache(lastLayerPrecacheInfo,1);
+if(cacheTabs.combine.state!=='ready') throw Error('unused FS eviction should not hide cached D&B');
+state.combine.fs_mix=100;
+watchLayerPrecache({status:'running',mode:'mask',generation:2,stamp:'rev1',
+  tabs:{frequency:{state:'ready',message:'FS ready'},dnb:{state:'ready',message:'D&B ready'},
+        combine:{state:'queued',message:'Waiting'}},
+  records:{frequency:{stamp:'rev1',generation:2,cached:true},dnb:{stamp:'rev1',generation:2,cached:true}}},1);
+if(cacheTabs.frequency.state!=='ready' || cacheTabs.dnb.state!=='ready')
+  throw Error('inactive tabs did not report independent states');
+watchLayerPrecache({status:'ready',mode:'combine',generation:2,stamp:'rev1',
+  tabs:{combine:{state:'ready',message:'Done'}},
+  records:{frequency:{stamp:'old',generation:2,cached:true},combine:{stamp:'old',generation:2,cached:true}}},1);
+if(cacheTabs.combine.state!=='idle') throw Error('stale combine record claimed ready');
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_mix_dirty_keeps_layer_preparation_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        dirty = "function markDirty(modeChange=false, mixOnly=false) {" + html.split(
+            "function markDirty(modeChange=false, mixOnly=false) {", 1)[1].split("const sliders =", 1)[0]
+        harness = r"""
+const state={dirty:false,loaded:false,busy:false,loadEpoch:1};
+let layerSettingsRevision=0,settingsRevision=0,mixOnlyPending=false,lastLayerPrecacheInfo=null;
+let masks=0,layers=0,resets=0;
+const sliderDrag=null,$=()=>({classList:{add(){}},options:[]});
+const resetCacheTabs=()=>resets++,invalidateMaskCacheStatus=()=>masks++,invalidateLayerPrecache=()=>layers++;
+const syncPanelAvailability=()=>{},renderAnalysisSummary=()=>{},drawProfile=()=>{},updateStar=()=>{},layerCacheStamp=()=> 'rev';
+""" + dirty + r"""
+markDirty(false,true); markDirty(false,true);
+if (!mixOnlyPending || layers || masks || resets || layerSettingsRevision)
+  throw Error('mix edit invalidated unrelated preparation');
+markDirty();
+if (mixOnlyPending || layers!==1 || masks!==1 || resets!==1 || layerSettingsRevision!==1)
+  throw Error('ordinary edit did not invalidate preparation');
+markDirty(false,true);
+if (mixOnlyPending) throw Error('mix edit hid an earlier ordinary edit');
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_shell_tab_cache_indicators_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        shell = files("shp_photocraft_tools.shell").joinpath("shell.js").read_text()
+        helpers = shell.split("(() => {", 1)[1].split("  const names =", 1)[0]
+        tabs = "function setCacheTabs(tabs) {" + shell.split(
+            "function setCacheTabs(tabs) {", 1)[1].split("  function navigationLocked()", 1)[0]
+        harness = r"""
+const modes=['mask','frequency','dnb','combine'];
+const nodes=Object.fromEntries(modes.map(name=>['tab-'+name,{
+  textContent:name,dataset:{},indicator:{dataset:{}},
+  querySelector(){return this.indicator;},setAttribute(k,v){this[k]=v;}
+}]));
+const $=id=>nodes[id],modules={dnb:{phase:'running'}};
+""" + helpers + tabs + r"""
+setCacheTabs({
+  mask:{state:'ready',label:'Skin mask cached'},
+  frequency:{state:'warming',label:'Preparing Color and Detail'},
+  dnb:{state:'unavailable',label:'Not enough RAM'},
+  combine:{state:'idle',label:'Not checked'}
+});
+if(nodes['tab-mask'].indicator.dataset.state!=='ready' ||
+   !nodes['tab-mask']['aria-label'].includes('Skin mask cached') ||
+   nodes['tab-frequency'].indicator.dataset.state!=='warming' ||
+   nodes['tab-dnb'].indicator.dataset.state!=='unavailable' ||
+   nodes['tab-combine'].indicator.dataset.state!=='idle') throw Error('incorrect tab mapping');
+renderTabStatus(nodes['tab-mask'],{phase:'running',busy:true});
+if(!nodes['tab-mask'].title.includes('Skin mask cached') ||
+   nodes['tab-mask']['aria-busy']!=='true') throw Error('supervisor overwrote cache label');
+setCacheTabs({mask:{state:'bogus',label:'bad'}});
+if(nodes['tab-mask'].indicator.dataset.state!=='ready') throw Error('invalid state accepted');
+clearCacheTabs();
+if(modes.some(mode=>nodes['tab-'+mode].indicator.dataset.state!=='idle'))
+  throw Error('cache states not cleared on restart');
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_mask_tab_reports_shared_mask_status_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        helper = "function renderMaskCacheStatus(value) {" + html.split(
+            "function renderMaskCacheStatus(value) {", 1)[1].split("function invalidateMaskCacheStatus()", 1)[0]
+        harness = r"""
+const symbol={classList:{toggle(){}},setAttribute(){}},$=()=>symbol;
+let tab=null;const setCacheTab=(mode,state,label)=>tab={mode,state,label};
+""" + helper + r"""
+for (const [status,cached,enabled,expected] of [
+  ['queued',false,true,'warming'], ['running',false,true,'warming'],
+  ['ready',true,true,'ready'], ['ready',false,true,'idle'],
+  ['skipped',false,true,'unavailable'], ['idle',false,false,'unavailable']]) {
+  renderMaskCacheStatus({status,cached,enabled});
+  if(tab.mode!=='mask' || tab.state!==expected) throw Error('incorrect mask indicator: '+status);
+}
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_subject_detection_records_timings_without_changing_results(self):
+        from shp_photocraft_tools.modules.dnb import combine_scale as C
+
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+        face = (0, 0, 2, 2)
+        cues, info = [("fixture", 123, 0.1)], ("fixture", {"yaw_deg": 0})
+        token = "subject-timing-test"
+        with patch.object(C.F, "detect", return_value=[face]), \
+             patch.object(C.B, "detect", return_value=([], [])), \
+             patch.object(C, "face_cues", return_value=(cues, info)), \
+             patch.object(C.exif_af, "af_point", return_value=None), \
+             progress.operation(token):
+            subjects, bodies, af, target, faces = C.build_subjects("fixture", image)
+        self.assertEqual((subjects, bodies, af, target, faces),
+                         ([("face", face, info, None, None, cues)], [], None, None, [face]))
+        steps = progress.snapshot(token, consume=True)["steps"]
+        self.assertEqual([step["label"] for step in steps], [
+            "Detect faces (including any model initialization)",
+            "Detect body pose (including any model initialization)",
+            "Estimate face landmarks (per face)"])
+
+    def test_get_timing_prefix_and_cancellation_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        operation = "let loadProgress = null;" + html.split("let loadProgress = null;", 1)[1].split("async function loadList()", 1)[0]
+        get = "async function pcGet() {" + html.split("async function pcGet() {", 1)[1].split("async function pcSend(", 1)[0]
+        harness = r"""
+const state={busy:false}; let clock=0, connected=true, failure=null, selected=null, applied=0, calls=[];
+const performance={now:()=>clock}; const crypto={randomUUID:()=>'token'};
+const temporaryLog={load:'',send:null};
+const controls={editorSelect:{value:'photocraft'},photoshopCaptureMode:{value:'raw'}};
+const $=id=>controls[id];
+const setBusy=b=>state.busy=b, syncTransferTitles=()=>{}, setStatus=()=>{};
+const invalidateMaskCacheStatus=()=>{}, invalidateLayerPrecache=()=>{}, resetCacheTabs=()=>{}, recordCalculation=()=>{}, renderTemporaryLog=()=>{};
+const window={__shpNativeFileDialog:true,prompt:()=>selected};
+const setTimeout=()=>1,clearTimeout=()=>{};
+const applyLoaded=()=>{},initializeHueCenter=async()=>{},apply=()=>applied++;
+const api=async(path,body)=>{
+  calls.push(path);
+  if(path==='/api/pc/status'){clock+=500;if(failure)throw Error(failure);return {connected,message:'disconnected'};}
+  if(failure)throw Error(failure);
+  clock+=1000;
+  return {_progress:{token:body._progress,steps:[{label:'Getting merged image from Photoshop',seconds:1,error:null}],done:true,seconds:1}};
+};
+""" + operation + get + r"""
+(async()=>{
+  await pcGet();
+  if(state.busy||applied!==1||loadProgress.started!==0||
+     !loadProgress.steps.includes('Editor connection checked in 0.50s')||
+     !loadProgress.steps.includes('Photoshop Get (total) in 1.00s'))
+    throw Error('timing prefix or get failed');
+  controls.editorSelect.value='photoshop'; calls=[]; await pcGet();
+  if(state.busy||applied!==2||calls.includes('/api/pc/status')||!calls.includes('/api/pc/fetch'))
+    throw Error('Photoshop did not capture directly');
+  failure='connector unavailable'; await pcGet();
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connector unavailable'))
+    throw Error('Photoshop capture error failed');
+  failure=null;
+  connected=false; controls.editorSelect.value='photocraft'; await pcGet();
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image selection cancelled')||applied!==2)
+    throw Error('cancellation failed');
+  failure='connection failed'; await pcGet();
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connection failed'))
+    throw Error('connection error failed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_feedback_summary_log_and_inline_syntax_without_browser(self):
         library = ctypes.util.find_library("javascriptcoregtk-4.1") or ctypes.util.find_library("javascriptcoregtk-4.0")
@@ -150,6 +399,7 @@ class ProgressTests(unittest.TestCase):
             const symbol={classList:{toggle(k,v){this[k]=v;}},setAttribute(k,v){this[k]=v;}};
             const $=()=>symbol;
             const state={loadEpoch:1,mode:'mask',loaded:true,busy:false};
+            const setCacheTab=()=>{};
             let maskPrecacheWatch=0,maskPrecacheNote=null;
             const timers=[],setTimeout=(fn,ms)=>{timers.push(ms);return timers.length;};
             const clearTimeout=()=>{},logNote=()=>{},setStatus=()=>{},api=async()=>({});
@@ -1071,6 +1321,7 @@ class ProgressTests(unittest.TestCase):
             const general={settingsAvailability:{},generalSettingsHost:{}},ready=new WeakSet();
             const $=id=>general[id]||panels[id.replace('panel-','')];
             const renderTabStatus=(tab,state)=>tab.phase=state.phase;
+            const clearCacheTabs=()=>{};
             const report=(message,error=false)=>reports.push([message,error]);
             const setTimeout=()=>{},location={origin:'http://local'};
             const fetch=async()=>({ok:true,json:async()=>({modules})});
@@ -1200,7 +1451,8 @@ class ProgressTests(unittest.TestCase):
                 self.assertTrue(entered.wait(5))
                 snapshot = json.loads(self.get("/api/progress?token=" + token)[0])
                 self.assertEqual(snapshot["active"], "Analyzing image / estimating S")
-                self.assertEqual(snapshot["steps"][0]["label"], "Loading image / preparing profile")
+                self.assertTrue(any(step["label"] == "Loading image / preparing profile"
+                                    for step in snapshot["steps"]))
                 self.assertFalse(snapshot["done"])
                 self.assertTrue(T.S.LOCK.locked())
                 self.assertTrue(json.loads(self.get("/api/progress?token=other-operation")[0])["pending"])

@@ -92,6 +92,14 @@ def check_batch_cancel():
             raise BatchCancelled("batch cancelled")
 
 
+def completed(label, seconds):
+    record = _current.get()
+    if record is not None:
+        with _lock:
+            record["steps"].append({"label": label, "seconds": seconds, "error": None})
+            record["updated"] = time.monotonic()
+
+
 def call(label, fn, *args, **kwargs):
     record = _current.get()
     if record is None:

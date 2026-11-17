@@ -62,7 +62,7 @@ def _tag_tiff(data, icc, alpha):
                      b"\0"*(profile_offset-len(data)), icc, b"\0"*(len(icc)%2), ifd))
 
 
-def tagged_rgb16(layer, icc, transfer=None):
+def tagged_rgb16(layer, icc, transfer=None, *, png_strategy=None):
     options = transfer_settings(transfer)
     if layer.dtype != np.uint16 or layer.ndim != 3 or layer.shape[2] != 3 or not icc:
         raise ControlError("layer encoding requires RGB16 pixels and the captured ICC profile")
@@ -76,8 +76,10 @@ def tagged_rgb16(layer, icc, transfer=None):
         ok, encoded = cv2.imencode(".tiff", pixels,
                                   [cv2.IMWRITE_TIFF_COMPRESSION, 8 if options["compressed"] else 1])
     else:
-        ok, encoded = cv2.imencode(".png", pixels,
-                                  [cv2.IMWRITE_PNG_COMPRESSION, 1 if options["compressed"] else 0])
+        params = [cv2.IMWRITE_PNG_COMPRESSION, 1 if options["compressed"] else 0]
+        if png_strategy is not None:
+            params += [cv2.IMWRITE_PNG_STRATEGY, png_strategy]
+        ok, encoded = cv2.imencode(".png", pixels, params)
     del pixels
     if not ok:
         raise ControlError("could not encode the RGB16 layer")
@@ -476,6 +478,23 @@ class Bridge(BaseBridge):
         self._release_source(mask_doc, scratch_docs)
         self._activate(scratch)
 
+    def _group_corrections(self, scratch, layers, mask=None, mask_file=None, scratch_docs=None, anchors=None):
+        if not layers:
+            return None
+        self._activate(scratch)
+        for index, layer in enumerate(layers):
+            self.client.run("layer.select", layer=layer,
+                            mode="replace" if index == 0 else "add")
+        group = int(self.client.run("layer.groupLayers", name="Corrections",
+                                    mode="Pass Through")["layer"])
+        if mask is not None:
+            self._group_skin_mask(scratch, group, mask, mask_file, scratch_docs)
+        if anchors is not None:
+            color, detail = anchors
+            self.client.run("layer.moveTo", layer=group, target=color, position="above")
+            self.client.run("layer.moveTo", layer=detail, target=group, position="above")
+        return group
+
     def send_frequency(self, layers, mask8, doc, source_icc, *, mask_placement="folder"):
         return self._send_skin_layers(
             [("Color", layers["color"], "Normal", False),
@@ -694,21 +713,26 @@ class Bridge(BaseBridge):
                 self._release_source(band_doc, scratch_docs)
                 self._activate(scratch)
                 band_ids.append(band_id)
-            ordered_layers = tuple(lid for lid in
-                                   (color_id, blur_id, directional_id, correction, detail_id, *band_ids)
+            correction_ids = tuple(lid for lid in
+                                   (blur_id, directional_id, correction, *band_ids)
                                    if lid is not None)
-            for i, lid in enumerate(ordered_layers):
-                self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
-            group = int(progress.call("Assembling SkinTools folder", self.client.run,
-                                      "layer.groupLayers", name="SkinTools", mode="Normal")["layer"])
-            if mask_placement == "folder":
-                self._group_skin_mask(scratch, group, mask8, files[1], scratch_docs)
-            else:
+            if mask_placement == "layers":
                 for lid in (blur_id if blur_masked else None, correction):
                     if lid is not None:
                         self._group_skin_mask(scratch, lid, mask8, files[1], scratch_docs)
                 for lid in band_ids:
                     self._group_skin_mask(scratch, lid, band_mask8, band_mask_file, scratch_docs)
+            corrections_id = self._group_corrections(
+                scratch, correction_ids,
+                mask=mask8 if correction_ids and mask_placement == "folder" else None,
+                mask_file=files[1], scratch_docs=scratch_docs,
+                anchors=(color_id, detail_id) if correction_ids else None)
+            ordered_layers = tuple(lid for lid in (color_id, corrections_id, detail_id)
+                                   if lid is not None)
+            for i, lid in enumerate(ordered_layers):
+                self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
+            group = int(progress.call("Assembling SkinTools folder", self.client.run,
+                                      "layer.groupLayers", name="SkinTools", mode="Normal")["layer"])
             target = self._find(doc["index"], doc["name"])
             self._activate(target["index"])
             tops = self.client.run("layer.list").get("layers") or []
@@ -808,15 +832,36 @@ class Bridge(BaseBridge):
                 ids.append(lid)
             self._activate(assembly)
             if blur_mask is not None:
-                for i, lid in enumerate(ids):
-                    self.client.run("layer.select", layer=lid, mode="replace" if i == 0 else "add")
-                lid = int(self.client.run("layer.groupLayers", name=group_name, mode=group_mode)["layer"])
                 rel = self._file("skin mask")
                 files.append(rel)
-                targets = [lid] if mask_placement == "folder" else [
-                    layer_id for layer_id, spec in zip(ids, layers) if spec[3]]
-                for masked_id in targets:
-                    self._group_skin_mask(assembly, masked_id, blur_mask, rel, scratch_docs)
+                correction_ids = [layer_id for layer_id, spec in zip(ids, layers)
+                                  if spec[0] not in ("Color", "Detail")]
+                if not correction_ids:
+                    raise ControlError("skin mask requires at least one Corrections layer")
+                if mask_placement == "layers":
+                    for layer_id, spec in zip(ids, layers):
+                        if spec[0] not in ("Color", "Detail") and spec[3]:
+                            self._group_skin_mask(assembly, layer_id, blur_mask, rel, scratch_docs)
+                anchor_ids = {spec[0]: layer_id for layer_id, spec in zip(ids, layers)}
+                anchors = ((anchor_ids["Color"], anchor_ids["Detail"])
+                           if "Color" in anchor_ids and "Detail" in anchor_ids else None)
+                corrections = self._group_corrections(
+                    assembly, correction_ids,
+                    mask=blur_mask if mask_placement == "folder" else None,
+                    mask_file=rel, scratch_docs=scratch_docs,
+                    anchors=anchors)
+                ordered_layers = []
+                added_corrections = False
+                for layer_id, spec in zip(ids, layers):
+                    if spec[0] in ("Color", "Detail"):
+                        ordered_layers.append(layer_id)
+                    elif not added_corrections:
+                        ordered_layers.append(corrections)
+                        added_corrections = True
+                for i, layer_id in enumerate(ordered_layers):
+                    self.client.run("layer.select", layer=layer_id,
+                                    mode="replace" if i == 0 else "add")
+                lid = int(self.client.run("layer.groupLayers", name=group_name, mode=group_mode)["layer"])
             else:
                 lid = ids[0]
             target = self._find(doc["index"], doc["name"])

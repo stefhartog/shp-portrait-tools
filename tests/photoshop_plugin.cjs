@@ -13,13 +13,33 @@ assert.equal(new URL(baseMatch[1]).origin, "http://localhost:18765");
 
 function documentInfo(id = 7) {
     return {id, name: `Disposable-${id}`, width: 4, height: 3, bitsPerChannel: 16, mode: "RGB",
-        colorProfileName: "Test RGB", quickMaskMode: false,
+        colorProfileName: "Test RGB", quickMaskMode: false, saved: false, path: "",
         activeHistoryState: {id: 42}, historyStates: [{id: 42}], layers: []};
 }
 function element() {
     return {children: [], appendChild(child) { this.children.push(child); },
         removeChild(child) { this.children.splice(this.children.indexOf(child), 1); },
         get firstChild() { return this.children[0]; }};
+}
+function fakeClock() {
+    let now = 0, next = 0;
+    const timers = new Map();
+    return {
+        setTimeout(callback, delay) { const id = ++next; timers.set(id, {at: now + delay, callback}); return id; },
+        clearTimeout(id) { timers.delete(id); },
+        async advance(duration) {
+            const end = now + duration;
+            while (true) {
+                const nextTimer = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+                if (!nextTimer || nextTimer[1].at > end) break;
+                now = nextTimer[1].at;
+                timers.delete(nextTimer[0]);
+                nextTimer[1].callback();
+                await new Promise(resolve => setImmediate(resolve));
+            }
+            now = end;
+        }
+    };
 }
 function lookupProfile() {
     const offset = 144, size = 52 + 12 + 33 ** 3 * 3 * 2 + 12;
@@ -31,7 +51,7 @@ function lookupProfile() {
     view.setUint16(offset + 48, 2); view.setUint16(offset + 50, 2); view.setUint8(offset + 64, 123);
     return buffer;
 }
-function harness({failMask = false, cancel = false, onUpload = null,
+function harness({failMask = false, cancel = false, onUpload = null, pngFailure = null,
     lookupFailure = null, rollbackFailure = false, cleanupFailure = false,
     profiles = [{id: "test", label: "Test ICC", profile: "Test RGB", file: "test.icc"}]} = {}) {
     const original = documentInfo(), other = documentInfo(8), calls = [], controls = new Map();
@@ -43,6 +63,7 @@ function harness({failMask = false, cancel = false, onUpload = null,
         return {
             async createFile(name) {
                 const file = {name, async write(bytes) { file.bytes = bytes; },
+                    async getMetadata() { return {size: file.bytes ? file.bytes.byteLength : 0}; },
                     async read() { return file.bytes; }, async delete() { files.delete(name); }};
                 files.set(name, file);
                 return file;
@@ -53,7 +74,19 @@ function harness({failMask = false, cancel = false, onUpload = null,
     }
     const localFileSystem = {
         async getTemporaryFolder() { return {async createFolder() { const item = folder(); temp.set(item, true); return item; }}; },
-        async getDataFolder() { return folder(); }
+        async getDataFolder() { return folder(); },
+        getFsUrl(file) { return file; }
+    };
+    const nodefs = {
+        async open(file) { return file; },
+        async read(file, buffer, offset, length, position) {
+            if (pngFailure === "read") return {bytesRead: 0};
+            const bytes = new Uint8Array(file.bytes);
+            const count = Math.min(length, bytes.length - position);
+            new Uint8Array(buffer, offset, count).set(bytes.subarray(position, position + count));
+            return {bytesRead: count, buffer};
+        },
+        async close() {}
     };
     function remove(layer) {
         const collection = layer.parent ? layer.parent.layers : original.layers;
@@ -77,6 +110,27 @@ function harness({failMask = false, cancel = false, onUpload = null,
     }
     original.createLayerGroup = async ({name}) => create(name, "group");
     original.createPixelLayer = async ({name}) => create(name);
+    original.duplicate = async (_name, merged) => {
+        assert(modal); assert.equal(merged, true);
+        calls.push(["duplicate", original.id]);
+        if (pngFailure === "same") return original;
+        const copy = documentInfo(++sequence);
+        copy.saveAs = {async png(file, options, asCopy) {
+            assert(modal); assert.equal(asCopy, true);
+            assert.equal(ps.app.activeDocument.id, copy.id);
+            calls.push(["savePng", copy.id]);
+            if (pngFailure === "save") throw new Error("mock PNG save failure");
+            if (pngFailure === "changed") original.activeHistoryState = {id: 99};
+            if (pngFailure !== "empty") file.bytes = new Uint8Array([137, 80, 78, 71]).buffer;
+        }};
+        copy.closeWithoutSaving = async () => {
+            assert(modal);
+            calls.push(["closeCopy", copy.id]);
+            ps.app.documents.splice(ps.app.documents.indexOf(copy), 1);
+        };
+        ps.app.documents.push(copy); ps.app.activeDocument = copy;
+        return copy;
+    };
     let lookupData;
     const ps = {
         app: {documents: [original, other], activeDocument: original},
@@ -127,10 +181,16 @@ function harness({failMask = false, cancel = false, onUpload = null,
             try {
                 return await fn({isCancelled: cancel, reportProgress(value) { calls.push(["progress", value.value]); }, hostControl: {
                     async suspendHistory(options) { calls.push(["suspend", options]); historySnapshot = [...original.layers]; return 1; },
+                    async registerAutoCloseDocument(id) { calls.push(["autoClose", id]); },
+                    async unregisterAutoCloseDocument(id) { calls.push(["unregister", id]); },
                     async resumeHistory(id, commit) {
                         calls.push(["resume", commit]);
                         if (!commit && rollbackFailure) throw new Error("mock rollback failure");
                         if (!commit) original.layers.splice(0, original.layers.length, ...historySnapshot);
+                        if (commit) {
+                            original.activeHistoryState = {id: ++sequence};
+                            original.historyStates.push(original.activeHistoryState);
+                        }
                     }
                 }});
             } finally { modal = false; }
@@ -181,12 +241,15 @@ function harness({failMask = false, cancel = false, onUpload = null,
         require(name) {
             if (name === "photoshop") return ps;
             if (name === "uxp") return {storage: {localFileSystem, formats: {binary: "binary"}, secureStorage: {}}};
+            if (name === "fs") return nodefs;
             if (name === "./protocol.js") return P;
             if (name === "./profile_store.js") return MockProfileStore;
             throw new Error(`Unexpected dependency ${name}`);
         },
-        document: {getElementById(id) { if (!controls.has(id)) controls.set(id, element()); return controls.get(id); },
+        document: {readyState: "loading",
+            getElementById(id) { if (!controls.has(id)) controls.set(id, element()); return controls.get(id); },
             createElement() { return element(); }},
+        window: {addEventListener() {}},
         localStorage: {getItem(key) { return stored.get(key) || null; }, setItem(key, value) { stored.set(key, value); }},
         console: {error() {}}, Uint8Array, Uint16Array, ArrayBuffer, setTimeout, clearTimeout,
         async fetch(url, options) {
@@ -212,18 +275,22 @@ function harness({failMask = false, cancel = false, onUpload = null,
     const marker = context.marker(original);
     function makeJob() {
         const capture = "unit-capture";
-        vm.runInContext(`captures.set(${JSON.stringify(capture)}, ${JSON.stringify(marker)})`, context);
-        bundle = {doc: {index: original.id, name: original.name, width: 4, height: 3, depth: 16,
-            mode: "RGB", alpha: "opaque", profile: "Test RGB", marker, session, capture, protocol: 1},
+        const info = {index: original.id, name: original.name, width: 4, height: 3, depth: 16,
+            mode: "RGB", alpha: "opaque", profile: "Test RGB", session, protocol: 1};
+        vm.runInContext(`captures.set(${JSON.stringify(capture)}, {info: ${JSON.stringify(info)}, marker: ${JSON.stringify(marker)}})`, context);
+        bundle = {doc: {...info, marker, capture},
             blobs: {
                 rgb: {bytes: 4 * 3 * 3 * 2, width: 4, height: 3, components: 3, depth: 16},
                 mask: {bytes: 4 * 3, width: 4, height: 3, components: 1, depth: 8}
             },
-            layers: [{name: "SkinTools", blend: "Normal", opacity: 100, mask: "mask", children: [
-                {name: "D&B", blend: "Soft Light", opacity: 65, pixels: "rgb"},
-                {name: "Nested", blend: "Normal", opacity: 100, children: [
-                    {name: "Detail", blend: "Linear Light", opacity: 100, pixels: "rgb", mask: "mask"},
-                    {name: "Color", blend: "Normal", opacity: 100, pixels: "rgb"}]}
+            layers: [{name: "SkinTools", blend: "Normal", opacity: 100, children: [
+                {name: "Detail", blend: "Linear Light", opacity: 100, pixels: "rgb"},
+                {name: "Corrections", blend: "Pass Through", opacity: 100, mask: "mask", children: [
+                    {name: "D&B", blend: "Soft Light", opacity: 65, pixels: "rgb"},
+                    {name: "Nested", blend: "Normal", opacity: 100, children: [
+                        {name: "Hue", blend: "Normal", opacity: 100, pixels: "rgb"},
+                        {name: "Directional Blur", blend: "Normal", opacity: 100, pixels: "rgb", mask: "mask"}]}]},
+                {name: "Color", blend: "Normal", opacity: 100, pixels: "rgb"}
             ]}]};
         return {request: "r1", kind: "apply", protocol: 1, session, params: bundle};
     }
@@ -259,7 +326,8 @@ async function testPairingStatus() {
             }};
             throw new Error(`Unexpected dependency ${name}`);
         },
-        document: {getElementById(id) { if (!controls.has(id)) controls.set(id, element()); return controls.get(id); }},
+        document: {readyState: "loading", getElementById(id) { if (!controls.has(id)) controls.set(id, element()); return controls.get(id); }},
+        window: {addEventListener() {}},
         console: {error() {}}, Uint8Array, ArrayBuffer, setTimeout, clearTimeout,
         async fetch(url, options) {
             const route = url.split("/").pop();
@@ -290,6 +358,122 @@ async function testPairingStatus() {
     finishStartup([]);
     await new Promise(resolve => setImmediate(resolve));
     assert.match(controls.get("status").textContent, /^Connected/, "Late startup must not overwrite connection status");
+}
+
+async function testAutoConnect() {
+    function setup({storedToken = "test-token", responses = []} = {}) {
+        const clock = fakeClock(), controls = new Map(), requests = [], listeners = new Map();
+        const lifecycle = {};
+        class MockProfileStore {
+            constructor() { this.entries = []; }
+            async initialize() {}
+        }
+        const tokenBytes = storedToken ? Uint8Array.from(storedToken, char => char.charCodeAt(0)) : null;
+        const context = vm.createContext({
+            require(name) {
+                if (name === "photoshop") return {};
+                if (name === "./protocol.js") return P;
+                if (name === "./profile_store.js") return MockProfileStore;
+                if (name === "uxp") return {entrypoints: {setup(value) { lifecycle.setup = value; }},
+                    storage: {localFileSystem: {}, formats: {binary: "binary"},
+                    secureStorage: {length: tokenBytes ? 1 : 0, async getItem(key) {
+                        assert.equal(key, "tools-token");
+                        return tokenBytes;
+                    }}}};
+                throw new Error(`Unexpected dependency ${name}`);
+            },
+            document: {readyState: "loading",
+                getElementById(id) { if (!controls.has(id)) controls.set(id, element()); return controls.get(id); },
+                createElement() { return element(); }},
+            window: {addEventListener(name, callback) {
+                if (!listeners.has(name)) listeners.set(name, []);
+                listeners.get(name).push(callback);
+            }},
+            console: {error() {}}, Uint8Array, ArrayBuffer,
+            setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+            async fetch(url, options) {
+                const route = url.split("/").pop();
+                requests.push(route);
+                if (route === "hello") {
+                    assert.equal(options.headers.Authorization, `Bearer ${storedToken}`);
+                    const response = responses.shift() || {ok: true};
+                    return response.ok ? {ok: true, json: async () => ({protocol: 1})} :
+                        {ok: false, status: response.status, text: async () => response.text || "Tools unavailable"};
+                }
+                if (route === "poll") return new Promise(() => {});
+                throw new Error(`Unexpected route ${route}`);
+            }
+        });
+        vm.runInContext(source, context);
+        return {context, clock, controls, requests, lifecycle,
+            fire(name) { for (const callback of listeners.get(name) || []) callback(); }};
+    }
+
+    const recovering = setup({responses: [
+        {ok: false, status: 503, text: "Tools offline"}, {ok: true}
+    ]});
+    assert.equal(typeof recovering.lifecycle.setup.panels.skinTools.create, "function");
+    assert.equal(typeof recovering.lifecycle.setup.panels.skinTools.show, "function");
+    recovering.lifecycle.setup.panels.skinTools.create();
+    recovering.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(recovering.requests, ["hello"], "Startup must try the saved credential without pairing");
+    assert.match(recovering.controls.get("status").textContent, /Retrying in 1s/);
+    await recovering.clock.advance(999);
+    assert.deepEqual(recovering.requests, ["hello"], "Retry must wait for its backoff");
+    await recovering.clock.advance(1);
+    assert.deepEqual(recovering.requests, ["hello", "hello", "poll"]);
+    assert.match(recovering.controls.get("status").textContent, /^Connected/);
+    recovering.fire("unload");
+    await recovering.clock.advance(120000);
+    assert.equal(recovering.requests.filter(route => route === "hello").length, 2,
+        "Unloading the panel must stop future connection attempts");
+
+    const noCredential = setup({storedToken: null});
+    noCredential.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(noCredential.requests, []);
+    assert.match(noCredential.controls.get("status").textContent, /Not paired/);
+    await noCredential.clock.advance(120000);
+    assert.deepEqual(noCredential.requests, [], "Missing credentials must not create pairing or retry");
+
+    const rejected = setup({responses: [{ok: false, status: 401, text: "Unauthorized"}]});
+    rejected.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(rejected.requests, ["hello"]);
+    assert.match(rejected.controls.get("status").textContent, /rejected the saved pairing/);
+    await rejected.clock.advance(120000);
+    assert.deepEqual(rejected.requests, ["hello"], "Rejected credentials must not be retried indefinitely");
+
+    const capped = setup({responses: Array.from({length: 8}, () => ({ok: false, status: 503}))});
+    capped.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    for (const delay of [1000, 2000, 4000, 8000, 16000]) {
+        await capped.clock.advance(delay);
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(capped.requests.filter(route => route === "hello").length, 6);
+    assert.match(capped.controls.get("status").textContent, /Retrying in 30s/);
+    await capped.clock.advance(29999);
+    assert.equal(capped.requests.filter(route => route === "hello").length, 6);
+    await capped.clock.advance(1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(capped.requests.filter(route => route === "hello").length, 7,
+        "Retry backoff must remain capped at 30 seconds");
+
+    const disconnected = setup({responses: [{ok: false, status: 503}]});
+    disconnected.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    await disconnected.controls.get("disconnect").onclick();
+    await disconnected.clock.advance(120000);
+    assert.deepEqual(disconnected.requests, ["hello"], "Manual disconnect must cancel pending retries");
+
+    const unloaded = setup({responses: [{ok: false, status: 503}]});
+    unloaded.fire("load");
+    await new Promise(resolve => setImmediate(resolve));
+    unloaded.fire("unload");
+    await unloaded.clock.advance(120000);
+    assert.deepEqual(unloaded.requests, ["hello"], "Panel unload must cancel pending retries");
 }
 
 async function testProfileStore() {
@@ -409,6 +593,7 @@ async function testProfileFolderShortcut() {
 }
 
 async function test() {
+    await testAutoConnect();
     await testPairingStatus();
     await testProfileStore();
     await testProfileFolderShortcut();
@@ -490,12 +675,27 @@ async function test() {
     assert(first.result, first.error);
     assert.equal(first, second, "Duplicate request must reuse its outcome without inserting again");
     assert.equal(h.original.layers.length, 1);
-    assert.deepEqual(h.original.layers[0].layers.map(layer => layer.name), ["D&B", "Nested"]);
-    assert.deepEqual(h.original.layers[0].layers[1].layers.map(layer => layer.name), ["Detail", "Color"]);
+    assert.deepEqual(h.original.layers[0].layers.map(layer => layer.name), ["Detail", "Corrections", "Color"]);
+    const corrections = h.original.layers[0].layers[1];
+    assert.deepEqual(corrections.layers.map(layer => layer.name), ["D&B", "Nested"]);
+    assert.deepEqual(corrections.layers[1].layers.map(layer => layer.name), ["Hue", "Directional Blur"]);
+    assert(h.calls.some(item => item[0] === "mask" && item[1] === corrections.id),
+        "Skin mask must attach to Corrections, not SkinTools");
+    assert(!h.calls.some(item => item[0] === "mask" && item[1] === h.original.layers[0].id),
+        "Parent SkinTools folder must not receive the skin mask");
     assert.equal(h.ps.app.activeDocument, h.other, "Restore the user's active tab");
     assert.equal(h.calls.filter(item => item[0] === "resume" && item[1] === true).length, 1);
     assert.equal(h.allocated(), 0);
     assert.equal(h.temp.size, 0);
+    const firstGroup = h.original.layers[0];
+    const anotherSend = await h.context.perform({...job, request: "r2"});
+    assert.equal(anotherSend.result.repeatable, true, anotherSend.error);
+    assert.equal(h.original.layers.length, 2);
+    assert.equal(h.original.layers[1], firstGroup, "Prior group must remain intact");
+    assert.notEqual(h.original.layers[0].id, firstGroup.id);
+    assert.equal(h.ps.app.activeDocument, h.other);
+    assert.equal(await h.context.perform(job), first);
+    assert.equal(h.original.layers.length, 2, "Replayed requests must not insert again");
 
     for (const options of [{failMask: true}, {cancel: true}]) {
         const test = harness(options), result = await test.context.perform(test.makeJob());
@@ -508,8 +708,8 @@ async function test() {
     }
     const stale = harness(), staleJob = stale.makeJob();
     stale.original.activeHistoryState = {id: 99};
-    assert.match((await stale.context.perform(staleJob)).error, /changed/);
-    assert.equal(stale.original.layers.length, 0);
+    assert((await stale.context.perform(staleJob)).result, "Content edits are intentionally not detected");
+    assert.equal(stale.original.layers.length, 1);
     assert.equal(stale.temp.size, 0);
     const closed = harness(), closedJob = closed.makeJob();
     closed.ps.app.documents = [closed.other];
@@ -517,6 +717,35 @@ async function test() {
     const resized = harness(), resizedJob = resized.makeJob();
     resized.original.width++;
     assert.match((await resized.context.perform(resizedJob)).error, /changed/);
+    for (const [field, value] of [["colorProfileName", "Other RGB"], ["mode", "CMYK"], ["bitsPerChannel", 8]]) {
+        const candidate = harness(), operation = candidate.makeJob();
+        candidate.original[field] = value;
+        assert((await candidate.context.perform(operation)).error, `${field} changes must fail`);
+        assert.equal(candidate.original.layers.length, 0);
+    }
+    for (const [field, value] of [["name", "Other"], ["profile", "Other RGB"], ["width", 3], ["marker", "tampered"]]) {
+        const candidate = harness(), operation = candidate.makeJob();
+        operation.params.doc[field] = value;
+        assert((await candidate.context.perform(operation)).error, `Tampered ${field} must fail`);
+        assert.equal(candidate.original.layers.length, 0);
+    }
+    {
+        const candidate = harness(), operation = candidate.makeJob();
+        operation.params.layers = [{name: "Result", blend: "Normal", opacity: 100, pixels: "rgb", mask: "mask"}];
+        const result = await candidate.context.perform(operation);
+        assert(result.result, result.error);
+        assert.equal(candidate.original.layers[0].name, "SkinTools");
+        assert.equal(candidate.original.layers[0].blendMode, "passThrough");
+        assert.deepEqual(candidate.original.layers[0].layers.map(layer => layer.name), ["Result"]);
+        assert.equal(candidate.calls.filter(item => item[0] === "progress").at(-1)[1], 1);
+    }
+    {
+        const candidate = harness(), operation = candidate.makeJob();
+        assert((await candidate.context.perform(operation)).result);
+        await candidate.controls.get("disconnect").onclick();
+        vm.runInContext("connected = true", candidate.context);
+        assert.match((await candidate.context.perform({...operation, request: "r2"})).error, /expired/);
+    }
     const capture = harness();
     capture.enforceScopedReads();
     const status = await capture.context.perform({request: "status", kind: "status", protocol: 1, session: capture.session});
@@ -526,6 +755,28 @@ async function test() {
     assert.equal(capture.allocated(), 0);
     assert.equal(capture.calls.filter(item => item[0] === "upload").length, 2);
     assert.equal(capture.calls.find(item => item[0] === "upload")[2], 4 * 3 * 3 * 2);
+    for (const failure of [null, "save", "empty", "read", "changed", "same"]) {
+        const candidate = harness({pngFailure: failure, profiles: []});
+        candidate.enforceScopedReads();
+        const job = {request: "capture-png", params: {format: "png"}};
+        if (failure) {
+            const expected = {save: /mock PNG save failure/, empty: /empty or too large/,
+                read: /truncated/, changed: /changed the source/i, same: /independent capture copy/};
+            await assert.rejects(candidate.context.capture(job), expected[failure]);
+        } else {
+            const result = await candidate.context.capture(job);
+            assert.equal(result.png_bytes, 4);
+            assert.equal(candidate.calls.filter(item => item[0] === "upload").length, 1);
+            assert.match(candidate.calls.find(item => item[0] === "upload")[1], /name=png/);
+        }
+        assert.equal(candidate.temp.size, 0);
+        assert(candidate.ps.app.documents.includes(candidate.original));
+        assert.equal(candidate.ps.app.activeDocument, candidate.original);
+        if (failure !== "same") {
+            assert(candidate.calls.some(item => item[0] === "autoClose"));
+            assert(candidate.calls.some(item => item[0] === "closeCopy"));
+        }
+    }
     const interrupted = harness({onUpload(doc) { doc.activeHistoryState = {id: 99}; }});
     await assert.rejects(interrupted.context.capture({request: "capture"}), /changed/);
     assert.equal(interrupted.allocated(), 0);
@@ -549,6 +800,6 @@ async function test() {
     await assert.rejects(ambiguous.context.capture({request: "capture"}), /Multiple saved ICC/);
     ambiguous.original.colorProfileName = "Other RGB";
     await assert.rejects(ambiguous.context.capture({request: "capture"}), /No saved ICC/);
-    console.log("Photoshop connector host-free tests passed: ICC cache and migration, scoped full-range capture, original target, layers, masks, rollback, cancellation, stale sources, no replay and buffer disposal.");
+    console.log("Photoshop connector host-free tests passed: saved-token auto-connect/retry, ICC cache and migration, scoped full-range capture, original target, layers, masks, rollback, cancellation, stale sources, no replay and buffer disposal.");
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });

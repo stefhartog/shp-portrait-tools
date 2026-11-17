@@ -156,6 +156,46 @@ class DnbTests(unittest.TestCase):
         self.assertEqual(loaded["seconds"], 20)
         self.assertEqual(loaded["pc_doc"]["index"], 1)
 
+    def test_photoshop_input_single_decode_matches_regular_loading_and_rejects_changes(self):
+        rng = np.random.default_rng(42)
+        pixels = rng.integers(0, 65536, (9, 12, 3), dtype=np.uint16)
+        self.image.write_bytes(S.PCB.tagged_rgb16(pixels, S.SRGB_ICC, {"opaque_alpha": False}))
+        normal = S.prepare_loaded_image({"path": str(self.image)}, set_colour=False)
+        original_imread = cv2.imread
+        with patch.object(S.cv2, "imread", wraps=original_imread) as decode:
+            optimized = S.prepare_loaded_image({"path": str(self.image)}, set_colour=False,
+                                                photoshop_size=(9, 12))
+        self.assertEqual(decode.call_count, 1)
+        for i in (1, 2, 3):
+            np.testing.assert_array_equal(optimized[i], normal[i])
+        self.assertEqual(optimized[4:], normal[4:])
+        with self.assertRaisesRegex(ValueError, "changed or is not opaque"):
+            S.prepare_loaded_image({"path": str(self.image)}, photoshop_size=(9, 13))
+        self.image.write_bytes(S.PCB.tagged_rgb16(pixels, S.SRGB_ICC, {"opaque_alpha": True}))
+        with self.assertRaisesRegex(ValueError, "changed or is not opaque"):
+            S.prepare_loaded_image({"path": str(self.image)}, photoshop_size=(9, 12))
+        cv2.imwrite(str(self.image), np.zeros((9, 12, 3), dtype=np.uint8))
+        with self.assertRaisesRegex(ValueError, "changed or is not opaque"):
+            S.prepare_loaded_image({"path": str(self.image)}, photoshop_size=(9, 12))
+
+    def test_photoshop_get_uses_verified_dimensions_for_single_decode(self):
+        pixels = np.full((9, 12, 3), 32768, dtype=np.uint16)
+        self.image.write_bytes(S.PCB.tagged_rgb16(pixels, S.SRGB_ICC, {"opaque_alpha": False}))
+        doc = {"editor": "photoshop", "width": 12, "height": 9, "index": 1}
+
+        class FakeBridge:
+            def fetch(inner, dest, *, capture_format):
+                return self.image, doc
+
+        with patch.dict(S.EDITOR, selected="photoshop"), patch.object(S, "bridge", return_value=FakeBridge()), \
+                patch.object(S.cv2, "imread", wraps=cv2.imread) as decode:
+            result = S.api_pc_fetch({})
+        self.assertEqual(decode.call_count, 1)
+        self.assertEqual((result["width"], result["height"]), (12, 9))
+        self.assertEqual(S.STATE["source_icc"], S.SRGB_ICC)
+        self.assertTrue(S.STATE["source_opaque"])
+        self.assertEqual(S.BRIDGE["doc"], doc)
+
     def test_presets_default_roundtrip_and_validation(self):
         self.assertEqual(json.loads(self.get("/api/presets")[0]), {"default": None, "presets": {}})
         result = self.post("/api/presets/save", {"name": "Portrait", "settings": PARAMS})

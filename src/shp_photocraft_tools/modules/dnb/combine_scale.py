@@ -25,6 +25,7 @@ from . import estimate_body_scale as B
 from . import estimate_scale as F
 from . import exif_af
 from . import pose_backend as POSE
+from . import progress
 
 IPD_MM, IRIS_MM = F.IPD_MM, F.IRIS_MM
 OUTLIER = math.log(1.25)
@@ -97,13 +98,14 @@ def build_subjects(path, img, pose_config=None):
     Returns (subjects, bodies, af, target, faces); a subject is (kind, face, face_info, body_index, body_estimate, cues)."""
     h, w = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    faces = F.detect(img)
-    kps, scs = B.detect(img, pose_config) if pose_config else B.detect(img)
+    faces = progress.call("Detect faces (including any model initialization)", F.detect, img)
+    kps, scs = (progress.call("Detect body pose (including any model initialization)", B.detect, img, pose_config)
+                if pose_config else progress.call("Detect body pose (including any model initialization)", B.detect, img))
     bodies = list(zip(kps, scs))
     used_body = set()
     subjects = []
     for f in faces:
-        cues, face_info = face_cues(rgb, f)
+        cues, face_info = progress.call("Estimate face landmarks (per face)", face_cues, rgb, f)
         bi = (match_body(f, bodies, used_body) if pose_config and pose_config["backend"] in POSE.SCORED_BACKENDS
               else match_body(f, bodies))
         est = None

@@ -38,10 +38,12 @@ class PreviewCacheTests(unittest.TestCase):
                 self.assertEqual(self.post("/api/color-pick", {
                     "version": response["version"], "u": .5, "v": .5}), pick)
                 self.assertEqual(S.STATE["region_box"], (0, 0, 128, 96))
-        self.assertEqual(set(S.STATE["preview_cache"]), {"dnb", "mask", "frequency"})
+        cache = S.STATE["preview_cache"]
+        self.assertTrue({"dnb", "mask", "frequency"} <= set(cache))
         self.assertLessEqual(sum(e["bytes"] for e in S.STATE["preview_cache"].values()), S.PREVIEW_CACHE_LIMIT)
-        for entry in S.STATE["preview_cache"].values():
-            self.assertFalse(np.shares_memory(entry["state"]["last"]["reg"], S.STATE["img"]))
+        for entry in cache.values():
+            if "state" in entry:
+                self.assertFalse(np.shares_memory(entry["state"]["last"]["reg"], S.STATE["img"]))
 
     def test_keys_follow_effective_mode_inputs_and_overlay_is_separate(self):
         self.post("/api/load", {"path": str(self.image)})

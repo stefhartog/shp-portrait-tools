@@ -11,8 +11,14 @@
   function renderTabStatus(tab, state) {
     const {busy, label} = moduleStatus(state);
     if (state.phase !== 'unavailable') tab.hidden = state.phase === 'stopped';
-    tab.title = label;
-    tab.setAttribute('aria-label', tab.textContent.trim()+': '+label);
+    const indicator = tab.querySelector?.('.cache-indicator');
+    if (indicator && state.phase !== 'running') {
+      indicator.dataset.state = 'unavailable';
+      tab.dataset.cacheLabel = 'Cache status unavailable while Skin Tools is not running';
+    }
+    const cacheLabel = tab.dataset?.cacheLabel;
+    tab.title = label+(cacheLabel ? '; '+cacheLabel : '');
+    tab.setAttribute('aria-label', tab.textContent.trim()+': '+tab.title);
     tab.setAttribute('aria-busy', String(busy));
   }
   const names = {crop: 'AI Fill', dnb: 'Skin Tools'};
@@ -34,6 +40,20 @@
   let skinBusy = false;
   let cropWatchBusy = false;
   let cropBusy = false;
+  function setCacheTabs(tabs) {
+    for (const mode of modes) {
+      const tab = $(`tab-${mode}`), indicator = tab.querySelector('.cache-indicator');
+      const status = tabs?.[mode];
+      if (!status || !['idle','warming','ready','unavailable'].includes(status.state) ||
+          typeof status.label !== 'string' || status.label.length > 300) continue;
+      indicator.dataset.state = status.state;
+      tab.dataset.cacheLabel = status.label;
+      renderTabStatus(tab, modules.dnb || {phase:'unknown'});
+    }
+  }
+  function clearCacheTabs() {
+    setCacheTabs(Object.fromEntries(modes.map(mode => [mode,{state:'idle',label:'Cache not checked'}])));
+  }
   function navigationLocked() { return skinBusy || cropWatchBusy || cropBusy || !!modules.dnb?.busy || !!modules.crop?.busy; }
   function syncNavigation() {
     const locked = navigationLocked();
@@ -135,6 +155,8 @@
       skinBusy = data.busy;
       if (skinBusy) pending = null;
       syncNavigation();
+    } else if (data.type === 'shp-skin-cache' && data.tabs && typeof data.tabs === 'object') {
+      setCacheTabs(data.tabs);
     } else if (data.type === 'shp-skin-mode' && (modes.includes(data.mode) || data.mode === 'skintone') &&
                (data.request === null || Number.isSafeInteger(data.request))) {
       if (navigationLocked()) return;
@@ -193,6 +215,7 @@
         next.dataset.instance = state.instance;
         if (name === 'dnb') {
           pending = null;
+          clearCacheTabs();
           next.onload = () => next.contentWindow.postMessage({type:'shp-tools-probe'}, location.origin);
         } else {
           cropPending = null;
@@ -203,7 +226,7 @@
       } else if (['stopping', 'stopped', 'error'].includes(state.phase)) {
         frame?.remove();
         frames.delete(name);
-        if (name === 'dnb') pending = null;
+        if (name === 'dnb') { pending = null; clearCacheTabs(); }
         if (name === 'crop') cropPending = null;
       }
     }

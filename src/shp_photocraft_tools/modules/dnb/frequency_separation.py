@@ -83,7 +83,7 @@ def skin_filter(img, mask, radius, method="gaussian"):
     return np.where((m > 0)[..., None], filtered, img).astype(np.float32)
 
 
-def median_fast(img, radius):
+def median_fast(img, radius, *, workers=None):
     """Square median on uniformly quantized RGB; exact stripe halos, no resizing."""
     img = np.ascontiguousarray(img, dtype=np.float32)
     if (img.ndim != 3 or img.shape[2] != 3 or not np.isfinite(img).all()
@@ -96,7 +96,8 @@ def median_fast(img, radius):
     quantized = np.empty(img.shape, np.uint8)
     for y in range(0, h, 128):
         quantized[y:y+128] = np.round(img[y:y+128] * 255).astype(np.uint8)
-    workers = min(8, max(1, h*w // 4_000_000), max(1, h // (2*r+1)))
+    workers = (min(8, max(1, h*w // 4_000_000), max(1, h // (2*r+1)))
+               if workers is None else min(workers, max(1, h // (2*r+1))))
     if workers == 1:
         filtered = cv2.medianBlur(quantized, 2*r+1)
     else:
@@ -116,8 +117,8 @@ def median_fast(img, radius):
     return color
 
 
-def split(img, method="gaussian", radius=8):
-    color = median_fast(img, radius) if method == "median_fast" else \
+def split(img, method="gaussian", radius=8, *, workers=None):
+    color = median_fast(img, radius, workers=workers) if method == "median_fast" else \
         skin_filter(img, np.ones(img.shape[:2], np.float32), radius, method)
     detail = np.clip(0.5 + (img - color) * 0.5, 0, 1).astype(np.float32)
     return {"color": color, "detail": detail}

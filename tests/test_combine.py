@@ -68,6 +68,134 @@ class CombineApiTests(unittest.TestCase):
                 "skintone":{"on":False},"frequency":{"radius_at_s181":2},
                 "combine":{"fs_mix":55,"dnb_mix":35},"second_band":{"on":True,"invert":True}}
 
+    def test_mix_preview_reuses_components_and_matches_fresh_pixels(self):
+        self.post("/api/load", {"path": str(self.image)})
+        req = self.request()
+        with patch.object(U, "tool_mask", wraps=U.tool_mask) as mask, \
+             patch.object(U, "skintone_layers", wraps=U.skintone_layers) as fs, \
+             patch.object(D, "band_stack", wraps=D.band_stack) as dnb:
+            self.post("/api/run", req)
+            for mixes in ({"fs_mix": 0, "dnb_mix": 35}, {"fs_mix": 85, "dnb_mix": 35},
+                          {"fs_mix": 85, "dnb_mix": 0}, {"fs_mix": 85, "dnb_mix": 100}):
+                before = (mask.call_count, fs.call_count, dnb.call_count)
+                self.post("/api/run", {**req, "combine": mixes})
+                self.assertEqual((mask.call_count, fs.call_count, dnb.call_count), before)
+                cached = dict(U.STATE["imgs"])
+                U.STATE["preview_cache"] = {}
+                self.post("/api/run", {**req, "combine": mixes})
+                self.assertEqual(cached, U.STATE["imgs"])
+            mask.reset_mock(); fs.reset_mock(); dnb.reset_mock()
+            self.post("/api/run", {**req, "strength": .4, "frequency": {"radius": 4}})
+            self.assertEqual((mask.call_count, fs.call_count, dnb.call_count), (0, 1, 1))
+            self.post("/api/run", {**req, "strength": .4})
+            self.assertEqual((mask.call_count, fs.call_count, dnb.call_count), (0, 2, 1))
+            self.post("/api/run", {**req, "view": "detail"})
+            self.assertEqual((mask.call_count, fs.call_count, dnb.call_count), (1, 3, 2))
+            self.post("/api/load", {"path": str(self.image)})
+            self.post("/api/run", req)
+            self.assertEqual((mask.call_count, fs.call_count, dnb.call_count), (2, 4, 3))
+
+    def test_preview_component_cache_obeys_shared_budget(self):
+        self.post("/api/load", {"path": str(self.image)})
+        req = self.request()
+        with patch.object(U, "PREVIEW_CACHE_LIMIT", 1), \
+             patch.object(U, "skintone_layers", wraps=U.skintone_layers) as fs:
+            self.post("/api/run", req)
+            self.post("/api/run", {**req, "combine": {"fs_mix": 35, "dnb_mix": 35}})
+            self.assertEqual(fs.call_count, 2)
+            self.assertFalse(U.STATE["preview_cache"])
+        self.post("/api/run", req)
+        self.assertIn("preview:fs", U.STATE["preview_cache"])
+        self.assertIn("preview:dnb", U.STATE["preview_cache"])
+        self.assertLessEqual(sum(entry["bytes"] for entry in U.STATE["preview_cache"].values()),
+                             U.PREVIEW_CACHE_LIMIT)
+
+    def test_preview_components_survive_mode_switches_at_maximum_preview_size(self):
+        image_path = Path(self.temp.name) / "square-preview.png"
+        y, x = np.mgrid[:1400, :1400]
+        image = np.stack((x % 256, y % 256, (x + y) % 256), axis=2).astype(np.uint8)
+        self.assertTrue(cv2.imwrite(str(image_path), image))
+        self.post("/api/load", {"path": str(image_path)})
+        req = self.request()
+        with patch.object(U, "skintone_layers", wraps=U.skintone_layers) as fs, \
+             patch.object(D, "band_stack", wraps=D.band_stack) as dnb:
+            for mode in ("frequency", "dnb", "combine", "frequency", "dnb", "combine"):
+                self.post("/api/run", {**req, "mode": mode})
+            self.assertEqual(fs.call_count, 1)
+            self.assertEqual(dnb.call_count, 1)
+        cache = U.STATE["preview_cache"]
+        self.assertTrue({"preview:mask", "preview:fs", "preview:dnb"} <= set(cache))
+        self.assertLessEqual(sum(entry["bytes"] for entry in cache.values()), U.PREVIEW_CACHE_LIMIT)
+
+    def test_preview_components_share_across_tabs_and_invalidate_independently(self):
+        self.post("/api/load", {"path": str(self.image)})
+        req = self.request()
+        with patch.object(U, "skintone_layers", wraps=U.skintone_layers) as fs, \
+             patch.object(D, "band_stack", wraps=D.band_stack) as dnb:
+            self.post("/api/run", {**req, "mode": "frequency"})
+            self.assertEqual((fs.call_count, dnb.call_count), (1, 0))
+            self.post("/api/run", {**req, "mode": "dnb"})
+            self.assertEqual((fs.call_count, dnb.call_count), (1, 1))
+            self.post("/api/run", req)
+            self.assertEqual((fs.call_count, dnb.call_count), (1, 1),
+                             "Combine should reuse standalone FS and D&B artifacts")
+            self.post("/api/run", {**req, "strength": .4})
+            self.assertEqual((fs.call_count, dnb.call_count), (1, 2),
+                             "Changing D&B settings must preserve FS layers")
+            self.post("/api/run", {**req, "strength": .4, "frequency": {"radius": 4}})
+            self.assertEqual((fs.call_count, dnb.call_count), (2, 2),
+                             "Changing FS settings must preserve D&B bands")
+
+    def test_dnb_band_previews_are_masked_and_combine_shares_them(self):
+        self.post("/api/load", {"path": str(self.image)})
+        req = {**self.request(), "second_band": {"on": True, "invert": True}}
+        dnb_req = {**req, "mode": "dnb"}
+        self.post("/api/run", dnb_req)
+        p = U.parse_params(dnb_req)
+        reg, k, mreg = U.get_region("whole", p["S"])
+        source = U.source_region(reg.shape, normalized=True)
+        base_mask, total, structure = U.tool_mask(reg, mreg, p, p["S"] * k)
+        layers, _, _, _ = D.band_stack(
+            source, p["S"] * k, p["bands"], p["strength"], p["second_band"],
+            first_on=p["band1_on"], sigma=p["layer_blur_at_s181"] * p["S"] * k / 181,
+            edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"], mask=base_mask,
+            shadows=p["shadows"], highlights=p["highlights"], tone_strength=p["tone_strength"],
+            protect=p["protect"], protect_mm=p["protect_mm"], protect_thr=p["protect_thr"],
+            mask_result=(total, structure))
+        show = np.ones(reg.shape[:2], np.float32) if total is None else total
+        image = lambda key: cv2.imdecode(np.frombuffer(self.get("/img/" + key)[0], np.uint8), 1)
+        for key, index in (("layer", 1), ("layer2", 2)):
+            pixels = next(value for band, value in layers if band == index)
+            expected = np.repeat(U.u8(.5 + (pixels - .5) * show * 8)[..., None], 3, axis=2)
+            np.testing.assert_array_equal(image(key), expected)
+        self.assertNotIn("layerx", U.STATE["imgs"])
+        self.assertNotIn("layer2x", U.STATE["imgs"])
+        self.assertNotIn("layerm", U.STATE["imgs"])
+        standalone = image("layer").copy()
+        with patch.object(D, "band_stack", wraps=D.band_stack) as stack:
+            self.post("/api/run", req)
+            self.assertEqual(stack.call_count, 0, "Combine should reuse exact masked standalone bands")
+        self.assertEqual(standalone.shape[:2], image("mask").shape[:2])
+
+    def test_dnb_preview_tabs_expose_only_masked_bands(self):
+        html = (Path(U.__file__).parent / "ui" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('data-k="layer" title="Band 1 preview with the skin mask applied and 8x contrast', html)
+        self.assertIn('data-k="layer2" hidden title="Band 2 preview with the skin mask applied and 8x contrast', html)
+        self.assertNotIn('data-k="layerx"', html)
+        self.assertNotIn('data-k="layer2x"', html)
+
+    def test_mix_reuse_preserves_skintone_preview(self):
+        self.post("/api/load", {"path": str(self.image)})
+        req = {**self.request(), "skintone": {"on": True, "hue_amount": 60}}
+        self.post("/api/run", req)
+        changed = {**req, "combine": {"fs_mix": 35, "dnb_mix": 75}}
+        with patch.object(U, "skintone_layers", side_effect=AssertionError("recomputed")):
+            self.post("/api/run", changed)
+        cached = dict(U.STATE["imgs"])
+        U.STATE["preview_cache"] = {}
+        self.post("/api/run", changed)
+        self.assertEqual(cached, U.STATE["imgs"])
+
     def test_preview_cache_presets_save_and_rgb16_local_result(self):
         self.post("/api/load",{"path":str(self.image)})
         req=self.request()
@@ -86,8 +214,10 @@ class CombineApiTests(unittest.TestCase):
                              U.mask_settings_key(U.parse_params({**req,"mode":mode}),None))
         self.post("/api/run",req)
         result,icc=U.skin_result(p)
-        np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(self.get("/img/result")[0],np.uint8),1),
-                                      U.u8(result))
+        preview_result=self.get("/img/result")[0]
+        U.STATE["preview_cache"]={}
+        self.post("/api/run",req)
+        self.assertEqual(self.get("/img/result")[0],preview_result)
         saved=self.post("/api/save",req)
         folder=Path(saved["dir"])
         self.assertEqual(saved["files"],["result.png","settings.json"])
@@ -109,11 +239,18 @@ class CombineApiTests(unittest.TestCase):
         unmixed={key:self.get("/img/"+key)[0] for key in ("fs_result","dnb_result","mask")}
         original=U.STATE["source_img"].copy()
         p=U.parse_params(req)
-        mask=U.full_skin_mask(p)
-        layers=U.skintone_layers(original,mask,p)
-        _,fs_result=ST.composite(layers,mask,p["skintone"],p["frequency"])
-        _,dnb_result,_,_=D.band_stack(original,p["S"],p["bands"],p["strength"],p["second_band"],
-            first_on=p["band1_on"],edge=p["edge"],tau=p["tau"],max_ev=p["max_ev"],mask_result=(mask,None))
+        reg,k,mreg=U.get_region("whole",p["S"])
+        preview_source=U.source_region(reg.shape,normalized=True)
+        mask,total,structure=U.tool_mask(reg,mreg,p,p["S"]*k)
+        show=np.ones(reg.shape[:2],np.float32) if total is None else total
+        layers=U.skintone_layers(preview_source,show,p,k)
+        _,fs_result=ST.composite(layers,show,p["skintone"],p["frequency"])
+        _,dnb_result,_,_=D.band_stack(preview_source,p["S"]*k,p["bands"],p["strength"],p["second_band"],
+            first_on=p["band1_on"],sigma=p["layer_blur_at_s181"]*p["S"]*k/181,
+            edge=p["edge"],tau=p["tau"],max_ev=p["max_ev"],mask=mask,
+            shadows=p["shadows"],highlights=p["highlights"],tone_strength=p["tone_strength"],
+            protect=p["protect"],protect_mm=p["protect_mm"],protect_thr=p["protect_thr"],
+            mask_result=(total,structure))
         for key,expected in (("fs_result",fs_result),("dnb_result",dnb_result)):
             np.testing.assert_array_equal(cv2.imdecode(np.frombuffer(unmixed[key],np.uint8),1),U.u8(expected))
         for mixes in ({"fs_mix":0,"dnb_mix":0},{"fs_mix":100,"dnb_mix":100}):

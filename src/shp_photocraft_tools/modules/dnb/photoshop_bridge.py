@@ -5,13 +5,15 @@ import io
 import math
 from pathlib import Path
 import secrets
+import time
 
+import cv2
 import numpy as np
-from PIL import ImageCms
+from PIL import Image, ImageCms, UnidentifiedImageError
 
 from shp_photocraft_tools.shared.photocraft import ControlError
 from shp_photocraft_tools.shared.photoshop import CHUNK, MAX_PIXELS, MAX_TRANSFER, PROTOCOL
-from . import frequency_separation as FS, skintone as ST, photoshop_lut
+from . import frequency_separation as FS, skintone as ST, photoshop_lut, progress
 from .photocraft_bridge import tagged_rgb16, transfer_settings
 
 
@@ -47,10 +49,20 @@ class Bridge:
         result = self.broker.execute("status", {})
         return {"connected": True, "doc": result.get("doc"), "headless": False}
 
-    def fetch(self, inbox):
+    def fetch(self, inbox, *, capture_format="raw"):
         inbox = Path(inbox)
+        if capture_format not in ("raw", "png"):
+            raise ControlError("Invalid Photoshop capture format")
+        if capture_format == "png" and "png-capture-v1" not in self.broker.capabilities:
+            raise ControlError("PNG capture requires the updated Photoshop connector; install it and reconnect.")
+
+        started = time.perf_counter()
 
         def finish(job, result):
+            progress.completed("Photoshop capture and transfer", time.perf_counter() - started)
+            return progress.call("Photoshop input validation and preparation (total)", prepare, job, result)
+
+        def prepare(job, result):
             doc = result.get("doc")
             if not isinstance(doc, dict):
                 raise ControlError("Photoshop returned no source identity")
@@ -64,30 +76,71 @@ class Bridge:
                 raise ControlError("Invalid/unsupported Photoshop source; RGB 8/16-bit, opaque composite required")
             path, profile_path = job.blob("pixels"), job.blob("icc")
             expected = w * h * 3 * (depth // 8)
-            if not path.is_file() or path.stat().st_size != expected:
+            if capture_format == "raw" and (not path.is_file() or path.stat().st_size != expected):
                 raise ControlError("Photoshop composite byte count does not match the full canvas")
-            if not profile_path.is_file() or not 128 <= profile_path.stat().st_size <= 4 * 1024**2:
-                raise ControlError("Select the source document's exact RGB ICC file in the connector")
-            icc = profile_path.read_bytes()
+            if capture_format == "png":
+                png = job.blob("png")
+                png_size = result.get("png_bytes")
+                limit = min(MAX_TRANSFER, w * h * 8 + 4 * 1024**2)
+                if (type(png_size) is not int or not 0 < png_size <= limit or
+                        not png.is_file() or png.stat().st_size != png_size):
+                    raise ControlError("Photoshop PNG capture is empty, oversized or incomplete; choose raw capture.")
+                try:
+                    with png.open("rb") as stream:
+                        header = stream.read(33)
+                    if (len(header) != 33 or header[:8] != b"\x89PNG\r\n\x1a\n" or
+                            header[12:16] != b"IHDR" or header[24] != depth or header[25] not in (2, 6)):
+                        raise ValueError("PNG is not full-depth RGB or RGBA")
+                    with Image.open(png) as image:
+                        if image.format != "PNG" or image.size != (w, h) or "transparency" in image.info:
+                            raise ValueError("PNG dimensions or transparency are unsupported")
+                        if "icc_profile" not in image.info:
+                            raise ValueError("PNG has no embedded ICC profile")
+                        icc = image.info["icc_profile"]
+                        if not isinstance(icc, bytes):
+                            raise ValueError("PNG embedded ICC profile is corrupt or unreadable")
+                        if not 128 <= len(icc) <= 4 * 1024**2:
+                            raise ValueError("PNG embedded ICC profile has an invalid size")
+                        image.verify()
+                    bgr = cv2.imdecode(np.fromfile(png, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                    if (bgr is None or bgr.dtype != (np.uint8 if depth == 8 else np.uint16) or
+                            bgr.shape[:2] != (h, w) or bgr.ndim != 3 or bgr.shape[2] not in (3, 4)):
+                        raise ValueError("PNG pixels are incomplete or have unexpected depth/channels")
+                    if bgr.shape[2] == 4:
+                        if not np.all(bgr[..., 3] == (255 if depth == 8 else 65535)):
+                            raise ValueError("PNG composite has non-opaque pixels")
+                        bgr = np.ascontiguousarray(bgr[..., :3])
+                except (OSError, ValueError, TypeError, SyntaxError, IndexError, UnidentifiedImageError, cv2.error) as error:
+                    raise ControlError(f"Photoshop PNG capture cannot be verified: {error}; choose raw capture.") from error
+                if depth == 8:
+                    bgr = bgr.astype(np.uint16) * 257
+            else:
+                if not profile_path.is_file() or not 128 <= profile_path.stat().st_size <= 4 * 1024**2:
+                    raise ControlError("Select the source document's exact RGB ICC file in the connector")
+                icc = profile_path.read_bytes()
+                raw = np.fromfile(path, dtype="<u2" if depth == 16 else np.uint8).reshape(h, w, 3)
+                bgr = np.ascontiguousarray(raw[..., ::-1])
+                del raw
+                if depth == 8:
+                    bgr = bgr.astype(np.uint16) * 257
             try:
                 profile = ImageCms.ImageCmsProfile(io.BytesIO(icc))
                 name = ImageCms.getProfileDescription(profile).strip().rstrip("\0")
                 if profile.profile.xcolor_space.strip() != "RGB" or name != doc["profile"]:
                     raise ValueError("ICC description/colour space differs from the Photoshop document")
             except (OSError, ValueError, TypeError) as error:
-                raise ControlError(f"Cannot verify Photoshop ICC identity: {error}; select the exact matching ICC file") from error
+                guidance = ("choose raw capture and select the exact matching ICC file"
+                            if capture_format == "png" else "select the exact matching ICC file")
+                raise ControlError(f"Cannot verify Photoshop ICC identity: {error}; {guidance}") from error
             doc = {**doc, "editor": "photoshop", "profile_hash": hashlib.sha256(icc).hexdigest()}
-            raw = np.fromfile(path, dtype="<u2" if depth == 16 else np.uint8).reshape(h, w, 3)
-            bgr = np.ascontiguousarray(raw[..., ::-1])
-            del raw
-            if depth == 8:
-                bgr = bgr.astype(np.uint16) * 257
             inbox.mkdir(parents=True, exist_ok=True)
             destination = inbox / f"photoshop-{secrets.token_hex(8)}.png"
-            destination.write_bytes(tagged_rgb16(bgr, icc, {"opaque_alpha": False}))
+            encoded = progress.call("Photoshop input PNG encoding", tagged_rgb16, bgr, icc,
+                                    {"opaque_alpha": False}, png_strategy=cv2.IMWRITE_PNG_STRATEGY_RLE)
+            progress.call("Photoshop input PNG write", destination.write_bytes, encoded)
             return destination, doc
 
-        return self.broker.execute("capture", {}, finish=finish)
+        return self.broker.execute("capture", {"format": capture_format}, finish=finish)
 
     def _send(self, nodes, doc, source_icc):
         if (not isinstance(doc, dict) or doc.get("editor") != "photoshop"
@@ -156,6 +209,10 @@ class Bridge:
     def _group(children, mask, blend="Normal"):
         return {"name": "SkinTools", "children": children, "blend": blend, "opacity": 100, "mask": mask}
 
+    @staticmethod
+    def _corrections(children, mask=None):
+        return {"name": "Corrections", "children": children, "blend": "Pass Through", "opacity": 100, "mask": mask}
+
     def send_result(self, pixels, doc, source_icc):
         return self._send([self._layer("Corrected Result", pixels)], doc, source_icc)
 
@@ -169,11 +226,12 @@ class Bridge:
         _mask(mask8, shape)
         if mask_placement not in ("folder", "layers"):
             raise ControlError("Mask placement must be folder or layers")
-        nodes = self._bands(layers, shape, mask8 if mask_placement == "layers" else None, band_mix)
+        per_layer = mask_placement == "layers"
+        nodes = self._bands(layers, shape, mask8 if per_layer else None, band_mix)
         if not nodes:
             raise ControlError("Enable at least one D&B band")
-        return self._send([self._group(nodes, mask8 if mask_placement == "folder" else None, "Pass Through")],
-                          doc, source_icc)
+        corrections = self._corrections(nodes, mask8 if not per_layer else None)
+        return self._send([self._group([corrections], None, "Pass Through")], doc, source_icc)
 
     def _bands(self, bands, shape, mask, opacity):
         _opacity(opacity)
@@ -214,15 +272,15 @@ class Bridge:
         for pixels in layers.values():
             _pixels(pixels, shape)
         per_layer = mask_placement == "layers"
-        children = [self._layer("Color", layers["color"])]
+        corrections = []
         render_hue = settings.get("on", True) and hue_output == "rendered"
         base = layers["color"].astype(np.float32) / 65535 if render_hue else None
         if include_blur:
             if render_hue:
                 region = mask8.astype(np.float32) / 255 if per_layer and blur_masked else np.ones(shape, np.float32)
                 base += (layers["blur"].astype(np.float32) / 65535 - base) * (region * blur_strength / 100)[..., None]
-            children.insert(0, self._layer("Blur", layers["blur"], opacity=blur_strength,
-                                           mask=mask8 if per_layer and blur_masked else None))
+            corrections.insert(0, self._layer("Blur", layers["blur"], opacity=blur_strength,
+                                              mask=mask8 if per_layer and blur_masked else None))
         if directional is not None:
             pixels, region, strength = directional
             _pixels(pixels, shape)
@@ -231,21 +289,25 @@ class Bridge:
             if render_hue:
                 alpha = region.astype(np.float32) / 255 if per_layer else np.ones(shape, np.float32)
                 base += (pixels.astype(np.float32) / 65535 - base) * (alpha * strength / 100)[..., None]
-            children.insert(0, self._layer("Directional Blur", pixels, opacity=strength, mask=region if per_layer else None))
+            corrections.insert(0, self._layer("Directional Blur", pixels, opacity=strength,
+                                              mask=region if per_layer else None))
         if settings.get("on", True):
             hue, = ST.tables(dict(settings, hue_amount=100))
             if render_hue:
                 corrected = ST.sample(np.ascontiguousarray(base[..., ::-1]), hue)[..., ::-1]
-                children.insert(0, self._layer("Hue", FS.rgb16(corrected), opacity=settings["hue_amount"],
-                                               mask=mask8 if per_layer else None))
+                corrections.insert(0, self._layer("Hue", FS.rgb16(corrected), opacity=settings["hue_amount"],
+                                                  mask=mask8 if per_layer else None))
             else:
-                children.insert(0, {"name": "Hue", "blend": "Normal", "opacity": _opacity(settings["hue_amount"]),
-                                    "lookup": photoshop_lut.device_link(hue), "mask": mask8 if per_layer else None})
-        children.insert(0, self._layer("Detail", layers["detail"], "Linear Light"))
+                corrections.insert(0, {"name": "Hue", "blend": "Normal", "opacity": _opacity(settings["hue_amount"]),
+                                        "lookup": photoshop_lut.device_link(hue), "mask": mask8 if per_layer else None})
         bands = [] if bands is None else bands
         if bands:
             _mask(band_mask8, shape)
         elif band_mask8 is not None:
             raise ControlError("D&B mask requires enabled bands")
-        children = self._bands(bands, shape, band_mask8 if per_layer else None, band_mix) + children
-        return self._send([self._group(children, mask8 if not per_layer else None)], doc, source_icc)
+        corrections = self._bands(bands, shape, band_mask8 if per_layer else None, band_mix) + corrections
+        children = [self._layer("Detail", layers["detail"], "Linear Light")]
+        if corrections:
+            children.append(self._corrections(corrections, mask8 if not per_layer else None))
+        children.append(self._layer("Color", layers["color"]))
+        return self._send([self._group(children, None)], doc, source_icc)

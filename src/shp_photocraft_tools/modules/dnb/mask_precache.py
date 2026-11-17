@@ -9,9 +9,14 @@ class Superseded(Exception):
     pass
 
 
+class Skipped(Exception):
+    pass
+
+
 class MaskPrecache:
-    def __init__(self, compute, delay=.6):
+    def __init__(self, compute, delay=.6, name="skin-mask-precache"):
         self.compute, self.delay = compute, delay
+        self.name = name
         self.condition = threading.Condition()
         self.signature = self.job = None
         self.sequence = 0
@@ -40,7 +45,7 @@ class MaskPrecache:
             self.error = None
             self.message = None
             if self.thread is None:
-                self.thread = threading.Thread(target=self._run, name="skin-mask-precache", daemon=True)
+                self.thread = threading.Thread(target=self._run, name=self.name, daemon=True)
                 self.thread.start()
             self.condition.notify_all()
 
@@ -49,11 +54,11 @@ class MaskPrecache:
         with self.condition:
             yield not self.closed and sequence == self.sequence
 
-    def reset(self):
+    def reset(self, message=None):
         with self.condition:
             self.signature = self.job = None
             self.sequence += 1
-            self.state, self.error, self.seconds, self.message = "idle", None, None, None
+            self.state, self.error, self.seconds, self.message = "idle", None, None, message
             self.condition.notify_all()
 
     def status(self):
@@ -87,15 +92,17 @@ class MaskPrecache:
                 self.job = None
                 self.state = "running"
             started = time.perf_counter()
-            state, error = "ready", None
+            state, error, message = "ready", None, None
             try:
                 self.compute(job, lambda: self.commit(sequence))
             except Superseded:
                 state = "superseded"
+            except Skipped as exc:
+                state, message = "skipped", str(exc)
             except Exception as exc:
                 state, error = "error", f"{type(exc).__name__}: {exc}"
             del job
             with self.condition:
                 if sequence == self.sequence:
-                    self.state, self.error = state, error
+                    self.state, self.error, self.message = state, error, message
                     self.seconds = time.perf_counter() - started
