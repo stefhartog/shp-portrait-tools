@@ -46,8 +46,10 @@ class LocalResultTests(unittest.TestCase):
         self.image.write_bytes(S.PCB.tagged_rgb16(pixels, S.SRGB_ICC))
         loaded = self.post("/api/load", {"path": str(self.image)})
         self.assertEqual(loaded["source_kind"], "local")
-        for mode, suffix in (("dnb", "shpdnb"), ("mask", "shpskinmask"), ("frequency", "shpfs")):
+        for mode, suffix in (("dnb", "shpdnb"), ("mask", "shpskinmask"),
+                             ("frequency", "shpfs"), ("combine", "shpcombine")):
             params = {**T.PARAMS, "mode": mode, "view": "detail", "generation": loaded["generation"],
+                      "combine": {"fs_mix": 40, "dnb_mix": 60},
                       "path": str(self.root / "ignored" / "not-the-source.png")}
             p = S.parse_params(params)
             if mode == "dnb":
@@ -57,7 +59,9 @@ class LocalResultTests(unittest.TestCase):
                 mask = np.ones(pixels.shape[:2], np.float32) if total is None else total
                 if mode == "frequency":
                     layers = S.skintone_layers(S.STATE["source_img"], mask, p)
-                    _, expected = S.ST.composite(layers, mask, p["skintone"])
+                    _, expected = S.ST.composite(layers, mask, p["skintone"], p["frequency"])
+                elif mode == "combine":
+                    _, _, expected = S.combined_result(S.STATE["source_img"], mask, p)
                 else:
                     expected = mask
             with self.subTest(mode=mode), patch.object(S, "api_pc_status") as pc:
@@ -77,9 +81,19 @@ class LocalResultTests(unittest.TestCase):
                     self.assertEqual(decoded.shape[2], 3)
                     with Image.open(output) as image:
                         self.assertEqual(image.info["icc_profile"], S.SRGB_ICC)
+                    result, icc = S.skin_result(p)
+                    np.testing.assert_array_equal(S.FS.rgb16(result), decoded)
+                    self.assertEqual(icc, S.SRGB_ICC)
+                bundle = self.post("/api/save", params)
+                artifact = {"dnb": "synthetic_1_result.png", "mask": "skinmask.png",
+                            "frequency": "result.png", "combine": "result.png"}[mode]
+                self.assertIn(artifact, bundle["files"])
+                np.testing.assert_array_equal(
+                    cv2.imread(str(Path(bundle["dir"]) / artifact), cv2.IMREAD_UNCHANGED), decoded,
+                )
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if p.is_file()),
-                         ["synthetic.png", "synthetic_shpdnb_001.png", "synthetic_shpfs_001.png",
-                          "synthetic_shpskinmask_001.png"])
+                         ["synthetic.png", "synthetic_shpcombine_001.png", "synthetic_shpdnb_001.png",
+                          "synthetic_shpfs_001.png", "synthetic_shpskinmask_001.png"])
         np.testing.assert_array_equal(cv2.imread(str(self.image), cv2.IMREAD_UNCHANGED)[..., :3], pixels)
 
     def test_provenance_disconnect_stale_and_origin_guards(self):

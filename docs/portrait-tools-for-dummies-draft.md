@@ -345,8 +345,9 @@ CPU cores; OpenCV controls parallelism for its other operations.
 Send Layers reuses matching Color, Detail, Blur and D&B pixels, whether prepared
 in advance or by an earlier send. Mix and Blur opacity changes do not invalidate
 them. The retained layer cache is limited to 2 GiB with LRU eviction and is
-separate from the 256 MiB skin-mask cache; temporary computation memory is not
-included in those limits. If all requested components cannot fit, the status
+separate from the 256 MiB skin-mask cache. Send and Save can both reuse a matching
+full-resolution skin mask. Temporary computation memory is not included in those
+limits. If all requested components cannot fit, the status
 reports the estimated requirement and some may be evicted. Entries survive Get or Load only as long as space and
 memory permit, and match exact source pixels, profile, relevant masks and
 settings. Directional Blur is not precached. The updated Photoshop connector can

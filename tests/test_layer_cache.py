@@ -135,7 +135,7 @@ class LayerSendCacheTests(unittest.TestCase):
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
                             "frequency": {"radius": 2, "blur_radius": 3},
                             "skintone": {"on": False}})
-        with patch.object(U, "ThreadPoolExecutor", DeferredExecutor), \
+        with patch.object(U.processing_service, "ThreadPoolExecutor", DeferredExecutor), \
              patch.object(FS, "skin_filter", wraps=FS.skin_filter) as filtered:
             U.send_skintone_parallel(p)
             U.send_skintone_parallel(p)
