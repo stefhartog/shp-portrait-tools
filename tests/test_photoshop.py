@@ -203,6 +203,7 @@ class RecordingBroker:
     def __init__(self):
         self.captured = None
         self.inputs = None
+        self.capture_details = {}
 
     def execute(self, kind, params, *, prepare=None, finish=None):
         with tempfile.TemporaryDirectory() as directory:
@@ -218,7 +219,8 @@ class RecordingBroker:
                 else:
                     job.blob("pixels").write_bytes(pixels)
                     job.blob("icc").write_bytes(icc)
-                    return finish(job, {"doc": doc})
+                    return finish(job, {"doc": doc, "timing": {"capture": 0, "serialize": 0, "upload": 0},
+                                        **self.capture_details})
             return {"document": "Disposable", "sent": True}
 
 
@@ -279,30 +281,66 @@ class AdapterTests(unittest.TestCase):
     def test_capture_rgb16_ramp_and_icc_are_lossless_no_channel_swap(self):
         self.broker.inputs = (self.doc, self.pixels[..., ::-1].astype("<u2").tobytes(), ICC)
         with tempfile.TemporaryDirectory() as directory:
-            path, doc = self.bridge.fetch(directory)
-            np.testing.assert_array_equal(cv2.imread(str(path), -1), self.pixels)
-            with Image.open(path) as image:
-                self.assertEqual(image.info["icc_profile"], ICC)
+            capture, doc = self.bridge.fetch(directory)
+            np.testing.assert_array_equal(capture.pixels, self.pixels)
+            self.assertTrue(capture.pixels.flags.owndata and capture.pixels.flags.c_contiguous)
+            self.assertEqual(capture.icc, ICC)
+            self.assertFalse(list(Path(directory).iterdir()))
             self.assertEqual(doc["profile_hash"], hashlib.sha256(ICC).hexdigest())
 
     def test_capture_reports_separate_transfer_and_input_preparation_timings(self):
         self.broker.inputs = (self.doc, self.pixels[..., ::-1].astype("<u2").tobytes(), ICC)
         token = "photoshop-capture-timing-test"
         with tempfile.TemporaryDirectory() as directory, progress.operation(token):
-            path, _ = self.bridge.fetch(directory)
-            np.testing.assert_array_equal(cv2.imread(str(path), -1), self.pixels)
+            capture, _ = self.bridge.fetch(directory)
+            np.testing.assert_array_equal(capture.pixels, self.pixels)
         steps = progress.snapshot(token, consume=True)["steps"]
         self.assertEqual([step["label"] for step in steps], [
-            "Photoshop capture and transfer", "Photoshop input PNG encoding",
-            "Photoshop input PNG write", "Photoshop input validation and preparation (total)"])
+            "Photoshop capture and transfer", "Tools input validation and preparation"])
         self.assertTrue(all(step["seconds"] >= 0 and step["error"] is None for step in steps))
+        self.assertEqual(steps[0]["bytes"], self.pixels.nbytes + len(ICC))
+        self.assertEqual([d["label"] for d in steps[0]["details"]], [
+            "Photoshop pixel capture", "Photoshop pixel serialization", "Connector upload and Tools receipt"])
+
+    def test_send_reports_serial_encoding_bytes_and_separate_transfer(self):
+        token = "photoshop-send-timing-test"
+        document = {**self.doc, "editor": "photoshop", "profile_hash": hashlib.sha256(ICC).hexdigest()}
+        from shp_photocraft_tools.modules.dnb.photoshop_bridge import layer_preparation
+        with progress.operation(token), layer_preparation():
+            self.bridge.send_result(self.pixels, document, ICC)
+        prep, encode, transfer = progress.snapshot(token, consume=True)["steps"]
+        self.assertIn("layer preparation", prep["label"])
+        self.assertEqual(encode["bytes"], self.pixels.nbytes)
+        self.assertEqual(transfer["bytes"], encode["bytes"])
+        self.assertEqual(encode["details"][0]["label"], "Corrected Result")
+        self.assertLessEqual(encode["details"][0]["seconds"], encode["seconds"])
+
+    def test_raw_tile_metadata_splits_serialization_or_preserves_legacy_timing(self):
+        self.broker.inputs = (self.doc, self.pixels[..., ::-1].astype("<u2").tobytes(), ICC)
+        for tiles, valid in (([[4, 0, 0]], True), ([[3, 0, 0], [3, 0, 0]], False), ([[4, "0", 0]], False)):
+            with self.subTest(tiles=tiles):
+                self.broker.capture_details = {"pixel_tiles": tiles}
+                token = "photoshop-tile-timing-test"
+                with tempfile.TemporaryDirectory() as directory, progress.operation(token):
+                    self.bridge.fetch(directory)
+                step = progress.snapshot(token, consume=True)["steps"][0]
+                labels = [d["label"] for d in step["details"]]
+                self.assertEqual("Photoshop pixel serialization" in labels, not valid)
+                self.assertEqual("Photoshop getData() readback" in labels, valid)
+                self.assertEqual("Connector tile validation and RGB packing" in labels, valid)
+                if valid:
+                    self.assertEqual(step["pixel_tiles"]["tiles"], tiles)
+                    self.assertEqual(step["pixel_tiles"]["pixel_bytes"], self.pixels.nbytes)
+                    self.assertEqual(step["pixel_tiles"]["icc_bytes"], len(ICC))
+                else:
+                    self.assertNotIn("pixel_tiles", step)
 
     def test_capture_rgb8_is_expanded_exactly_and_wrong_icc_rejected(self):
         pixels = ((self.pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
         self.broker.inputs = ({**self.doc, "depth": 8}, pixels[..., ::-1].tobytes(), ICC)
         with tempfile.TemporaryDirectory() as directory:
-            path, _ = self.bridge.fetch(directory)
-            np.testing.assert_array_equal(cv2.imread(str(path), -1), pixels.astype(np.uint16) * 257)
+            capture, _ = self.bridge.fetch(directory)
+            np.testing.assert_array_equal(capture.pixels, pixels.astype(np.uint16) * 257)
             self.broker.inputs = ({**self.doc, "profile": "Wrong profile"}, self.pixels.tobytes(), ICC)
             with self.assertRaisesRegex(ControlError, "ICC identity"):
                 self.bridge.fetch(directory)

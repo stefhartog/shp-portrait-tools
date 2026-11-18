@@ -104,6 +104,7 @@ class BatchApiTests(unittest.TestCase):
                                               "_progress": "batch-mixed-results-1234"})
         self.assertEqual((result["succeeded"], result["failed"]), (2, 2))
         self.assertEqual(analyze.call_count, 3)
+        self.assertTrue(all(call.kwargs["body_priority"] for call in analyze.call_args_list))
         self.assertEqual([row["status"] for row in result["items"]], ["failed", "failed", "success", "success"])
         self.assertIn("cannot read", result["items"][0]["error"])
         self.assertIn("detected scale", result["items"][1]["error"])

@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "shp.skin-tools.connector",
   "name": "Skin Tools Connector",
-  "version": "0.1.11",
+  "version": "0.1.14",
   "main": "index.html",
   "host": [{"app": "PS", "minVersion": "28.0.0", "data": {"apiVersion": 2}}],
   "entrypoints": [{

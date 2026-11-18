@@ -277,6 +277,8 @@ class WatchApiTests(unittest.TestCase):
         with patch.object(U, "watch_target", return_value=target):
             loaded = self.request("/api/watch-folder/load", {"token":ready["token"]})
             self.assertEqual(self.request("/api/watch-folder/load", {"token":ready["token"]}), {"skipped":True})
+        self.assertTrue(U.M.pick_target.call_args.kwargs["body_priority"])
+        self.assertIn("scale_comparison", loaded)
         self.assertEqual(loaded["width"], 128)
         self.assertEqual(loaded["height"], 96)
         self.assertEqual(loaded["generation"], U.STATE["landmark_generation"])

@@ -177,9 +177,10 @@ def mask_B(img_u8, face_info, kp, sc):
     return out
 
 
-def pick_target(path, img, include_unscaled=False, pose_config=None):
-    subjects, bodies, af, target, faces = (C.build_subjects(str(path), img, pose_config)
-                                         if pose_config else C.build_subjects(str(path), img))
+def pick_target(path, img, include_unscaled=False, pose_config=None, body_priority=False):
+    source = str(path) if path is not None else None
+    subjects, bodies, af, target, faces = (C.build_subjects(source, img, pose_config)
+                                         if pose_config else C.build_subjects(source, img))
     cands = [(i, C.combine(s[5])) for i, s in enumerate(subjects)]
     cands = [(i, r) for i, r in cands if r["S"] is not None]
     if not cands and not include_unscaled:
@@ -193,6 +194,12 @@ def pick_target(path, img, include_unscaled=False, pose_config=None):
     r = dict(cands).get(i, C.combine([]))
     why = "AF target" if i == target else ("most trustworthy subject (no AF point)" if af is None else "most trustworthy subject")
     desc = f"subject #{i}, {why}, cues " + ", ".join(f"{c[0]}={c[1]:.0f}" for c in r["used"])
+    comparison = None
+    if body_priority:
+        scale, confidence, method = C.body_priority(f, bodies[bi] if bi is not None else None, img.shape, r)
+        comparison = {"baseline": r["S"], "body_priority": scale, "method": method}
+        desc = f"subject #{i}, {why}; {method}"
+        r = {**r, "S": scale, "confidence": confidence}
     if f is not None:
         centre = (float(f[0] + f[2] / 2), float(f[1] + f[3] / 2))
     elif kp is not None and (sc[:17] >= 0.3).any():
@@ -203,7 +210,7 @@ def pick_target(path, img, include_unscaled=False, pose_config=None):
     seen = [{"face": s[1], "kp": bodies[s[3]][0] if s[3] is not None else None, "sc": bodies[s[3]][1] if s[3] is not None else None,
              "face_info": s[2], "target": j == i, "cues": list(s[5])} for j, s in enumerate(subjects)]
     return {"face": f, "face_info": face_info, "kp": kp, "sc": sc, "S": r["S"], "conf": r["confidence"], "desc": desc, "centre": centre,
-            "seen": seen}
+            "seen": seen, **({"scale_comparison": comparison} if comparison is not None else {})}
 
 
 def person_box(t, shape):

@@ -2,6 +2,7 @@
 
 import unittest
 from unittest.mock import patch
+from contextlib import nullcontext
 from pathlib import Path
 import tempfile
 import threading
@@ -55,7 +56,8 @@ class LayerSendCacheTests(unittest.TestCase):
 
         class FakeBridge:
             def fetch(self, dest, *, capture_format):
-                return test.image, test.document
+                assert capture_format == "raw"
+                return test.capture, test.document
 
             def send_skintone(self, layers, settings, mask, doc, icc, **kwargs):
                 result = dict(layers)
@@ -71,6 +73,8 @@ class LayerSendCacheTests(unittest.TestCase):
         for item in (patch.object(U, "STATE", self.state),
                      patch.object(U, "BRIDGE", {"doc": {"index": 1}, "b": None}),
                      patch.object(U.CACHE_COORDINATOR, "layer_records", {}),
+                     patch.object(U.CACHE_COORDINATOR, "mask_timing", None),
+                     patch.object(U.CACHE_COORDINATOR, "layer_timings", None),
                      patch.object(U.CACHE_COORDINATOR, "layer_active", {"mode": None, "stamp": None, "generation": None, "tabs": {}, "budget_note": None}),
                      patch.dict(U.EDITOR, selected="photocraft"),
                      patch.object(U, "bridge", return_value=FakeBridge()),
@@ -172,6 +176,35 @@ class LayerSendCacheTests(unittest.TestCase):
             U.api_pc_send_layers({**req, "mode": "dnb", "strength": .4})
             self.assertEqual(stack.call_count, 4)
 
+    def test_opt_in_bands_reuse_cache_and_cannot_publish_after_supersession(self):
+        p = U.parse_params({**PARAMS, "S": 181, "second_band": {"on": True, "invert": True}})
+        mask = np.ones(self.state["img"].shape[:2], np.float32)
+        self.state["masks"] = {"A": mask, "features": np.zeros_like(mask), "colour": mask}
+        current = True
+
+        def render(img, *args, **kwargs):
+            nonlocal current
+            current = not expire
+            return np.full(img.shape[:2], .45, np.float32)
+
+        expire = False
+        with patch.object(U, "DNB_LAYER_BACKEND", "cuda"), \
+             patch.object(U.processing_service.cuda_bands, "render_band", side_effect=render) as gpu:
+            for kind in ("masked", "unmasked"):
+                first, _, _ = U.cached_dnb_bands(p, kind, mask=mask)
+                second, _, _ = U.cached_dnb_bands(p, kind, mask=mask)
+                self.assertEqual([i for i, _ in first], [1, 2])
+                self.assertIs(first[0][1], second[0][1])
+            self.assertEqual(gpu.call_count, 4)
+            self.assertIsNotNone(gpu.call_args_list[0].kwargs["mask"])
+            self.assertIsNone(gpu.call_args_list[2].kwargs["mask"])
+            self.assertTrue(gpu.call_args.kwargs["invert"])
+            U.LAYER_CACHE.clear()
+            expire = True
+            with self.assertRaises(U.Superseded):
+                U.cached_dnb_bands(p, "unmasked", mask=mask, commit_guard=lambda: nullcontext(current))
+            self.assertEqual(U.LAYER_CACHE.bytes, 0)
+
     def test_mask_content_changes_invalidate_masked_bands_and_blur(self):
         shape = self.state["img"].shape[:2]
         self.state["masks"] = {"A": np.ones(shape, np.float32), "features": np.zeros(shape, np.float32),
@@ -212,8 +245,7 @@ class LayerSendCacheTests(unittest.TestCase):
                "frequency": {"radius": 2, "blur_radius": 3}}
         pixels = np.random.default_rng(42).integers(0, 65536, (20, 24, 3), dtype=np.uint16)
         with tempfile.TemporaryDirectory() as directory:
-            self.image = Path(directory) / "capture.png"
-            self.image.write_bytes(U.PCB.tagged_rgb16(pixels, U.SRGB_ICC, {"opaque_alpha": False}))
+            self.capture = U.PSB.RawCapture("capture", pixels.copy(), U.SRGB_ICC)
             self.document = {"index": 1, "width": 24, "height": 20, "depth": 16}
             with patch.dict(U.EDITOR, selected="photoshop"), \
                  patch.object(U.M, "pick_target", return_value=None), \
@@ -229,7 +261,7 @@ class LayerSendCacheTests(unittest.TestCase):
                 for name in ("color", "detail", "blur"):
                     np.testing.assert_array_equal(first[name], self.calls[-1][1][name])
                 pixels[0, 0, 0] ^= 1
-                self.image.write_bytes(U.PCB.tagged_rgb16(pixels, U.SRGB_ICC, {"opaque_alpha": False}))
+                self.capture = U.PSB.RawCapture("capture", pixels.copy(), U.SRGB_ICC)
                 U.api_pc_fetch({})
                 U.api_pc_send_layers(req)
                 self.assertEqual(split.call_count, 2)
@@ -298,6 +330,106 @@ class LayerSendCacheTests(unittest.TestCase):
             time.sleep(.005)
         return scheduler.status()
 
+    def test_mask_timing_distinguishes_fresh_reused_and_superseded_work(self):
+        coordinator = U.CACHE_COORDINATOR
+        scheduler = MaskPrecache(coordinator.precache_mask, delay=.01)
+        p = U.parse_params({**PARAMS, "mode": "mask", "S": 181})
+        with patch.object(coordinator, "mask_jobs", scheduler):
+            try:
+                for expected in ("calculated", "reused"):
+                    coordinator.queue_mask_precache(p)
+                    self.assertEqual(self.settle(scheduler)["status"], "ready")
+                    result = coordinator.mask_cache_status()["timing"]
+                    self.assertEqual(result["outcome"], expected)
+                    self.assertGreaterEqual(result["seconds"], result["steps"][0]["seconds"])
+                    scheduler.reset()
+                    self.assertNotIn("timing", coordinator.mask_cache_status())
+            finally:
+                scheduler.close()
+
+    def test_split_overlaps_pending_mask_but_blur_waits(self):
+        coordinator = U.CACHE_COORDINATOR
+        mask_job = MaskPrecache(coordinator.precache_mask, delay=.01)
+        layer_job = MaskPrecache(coordinator.precache_layers, delay=.01)
+        p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
+                            "frequency": {"on": True, "radius": 2, "blur_radius": 3}})
+        entered, release, split_done, blur_started = (threading.Event() for _ in range(4))
+        original_mask, original_split, original_blur = U.cached_final_skin_mask, U.cached_fs_split, U.cached_fs_blur
+
+        def held_mask(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("mask was not released")
+            return original_mask(*args, **kwargs)
+
+        def split(*args, **kwargs):
+            result = original_split(*args, **kwargs)
+            split_done.set()
+            return result
+
+        def blur(*args, **kwargs):
+            blur_started.set()
+            return original_blur(*args, **kwargs)
+
+        with patch.object(coordinator, "mask_jobs", mask_job), patch.object(coordinator, "layer_jobs", layer_job), \
+             patch.object(coordinator, "_compute_mask", held_mask), patch.object(U, "cached_fs_split", split), \
+             patch.object(U, "cached_fs_blur", blur):
+            try:
+                coordinator.queue_mask_precache(p)
+                self.assertTrue(entered.wait(5))
+                coordinator.queue_layer_precache(p, "overlap")
+                self.assertTrue(split_done.wait(5))
+                self.assertFalse(blur_started.is_set())
+                with U.foreground_lock():
+                    self.assertFalse(blur_started.is_set())
+                release.set()
+                self.assertEqual(self.settle(layer_job)["status"], "ready")
+                self.assertTrue(blur_started.is_set())
+            finally:
+                release.set()
+                layer_job.close()
+                mask_job.close()
+
+    def test_cuda_band_overlaps_blur_and_combine_waits_for_both(self):
+        coordinator = U.CACHE_COORDINATOR
+        job = MaskPrecache(coordinator.precache_layers, delay=.01)
+        req = {**PARAMS, "mode": "combine", "S": 181,
+               "frequency": {"on": True, "radius": 2, "blur_radius": 3},
+               "skintone": {"on": False}}
+        blur_entered, dnb_entered, release = (threading.Event() for _ in range(3))
+        blur = U.cached_fs_blur
+        def held_blur(*args, **kwargs):
+            blur_entered.set()
+            if not release.wait(5):
+                raise TimeoutError("blur was not released")
+            return blur(*args, **kwargs)
+
+        def held_band(img, *args, **kwargs):
+            dnb_entered.set()
+            if not release.wait(5):
+                raise TimeoutError("band was not released")
+            return np.full(img.shape[:2], .5, np.float32)
+
+        with patch.object(coordinator, "layer_jobs", job), patch.object(U, "DNB_LAYER_BACKEND", "cuda"), \
+             patch.object(U, "cached_fs_blur", held_blur), \
+             patch.object(U.processing_service.cuda_bands, "render_band", side_effect=held_band) as gpu:
+            try:
+                coordinator.queue_layer_precache(U.parse_params(req), "cuda-overlap", req)
+                self.assertTrue(blur_entered.wait(5))
+                self.assertTrue(dnb_entered.wait(5))
+                self.assertEqual(gpu.call_count, 1)
+                self.assertNotIn("combine", coordinator.layer_cache_status()["records"])
+                release.set()
+                self.assertEqual(self.settle(job)["status"], "ready")
+                status = coordinator.layer_cache_status()
+                self.assertTrue(status["records"]["combine"]["cached"])
+                self.assertEqual(gpu.call_count, 2)
+                self.assertTrue(any("Blur" in step["label"] for step in status["timings"]["frequency"]["steps"]))
+                self.assertFalse(any("CUDA" in step["label"] for step in status["timings"]["frequency"]["steps"]))
+            finally:
+                release.set()
+                job.close()
+
     def test_mask_dwell_prepares_all_modes_and_reuses_only_unchanged_bands(self):
         scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         req = {**PARAMS, "mode": "mask", "S": 181,
@@ -310,7 +442,12 @@ class LayerSendCacheTests(unittest.TestCase):
             try:
                 U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(req), "first", req)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                records = U.CACHE_COORDINATOR.layer_cache_status()["records"]
+                status = U.CACHE_COORDINATOR.layer_cache_status()
+                records = status["records"]
+                self.assertEqual(status["timings"]["frequency"]["outcome"], "calculated")
+                self.assertEqual(status["timings"]["dnb"]["outcome"], "mixed")
+                self.assertTrue(status["timings"]["combine"]["shared_fs"])
+                self.assertTrue(all(item["seconds"] >= 0 for item in status["timings"].values()))
                 self.assertTrue(all(records[mode]["cached"] for mode in ("frequency", "dnb", "combine")))
                 self.assertEqual((split.call_count, stack.call_count), (1, 4))
                 for mode in ("frequency", "dnb", "combine"):
@@ -321,6 +458,7 @@ class LayerSendCacheTests(unittest.TestCase):
                 U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(changed), "second", changed)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
                 self.assertEqual((split.call_count, stack.call_count), (1, 6))
+                self.assertEqual(U.CACHE_COORDINATOR.layer_cache_status()["timings"]["frequency"]["outcome"], "reused")
                 self.assertTrue(all(U.CACHE_COORDINATOR.layer_cache_status()["records"][mode]["cached"]
                                     for mode in ("frequency", "dnb", "combine")))
 
@@ -410,6 +548,7 @@ class LayerSendCacheTests(unittest.TestCase):
                 with urlopen(base + "/api/layer-precache", timeout=5) as response:
                     status = json.load(response)
                 self.assertEqual(status["mode"], "mask")
+                self.assertEqual(set(status["timings"]), {"frequency", "dnb", "combine"})
                 self.assertTrue(all(status["records"][mode]["cached"]
                                     and status["tabs"][mode]["state"] == "ready"
                                     for mode in ("frequency", "dnb", "combine")))

@@ -122,10 +122,14 @@ const SkinProtocol = (() => {
             bounds.bottom - bounds.top === image.height &&
             data.length === image.width * image.height * image.components, "Invalid trimmed pixel bounds.");
         const Type = depth === 16 ? Uint16Array : Uint8Array, max = depth === 16 ? 65535 : 255;
-        const output = new Type(width * height * 3);
         // The processing pipeline is opaque-only. Never fill missing alpha with white.
         check(bounds.left === 0 && bounds.right === width && bounds.top === top &&
             bounds.bottom === top + height, "Transparent canvas regions are not supported; use an opaque disposable copy.");
+        const output = new Type(width * height * 3);
+        if (image.components === 3 && ArrayBuffer.isView(data) && data.BYTES_PER_ELEMENT === Type.BYTES_PER_ELEMENT) {
+            output.set(data);
+            return output;
+        }
         for (let p = 0, q = 0; p < data.length; p += image.components, q += 3) {
             if (image.components === 4) check(data[p + 3] === max,
                 "Non-opaque composites are not supported; no white matte was applied.");

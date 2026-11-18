@@ -16,7 +16,7 @@ import numpy as np
 
 import test_dnb as T
 from test_photocraft import FakePhotoCraft
-from shp_photocraft_tools.modules.dnb import progress
+from shp_photocraft_tools.modules.dnb import progress, skin_mask
 from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
 from shp_photocraft_tools.shared.ui import stylesheet, theme_script
 
@@ -27,6 +27,49 @@ class ProgressTests(unittest.TestCase):
     get = T.DnbTests.get
     post = T.DnbTests.post
 
+    def test_photoshop_transfer_panel_separates_nested_and_legacy_timings(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        render = html.split("    const transfers = snapshot.steps.filter", 1)[1].split(
+            "    if (snapshot.active)", 1)[0]
+        harness = r"""
+const pane={}, tilePanel={}, tileText={}, temporaryLog={photoshop:{}};
+const $=id=>({photoshopTransferLogText:pane,photoshopPixelTiles:tilePanel,photoshopPixelTilesText:tileText}[id]);
+const calculationDetailLines=()=>[];
+function display(snapshot) {
+    const completed={};
+    const transfers = snapshot.steps.filter""" + render + r"""
+    return lines.join('\n');
+}
+const calculations = display({steps:[
+    {label:'Getting merged image from Photoshop',seconds:2},
+    {label:'Photoshop capture and transfer',seconds:1,bytes:480,transfer:'get',
+        details:[{label:'Photoshop pixel capture',seconds:.125}],
+        pixel_tiles:{width:10,height:8,depth:16,rows:6,pixel_bytes:480,icc_bytes:128,
+                     tiles:[[4,.031,.009],[3,.012,.002]]}},
+]});
+if (!pane.textContent.includes('Photoshop Get (total): 2.000 s') ||
+    !pane.textContent.includes('480 bytes\n  Photoshop pixel capture: 0.125 s') ||
+    calculations.includes('pixel capture') || calculations.includes('480 bytes') ||
+    pane.textContent.includes('unavailable')) throw Error(pane.textContent);
+if (tilePanel.hidden || !pane.textContent.includes('16-bit/channel, RGBA/RGB') ||
+    !tileText.textContent.includes('y=6, 10 × 2 RGB · getData 12.00 ms · pack 2.00 ms · 120 RGB bytes'))
+    throw Error(tileText.textContent);
+display({done:true,seconds:4,steps:[
+    {label:'Photoshop transfer and import',seconds:3,bytes:960,transfer:'send',details:[]},
+]});
+if (!pane.textContent.includes('Photoshop Get (total)') ||
+    !pane.textContent.includes('Photoshop Send (total): 4.000 s') ||
+    !pane.textContent.includes('960 bytes') ||
+    !pane.textContent.includes('Connector phase timings are unavailable')) throw Error(pane.textContent);
+display({steps:[{label:'Photoshop capture and transfer',seconds:1,transfer:'get'}]});
+if (!tilePanel.hidden || tileText.textContent) throw Error('Stale tile diagnostics');
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_layer_send_reports_actual_cached_components_in_node(self):
         node = shutil.which("node")
         if not node:
@@ -34,6 +77,7 @@ class ProgressTests(unittest.TestCase):
         html = T.S.HTML.read_text(encoding="utf-8")
         send = "async function pcSend(layers=false) {" + html.split(
             "async function pcSend(layers=false) {", 1)[1].split("$('pcGet').onclick", 1)[0]
+        send = send.split("$('pcConnect').onclick", 1)[0]
         harness = r"""
 const state={busy:false,loaded:true,sourceKind:'photoshop',mode:'frequency',loadEpoch:1,imageGeneration:1};
 const controls={layerCacheStatus:{textContent:''}},$=id=>controls[id];
@@ -58,6 +102,60 @@ const operationApi=async()=>({document:'test',mask_precache:{},_progress:{steps}
         result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_cache_timing_rows_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        helpers = "function renderCalculationLog()" + html.split(
+            "function renderCalculationLog()", 1)[1].split("function recordCalculation(", 1)[0]
+        harness = r"""
+const display={},$=()=>display,temporaryLog={cache:{},load:'Load completed',calculation:[]};
+""" + helpers + r"""
+updateCacheTimingRows('mask', {status:'ready',timing:{seconds:.01,outcome:'reused',steps:[]}});
+updateCacheTimingRows('layers', {status:'running',tabs:{dnb:{state:'queued'},combine:{state:'unavailable'}},
+  timings:{frequency:{seconds:.25,outcome:'mixed',steps:[{cache:'calculated',label:'Color and Detail',seconds:.2}]}}});
+for(const row of ['Skin Mask: reused in 0.01 s','FS & Tone: calculated + reused in 0.25 s (Color and Detail 0.20 s)',
+                  'D&B: pending','Combine: unavailable','Load completed'])
+  if (!display.textContent.includes(row)) throw Error(display.textContent);
+updateCacheTimingRows('layers',{status:'skipped'});
+if(display.textContent.includes('0.25 s') || !display.textContent.includes('FS & Tone: skipped')) throw Error(display.textContent);
+updateCacheTimingRows('mask', {status:'ready',timing:{seconds:.31,outcome:'calculated',steps:[
+  {cache:'calculated',label:'Recomputing full-resolution skin mask',seconds:.3,
+    details:[{label:'Feather skin mask',seconds:.123}]}
+]}});
+if (!display.textContent.includes('Recomputing full-resolution skin mask 0.30 s)\n  Feather skin mask: 0.123 s'))
+  throw Error(display.textContent);
+updateCacheTimingRows('mask', {status:'ready',timing:{seconds:.01,outcome:'reused',steps:[]}});
+if (display.textContent.includes('Feather skin mask')) throw Error(display.textContent);
+"""
+        subprocess.run([node, "-"], input=harness, text=True, check=True)
+
+    def test_skin_mask_backend_selection_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        code = "let skinMaskBackend = 'cpu';" + html.split(
+            "let skinMaskBackend = 'cpu';", 1)[1].split("let poseConfig", 1)[0]
+        harness = r"""
+const fields={skinMaskBackend:{},skinMaskBackendHint:{}}, $=id=>fields[id], state={};
+const setBusy=()=>{}, setStatus=msg=>{throw Error(msg);};
+const api=async (path, body)=>{
+  if (path!=='/api/global-settings' || body.skin_mask_backend!=='cuda') throw Error('Wrong settings request');
+  return {skin_mask_backend:'cuda', active_skin_mask_backend:'cpu'};
+};
+""" + code + r"""
+(async()=>{
+  syncSkinMaskBackend({});
+  if (fields.skinMaskBackend.value!=='cpu') throw Error('CPU is not the default');
+  fields.skinMaskBackend.value='cuda';
+  await fields.skinMaskBackend.onchange();
+  if (!fields.skinMaskBackendHint.textContent.includes('Current mode: CPU. Pending: CUDA.')) throw Error('Missing pending mode');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+        subprocess.run([node, "-"], input=harness, text=True, check=True)
+
     def test_layer_preparation_status_in_node(self):
         node = shutil.which("node")
         if not node:
@@ -71,6 +169,7 @@ let layerPrecacheWatch=0,layerWorkActive=false,lastLayerPrecacheInfo=null;
 const cacheTabs={frequency:{state:'idle'},dnb:{state:'idle'},combine:{state:'idle'}};
 const layerCacheStamp=()=> 'rev1',announceCacheTabs=()=>{};
 const setTimeout=()=>1,api=async()=>{},logNote=()=>{};
+const updateCacheTimingRows=()=>{};
 """ + watcher + r"""
 for (const [info, expected, active] of [
   [{status:'idle'}, 'Not prepared; waiting for a preview', false],
@@ -229,42 +328,65 @@ for (const [status,cached,enabled,expected] of [
         if not node:
             self.skipTest("Node.js is unavailable")
         html = T.S.HTML.read_text(encoding="utf-8")
+        details = "function calculationDetailLines(" + html.split(
+            "function calculationDetailLines(", 1)[1].split("function cacheTimingLine(", 1)[0]
         operation = "let loadProgress = null;" + html.split("let loadProgress = null;", 1)[1].split("async function loadList()", 1)[0]
         get = "async function pcGet() {" + html.split("async function pcGet() {", 1)[1].split("async function pcSend(", 1)[0]
+        resolver = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split(
+            "const SKINTONE_DEFAULTS", 1)[0]
         harness = r"""
 const state={busy:false}; let clock=0, connected=true, failure=null, selected=null, applied=0, calls=[];
 const performance={now:()=>clock}; const crypto={randomUUID:()=>'token'};
-const temporaryLog={load:'',send:null};
+const temporaryLog={load:'',send:null,photoshop:{}};
 const controls={editorSelect:{value:'photocraft'},photoshopCaptureMode:{value:'raw'}};
-const $=id=>controls[id];
+const document={getElementById:id=>controls[id]||null};
+const shellControls={photoshopTransferLogText:{textContent:''},scaleEstimator:{value:'baseline'}};
+const parent={document:{getElementById:id=>shellControls[id]||null}};
 const setBusy=b=>state.busy=b, syncTransferTitles=()=>{}, setStatus=()=>{};
 const invalidateMaskCacheStatus=()=>{}, invalidateLayerPrecache=()=>{}, resetCacheTabs=()=>{}, recordCalculation=()=>{}, renderTemporaryLog=()=>{};
 const window={__shpNativeFileDialog:true,prompt:()=>selected};
-const setTimeout=()=>1,clearTimeout=()=>{};
+let timer;
+const setTimeout=fn=>(timer=fn,1),clearTimeout=()=>{timer=null;};
 const applyLoaded=()=>{},initializeHueCenter=async()=>{},apply=()=>applied++;
+const progressFor=(token,done)=>({token,steps:[{label:'Getting merged image from Photoshop',seconds:1,error:null},
+    {label:'Generating shared skin mask',seconds:.4,details:[{label:'Initial crop: edge refinement',seconds:.015}]},
+    ...(controls.editorSelect.value==='photoshop' ? [{label:'Photoshop capture and transfer',seconds:.7,transfer:'get',bytes:480}] : [])
+  ],done,seconds:1});
 const api=async(path,body)=>{
   calls.push(path);
   if(path==='/api/pc/status'){clock+=500;if(failure)throw Error(failure);return {connected,message:'disconnected'};}
   if(failure)throw Error(failure);
+  if(path.startsWith('/api/progress?token='))return progressFor('token',false);
+  if(body.scale_estimator !== (controls.editorSelect.value==='photoshop' ? 'body-priority' : 'baseline'))
+    throw Error('Wrong estimator in Get request');
+  if(controls.editorSelect.value==='photoshop')await timer();
   clock+=1000;
-  return {_progress:{token:body._progress,steps:[{label:'Getting merged image from Photoshop',seconds:1,error:null}],done:true,seconds:1}};
+  return {_progress:progressFor(body._progress,true)};
 };
-""" + operation + get + r"""
+""" + resolver + details + operation + get + r"""
 (async()=>{
   await pcGet();
   if(state.busy||applied!==1||loadProgress.started!==0||
      !loadProgress.steps.includes('Editor connection checked in 0.50s')||
-     !loadProgress.steps.includes('Photoshop Get (total) in 1.00s'))
+     !loadProgress.steps.includes('Photoshop Get (total) in 1.00s')||
+     !loadProgress.steps.includes('Load/Get source skin mask (total) in 0.40s')||
+     !loadProgress.steps.includes('  Initial crop: edge refinement: 0.015 s'))
     throw Error('timing prefix or get failed');
-  controls.editorSelect.value='photoshop'; calls=[]; await pcGet();
+  controls.editorSelect.value='photoshop'; shellControls.scaleEstimator.value='body-priority'; calls=[]; await pcGet();
   if(state.busy||applied!==2||calls.includes('/api/pc/status')||!calls.includes('/api/pc/fetch'))
     throw Error('Photoshop did not capture directly');
+  if(!shellControls.photoshopTransferLogText.textContent.includes('480 bytes'))
+    throw Error('Transfer timings were not rendered in the shell');
+  delete shellControls.photoshopTransferLogText;
+  await pcGet();
+  if(state.busy||applied!==3||loadProgress.steps.some(step=>/Live progress unavailable|Image Get\/analysis failed/.test(step)))
+    throw Error('Missing optional transfer panel interrupted Get or progress: '+loadProgress.steps.join('\n'));
   failure='connector unavailable'; await pcGet();
   if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connector unavailable'))
     throw Error('Photoshop capture error failed');
   failure=null;
   connected=false; controls.editorSelect.value='photocraft'; await pcGet();
-  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image selection cancelled')||applied!==2)
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image selection cancelled')||applied!==3)
     throw Error('cancellation failed');
   failure='connection failed'; await pcGet();
   if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connection failed'))
@@ -1431,6 +1553,38 @@ const api=async(path,body)=>{
                     js.JSStringRelease(source)
         finally:
             js.JSGlobalContextRelease(context)
+
+    def test_source_mask_details_report_retries_and_only_executed_colour_steps(self):
+        image = np.random.default_rng(42).integers(50, 180, (64, 64, 3), dtype=np.uint8)
+        token = "source-mask-stages-123456"
+
+        class Model:
+            def run(self, *_):
+                logits = np.zeros((1, 256, 256, 6), np.float32)
+                logits[..., 2] = 15
+                return [logits]
+
+        with patch.object(skin_mask, "_SEG", (Model(), "input")):
+            args = (image, None, [8, 8, 55, 55], 63)
+            expected = skin_mask.skin_mask(*args)
+            with progress.operation(token):
+                actual = progress.detailed_call("source mask", skin_mask.skin_mask, *args)
+                progress.detailed_call("small mask", skin_mask.skin_mask,
+                                       image[:16, :16], None, [0, 0, 16, 16], 63)
+        source, small = progress.snapshot(token, consume=True)["steps"]
+        for component in ("A", "features", "colour", "skin"):
+            np.testing.assert_array_equal(actual[component], expected[component])
+        labels = [stage["label"] for stage in source["details"]]
+        self.assertIn("Initial crop: segmentation inference", labels)
+        self.assertIn("Crop retry 1: edge refinement", labels)
+        self.assertIn("Fit skin colour model", labels)
+        self.assertIn("Apply skin colour filter", labels)
+        self.assertNotIn("Facial feature mask", labels)
+        self.assertNotIn("Nostril detection and mask", labels)
+        self.assertLessEqual(sum(stage["seconds"] for stage in source["details"]), source["seconds"])
+        small_labels = [stage["label"] for stage in small["details"]]
+        self.assertNotIn("Fit skin colour model", small_labels)
+        self.assertFalse(any(label.startswith("Crop retry") for label in small_labels))
 
     def test_live_snapshot_is_readable_while_processing_lock_is_held(self):
         entered, release = threading.Event(), threading.Event()

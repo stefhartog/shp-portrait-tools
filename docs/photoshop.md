@@ -70,10 +70,10 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
   model initialization; capture and transfer are combined, and do not separately
   measure Photoshop's modal or pixel-read time. These wall-clock timings do not
   isolate GPU synchronization.
-- Photoshop's internal RGB16 inbox PNG uses lossless run-length-oriented
-  compression and is decoded once for loading. Pixel values and the verified ICC
-  are preserved. The PNG can be larger than with the previous compression strategy;
-  inbox files are retained as before.
+- Raw Get still receives bounded chunks into temporary request files. Tools uses
+  the verified pixels and ICC directly for analysis and keeps no inbox PNG.
+  Debug Save bundles identify the Photoshop document in `settings.json` without
+  linking to a source file. **PNG copy** capture still uses the inbox PNG path.
 - Photoshop Get checks the connector as part of the capture request rather than
   sending a separate status command first. Capture still checks the document and
   connector and reports any errors; PhotoCraft's connection check is unchanged.
@@ -310,6 +310,36 @@ session-local storage. Adobe's signed helper created
 `{"developer": true}`. That file did not exist beforehand; this was the only global
 developer setting changed, after explicit user approval. The Developer Service ran
 on `127.0.0.1:14001` during packaging and has been stopped after use.
+
+### Transfer timings
+
+After Get Image or Send Layers, open **Settings & Info → Photoshop transfer timings**.
+The panel keeps the latest breakdown for each direction. Get's transfer total
+ends after Tools validates and prepares the input (including staging the file
+in PNG-copy mode). The broader Load/Get total also includes analysis and is
+shown separately.
+If Get reports a missing progress element, quit and reopen the updated Tools
+from the tray. This fix is in Tools; an existing 0.1.12 connector can stay installed.
+
+- **Get** separates the bridge round trip from Tools input validation/preparation.
+  PNG-copy mode also reports Tools PNG encoding and disk write. Connector 0.1.12 adds raw pixel capture,
+  serialization, and upload/receipt inside the bridge span. PNG-copy Get
+  reports Photoshop's combined PNG encode/write call, temporary-file reading,
+  and upload instead.
+  Connector 0.1.14 and updated Tools split raw serialization into Adobe
+  `getData()` readback and connector validation/RGB packing. The raw report
+  shows dimensions, depth, source channels, separate pixel and ICC byte counts,
+  and an expandable per-tile breakdown. Tile times are included in the aggregate
+  rows. Only the RGB payload is uploaded; RGBA readback still requires opaque alpha.
+- **Send Layers** separates Tools preparation, serial payload encoding/staging,
+  and the bridge round trip. Per-layer and group-mask encoding rows are included
+  in the encoding wall time. Connector 0.1.12 splits the bridge span into
+  download, temporary staging, and modal import/layer creation.
+
+Indented rows are included in their parent. Totals can also include unlisted
+overhead such as polling and setup. Bytes are payload sizes, not HTTP traffic;
+the same bytes can appear during encoding, transfer, and disk write, so don't
+add them together. Older connectors still show the Tools-side timings and bytes.
 
 Adobe CLI's `devtools disable` command overwrites the settings file with
 `{"developer": false}`. If the file has since acquired other settings, back up and

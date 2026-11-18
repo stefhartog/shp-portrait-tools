@@ -14,6 +14,12 @@ from . import skintone as ST
 from .photocraft_bridge import tagged_rgb16
 
 
+def _bundle_source(state):
+    if state["path"] is not None:
+        return Path(state["path"]).stem, {"image": state["path"]}
+    return state["capture_name"], {"image": None, "source": state["capture_provenance"]}
+
+
 def save_bundle(req, p, *, state, root, srgb, settings_for_request, transfer_options, u8,
                 dnb_full_result, prepare_skin_result, validate_skintone_source):
     if p["mode"] == "combine":
@@ -26,7 +32,7 @@ def save_bundle(req, p, *, state, root, srgb, settings_for_request, transfer_opt
     img = state["img"]
     layers, after, total = dnb_full_result(p, layered=True)
     cs = processing_service.first_band(layers, img.shape[:2])
-    stem = Path(state["path"]).stem
+    stem, provenance = _bundle_source(state)
     out = root / "results" / f"{stem}_{datetime.datetime.now():%Y%m%d-%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
     transfer = transfer_options()
@@ -47,7 +53,7 @@ def save_bundle(req, p, *, state, root, srgb, settings_for_request, transfer_opt
     d = (after - img).mean(axis=2)
     settings = {k: v for k, v in settings_for_request(req).items() if k != "view"}
     settings["output_settings"] = transfer
-    settings.update(image=state["path"], stats={"p95": float(np.percentile(np.abs(d), 95) * 255), "max": float(np.abs(d).max() * 255)},
+    settings.update(**provenance, stats={"p95": float(np.percentile(np.abs(d), 95) * 255), "max": float(np.abs(d).max() * 255)},
                     layer_order=[f"band {index}" for index, _ in reversed(layers)],
                     band1_on=p["band1_on"], second_band=p["second_band"],
                     files={"1_result": "picture with the settings applied (combined mask applied)",
@@ -63,13 +69,13 @@ def _save_combined(req, p, state, root, srgb, settings_for_request, transfer_opt
                    prepare_skin_result, validate_skintone_source):
     validate_skintone_source()
     _, _, result = prepare_skin_result(p)
-    stem=Path(state["path"]).stem
+    stem, provenance = _bundle_source(state)
     out=root/"results"/f"{stem}_combine_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
     out.mkdir(parents=True,exist_ok=False)
     transfer = transfer_options()
     filename = "result." + transfer["format"]
     (out/filename).write_bytes(tagged_rgb16(FS.rgb16(result),state["source_icc"] or srgb,transfer))
-    (out/"settings.json").write_text(json.dumps({**settings_for_request(req),"image":state["path"],
+    (out/"settings.json").write_text(json.dumps({**settings_for_request(req), **provenance,
                                                "output_settings":transfer},indent=2))
     return {"dir":str(out),"files":[filename,"settings.json"]}
 
@@ -80,7 +86,7 @@ def _save_skin(req, p, state, root, srgb, settings_for_request, transfer_options
         validate_skintone_source()
     t = time.time()
     mask, layers, result = prepare_skin_result(p)
-    stem = Path(state["path"]).stem
+    stem, provenance = _bundle_source(state)
     out = root / "results" / f"{stem}_{p['mode']}_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
     out.mkdir(parents=True, exist_ok=True)
     mask_name = "skinmask.png"
@@ -110,7 +116,7 @@ def _save_skin(req, p, state, root, srgb, settings_for_request, transfer_options
                             + ("with skinmask.png" if p["frequency"]["blur_mask"] else "unmasked") + "), " if p["frequency"]["on"] else "")
                          + "Color (Normal, unmasked)."
                          if result is not None else mask_name + ": reusable grayscale layer in Normal mode; no healing.")
-    (out / "settings.json").write_text(json.dumps({**settings_for_request(req), "image": state["path"],
+    (out / "settings.json").write_text(json.dumps({**settings_for_request(req), **provenance,
         **({"output_settings": transfer} if result is not None else {}),
         "layer_recipe": recipe,
         "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "

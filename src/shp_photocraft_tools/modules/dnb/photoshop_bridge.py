@@ -1,6 +1,9 @@
 """Skin Tools' editor boundary for the Photoshop UXP connector (numeric RGB, not converted)."""
 
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 import io
 import math
 from pathlib import Path
@@ -15,6 +18,71 @@ from shp_photocraft_tools.shared.photocraft import ControlError
 from shp_photocraft_tools.shared.photoshop import CHUNK, MAX_PIXELS, MAX_TRANSFER, PROTOCOL
 from . import frequency_separation as FS, skintone as ST, photoshop_lut, progress
 from .photocraft_bridge import tagged_rgb16, transfer_settings
+
+_layer_start = ContextVar("photoshop_layer_start", default=None)
+
+
+@dataclass(frozen=True)
+class RawCapture:
+    name: str
+    pixels: np.ndarray
+    icc: bytes
+
+
+_CONNECTOR_LABELS = {
+    "capture": "Photoshop pixel capture",
+    "serialize": "Photoshop pixel serialization",
+    "readback": "Photoshop getData() readback",
+    "pack": "Connector tile validation and RGB packing",
+    "export": "Photoshop PNG copy export (encode and write)",
+    "file_read": "Connector PNG read",
+    "upload": "Connector upload and Tools receipt",
+    "download": "Connector payload download",
+    "stage": "Connector payload staging",
+    "import": "Photoshop import and layer creation",
+}
+
+
+@contextmanager
+def layer_preparation():
+    token = _layer_start.set(time.perf_counter())
+    try:
+        yield
+    finally:
+        _layer_start.reset(token)
+
+
+def _connector_details(result, wall, phases):
+    timing = result.get("timing")
+    if not isinstance(timing, dict):
+        return []
+    details = [{"label": _CONNECTOR_LABELS[key], "seconds": timing[key]} for key in phases
+               if type(timing.get(key)) in (int, float) and 0 <= timing[key] <= wall]
+    return details if sum(step["seconds"] for step in details) <= wall else []
+
+
+def _raw_tile_details(result, wall, sizes):
+    doc, tiles = result.get("doc"), result.get("pixel_tiles")
+    if not isinstance(doc, dict) or not isinstance(tiles, list):
+        return None
+    w, h, depth = (doc.get(key) for key in ("width", "height", "depth"))
+    if (type(w) is not int or type(h) is not int or type(depth) is not int
+            or min(w, h) <= 0 or w * h > MAX_PIXELS or depth not in (8, 16)):
+        return None
+    stride = w * 3 * (depth // 8)
+    rows = CHUNK // (w * 4 * (depth // 8))
+    if not rows or len(tiles) != (h + rows - 1) // rows or sizes.get("pixels") != stride * h:
+        return None
+    for tile in tiles:
+        if (not isinstance(tile, list) or len(tile) != 3 or type(tile[0]) is not int or tile[0] not in (3, 4)
+                or not all(type(value) in (int, float) and 0 <= value <= wall for value in tile[1:])):
+            return None
+    readback, pack = (sum(tile[i] for tile in tiles) for i in (1, 2))
+    if readback + pack > wall:
+        return None
+    return {"width": w, "height": h, "depth": depth, "rows": rows,
+            "pixel_bytes": stride * h, "icc_bytes": sizes.get("icc", 0), "tiles": tiles,
+            "readback": readback, "pack": pack}
 
 
 def _opacity(value):
@@ -59,10 +127,26 @@ class Bridge:
         started = time.perf_counter()
 
         def finish(job, result):
-            progress.completed("Photoshop capture and transfer", time.perf_counter() - started)
-            return progress.call("Photoshop input validation and preparation (total)", prepare, job, result)
+            wall = time.perf_counter() - started
+            names = ("pixels", "icc") if capture_format == "raw" else ("png",)
+            sizes = {name: job.blob(name).stat().st_size for name in names if job.blob(name).is_file()}
+            phases = ("capture", "serialize", "upload") if capture_format == "raw" else ("export", "file_read", "upload")
+            details = _connector_details(result, wall, phases)
+            tile_info = _raw_tile_details(result, wall, sizes) if capture_format == "raw" else None
+            if tile_info:
+                timing = result.get("timing")
+                split = _connector_details({"timing": {**(timing if isinstance(timing, dict) else {}),
+                                                       "readback": tile_info["readback"], "pack": tile_info["pack"]}},
+                                           wall, ("capture", "readback", "pack", "upload"))
+                if split:
+                    details = split
+                else:
+                    tile_info = None
+            progress.completed("Photoshop capture and transfer", wall, transfer="get",
+                               bytes=sum(sizes.values()), details=details, **({"pixel_tiles": tile_info} if tile_info else {}))
+            return prepare(job, result)
 
-        def prepare(job, result):
+        def validate(job, result):
             doc = result.get("doc")
             if not isinstance(doc, dict):
                 raise ControlError("Photoshop returned no source identity")
@@ -133,11 +217,23 @@ class Bridge:
                             if capture_format == "png" else "select the exact matching ICC file")
                 raise ControlError(f"Cannot verify Photoshop ICC identity: {error}; {guidance}") from error
             doc = {**doc, "editor": "photoshop", "profile_hash": hashlib.sha256(icc).hexdigest()}
+            return bgr, icc, doc
+
+        def prepare(job, result):
+            start = time.perf_counter()
+            bgr, icc, doc = validate(job, result)
+            progress.completed("Tools input validation and preparation", time.perf_counter() - start, transfer="get")
+            stem = f"photoshop-{secrets.token_hex(8)}"
+            if capture_format == "raw":
+                return RawCapture(stem, bgr, icc), doc
             inbox.mkdir(parents=True, exist_ok=True)
-            destination = inbox / f"photoshop-{secrets.token_hex(8)}.png"
-            encoded = progress.call("Photoshop input PNG encoding", tagged_rgb16, bgr, icc,
-                                    {"opaque_alpha": False}, png_strategy=cv2.IMWRITE_PNG_STRATEGY_RLE)
-            progress.call("Photoshop input PNG write", destination.write_bytes, encoded)
+            destination = inbox / f"{stem}.png"
+            start = time.perf_counter()
+            encoded = tagged_rgb16(bgr, icc, {"opaque_alpha": False}, png_strategy=cv2.IMWRITE_PNG_STRATEGY_RLE)
+            progress.completed("Tools PNG encoding", time.perf_counter() - start, transfer="get", bytes=len(encoded))
+            start = time.perf_counter()
+            destination.write_bytes(encoded)
+            progress.completed("Tools PNG disk write", time.perf_counter() - start, transfer="get", bytes=len(encoded))
             return destination, doc
 
         return self.broker.execute("capture", {"format": capture_format}, finish=finish)
@@ -149,8 +245,17 @@ class Bridge:
         if not isinstance(source_icc, bytes) or hashlib.sha256(source_icc).hexdigest() != doc.get("profile_hash"):
             raise ControlError("The captured Photoshop ICC identity changed; Get Image again")
         h, w = doc["height"], doc["width"]
+        start = _layer_start.get()
+        if start is not None:
+            progress.completed("Tools layer preparation (wall time)", time.perf_counter() - start, transfer="send")
+            _layer_start.set(None)
+        transfer_start = None
+        payload_size = 0
 
         def prepare(job):
+            nonlocal transfer_start, payload_size
+            started = time.perf_counter()
+            details = []
             blobs, size = {}, 0
 
             def binary(pixels, components):
@@ -179,7 +284,9 @@ class Bridge:
                 result = {key: node[key] for key in ("name", "blend", "opacity")}
                 if "children" in node:
                     result["children"] = [encode(child) for child in node["children"]]
-                elif "lookup" in node:
+                start = time.perf_counter()
+                before = size
+                if "lookup" in node:
                     name = f"b{len(blobs)}"
                     payload = node["lookup"]
                     size_in_bytes = len(payload)
@@ -191,15 +298,26 @@ class Bridge:
                     job.blob(name).write_bytes(payload)
                     blobs[name] = {"kind": "icc-lut", "bytes": size_in_bytes}
                     result["lookup"] = name
-                else:
+                elif "children" not in node:
                     result["pixels"] = binary(node["pixels"], 3)
                 if node.get("mask") is not None:
                     result["mask"] = binary(node["mask"], 1)
+                if size != before:
+                    details.append({"label": node["name"], "seconds": time.perf_counter() - start, "bytes": size - before})
                 return result
 
             job.params.update({"doc": doc, "layers": [encode(node) for node in nodes], "blobs": blobs})
+            payload_size = size
+            progress.completed("Tools layer payload encoding and staging (serial wall time)",
+                               time.perf_counter() - started, transfer="send", bytes=size, details=details)
+            transfer_start = time.perf_counter()
 
-        return self.broker.execute("apply", {}, prepare=prepare)
+        result = self.broker.execute("apply", {}, prepare=prepare)
+        if transfer_start is not None:
+            elapsed = time.perf_counter() - transfer_start
+            progress.completed("Photoshop transfer and import", elapsed, transfer="send", bytes=payload_size,
+                               details=_connector_details(result, elapsed, ("download", "stage", "import")))
+        return {key: value for key, value in result.items() if key != "timing"}
 
     @staticmethod
     def _layer(name, pixels, blend="Normal", opacity=100, mask=None):

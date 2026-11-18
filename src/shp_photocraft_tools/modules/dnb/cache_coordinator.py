@@ -1,12 +1,15 @@
 """Coordinate full-resolution jobs without holding the preview lock during preparation."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from contextvars import copy_context
 from copy import deepcopy
 import json
 import threading
 import time
 
 from . import image_session, progress
+from .layer_cache import RESERVE
 from .mask_precache import MaskPrecache, Skipped, Superseded
 
 
@@ -24,12 +27,16 @@ class CacheCoordinator:
         self._prepare_layers = prepare_layers
         self.preview_lock = threading.Lock()
         self.full_resolution_lock = threading.Lock()
+        self.fs_split_lock = threading.Lock()
         self.foreground_waiting = threading.Event()
         self._waiters_lock = threading.Lock()
         self._waiters = 0
-        self.mask_jobs = MaskPrecache(self.precache_mask)
-        self.layer_jobs = MaskPrecache(self.precache_layers, delay=1.5, name="layer-precache")
+        # Temporary trial; the previous coordinator delays were 600 ms and 1,500 ms.
+        self.mask_jobs = MaskPrecache(self.precache_mask, delay=0.15)
+        self.layer_jobs = MaskPrecache(self.precache_layers, delay=0.3, name="layer-precache")
         self.layer_records = {}
+        self.mask_timing = None
+        self.layer_timings = None
         self.layer_active = {"mode": None, "stamp": None, "generation": None, "tabs": {}, "budget_note": None}
 
     @contextmanager
@@ -40,7 +47,8 @@ class CacheCoordinator:
         try:
             # A Send can wait for an in-flight full-resolution stage without
             # holding the preview lock. Always acquire the full-resolution lock first.
-            with (self.full_resolution_lock if full_resolution else nullcontext()), self.preview_lock:
+            with (self.full_resolution_lock if full_resolution else nullcontext()), \
+                    (self.fs_split_lock if full_resolution else nullcontext()), self.preview_lock:
                 yield
         finally:
             with self._waiters_lock:
@@ -54,18 +62,27 @@ class CacheCoordinator:
         token = f"mask-precache-{time.monotonic_ns()}"
         try:
             with self.full_resolution_lock, progress.operation(token), self._colour_mode(state["colour_mode"]):
+                timing = progress.cache_timing()
                 self._compute_mask(p, state=state, commit_guard=guard)
+                with guard() as current:
+                    if current and image_session.matches_source(self._state(), state):
+                        self.mask_timing = (self.mask_jobs.sequence, state["landmark_generation"], timing())
         finally:
             progress.snapshot(token, consume=True)
 
     def mask_cache_status(self):
-        status = self.mask_jobs.status()
+        with self.mask_jobs.condition:
+            status = self.mask_jobs.status()
+            timing = self.mask_timing
         state = self._state()
         saved = state.get("full_mask_cache")
         entry = state.get("full_mask_status_entry")
         status["cached"] = bool(saved is not None and entry is not None
                                 and entry[0] == saved[0] and entry[1] == state.get("mask_status_key"))
         status["enabled"] = state.get("mask_precache_enabled", True)
+        if (timing and timing[:2] == (status["sequence"], state.get("landmark_generation"))
+                and status["status"] == "ready" and status["cached"] and status["enabled"]):
+            status["timing"] = timing[2]
         return status
 
     def queue_mask_precache(self, p):
@@ -85,6 +102,7 @@ class CacheCoordinator:
         modes, state, stamp = job
         generation = state["landmark_generation"]
         held = False
+        executor = blur_future = None
 
         @contextmanager
         def guard():
@@ -101,6 +119,11 @@ class CacheCoordinator:
         def higher_priority_work():
             return self.foreground_waiting.is_set() or self.mask_jobs.status()["status"] in ("queued", "running")
 
+        def finish_overlap():
+            if blur_future is not None:
+                # The FS branch consumes and handles its result separately.
+                blur_future.exception()
+
         def acquire():
             nonlocal held
             while True:
@@ -115,14 +138,57 @@ class CacheCoordinator:
         def cooperate():
             nonlocal held
             check()
-            if higher_priority_work():
+            if not held:
+                acquire()
+            elif higher_priority_work():
+                finish_overlap()
                 self.full_resolution_lock.release()
                 held = False
                 acquire()
                 check()
 
+        def room_for_overlap():
+            h, w = state["source_img"].shape[:2]
+            free = self._layer_cache().memory()
+            return free is not None and free >= RESERVE + h * w * 256
+
+        @contextmanager
+        def split_slot():
+            # Only the mask-independent split may use this lane. Foreground
+            # Send takes both locks before touching full-resolution data.
+            if (not self.foreground_waiting.is_set()
+                    and self.mask_jobs.status()["status"] in ("queued", "running")
+                    and room_for_overlap()
+                    and self.fs_split_lock.acquire(blocking=False)):
+                try:
+                    check()
+                    if not self.foreground_waiting.is_set():
+                        yield
+                        return
+                finally:
+                    self.fs_split_lock.release()
+            cooperate()
+            yield
+
+        def start_blur(fn):
+            nonlocal executor, blur_future
+            if not held or higher_priority_work() or not room_for_overlap():
+                return None
+
+            def work():
+                token = f"blur-precache-{time.monotonic_ns()}"
+                try:
+                    with progress.operation(token):
+                        check()
+                        return fn()
+                finally:
+                    progress.snapshot(token, consume=True)
+
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fs-blur-precache")
+            blur_future = executor.submit(copy_context().run, work)
+            return blur_future
+
         check("Waiting for mask preparation or foreground work")
-        acquire()
         token = f"layer-precache-{time.monotonic_ns()}"
         try:
             with progress.operation(token), self._colour_mode(state["colour_mode"]):
@@ -134,15 +200,23 @@ class CacheCoordinator:
                             raise Superseded()
                         self.layer_records[mode] = (generation, stamp, tuple(keys))
 
-                def tab(mode, state, message, keys=None):
+                def tab(mode, state, message, keys=None, *, timing=None):
                     with guard() as current:
                         if not current:
                             raise Superseded()
                         self.layer_active["tabs"][mode] = {"state": state, "message": message}
                         if keys:
                             self.layer_records[mode] = (generation, stamp, tuple(keys))
+                        if timing is not None:
+                            timings[mode] = timing
 
-                self._prepare_layers(modes, state, guard, check, cooperate, tab, record)
+                with guard() as current:
+                    if not current:
+                        raise Superseded()
+                    timings = {}
+                    self.layer_timings = (self.layer_jobs.sequence, generation, timings)
+                self._prepare_layers(modes, state, guard, check, cooperate, tab, record,
+                                     split_slot, start_blur, finish_overlap)
                 with guard() as current:
                     if not current:
                         raise Superseded()
@@ -151,6 +225,8 @@ class CacheCoordinator:
                     raise Skipped(next((item["message"] for item in outcomes if item["state"] == "unavailable"),
                                        "No reusable layers for these settings."))
         finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
             progress.snapshot(token, consume=True)
             if held:
                 self.full_resolution_lock.release()
@@ -160,8 +236,11 @@ class CacheCoordinator:
             status = self.layer_jobs.status()
             active = deepcopy(self.layer_active)
             records = dict(self.layer_records)
+            timing = deepcopy(self.layer_timings)
         status.update(active)
         live_generation = self._state().get("landmark_generation")
+        if timing and timing[:2] == (status["sequence"], live_generation):
+            status["timings"] = timing[2]
         storage = self._layer_cache()
         status["records"] = {
             mode: {"generation": generation, "stamp": stamp,

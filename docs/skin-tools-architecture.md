@@ -36,6 +36,66 @@ that owns the behavior you want to change, not with the whole server.
    adapter. In the parallel FS path, the processing service keeps the deferred
    Blur worker alive during the synchronous transfer callback.
 
+**Settings & Info → Calculation timings** shows the latest full-resolution
+preparation of Skin Mask, FS & Tone, D&B, and Combine. Elapsed time starts
+when each tab's work begins and may include pauses for foreground work.
+Cache reuse is labeled separately, and shared FS components are not timed
+again under Combine.
+
+Load/Get separately reports the source-mask total and its measured components
+(model setup, inference and refinement per crop, face exclusions and colour
+fitting/filtering when used). The Skin Mask cache row instead measures applying
+the current settings to those stored components, including tone and structure
+when enabled. Indented durations are part of their parent total; reusing a
+cached mask does not repeat those calculations.
+
+The independent **Skin Mask backend** setting defaults to CPU. Experimental
+CUDA accelerates guided edge refinement and sharpening for each full-resolution
+Load/Get segmentation crop and applies feathering, selected colour range,
+luminance, tone and structure protection in the full-resolution final-mask
+cache. Wide feathering uses the requested Gaussian radius in bounded CUDA passes.
+Stored components are combined on CPU. ONNX provider selection, feature and
+colour masks at Load/Get, and preview code are unchanged. Reload the same image
+after restarting Tools to compare modes. Calculation timings identify CUDA
+and any CPU fallback; small mask variations are possible.
+
+With enough free RAM, background Color/Detail separation can run while the
+shared mask is pending. After the mask is ready, skin-aware Blur can overlap
+standalone D&B when CUDA is selected. CPU D&B stays serial, including CUDA
+fallback, and Combine waits for the cached FS components. Tab elapsed times
+can overlap; do not add them together to estimate total preparation time.
+
+## Experimental CUDA D&B
+
+`processing_service.cached_dnb_band` selects the backend only on a full-resolution
+editable D&B cache miss (standalone D&B or Combine). CPU is the default.
+Choose **CUDA when supported (experimental)** under **Settings & Info →
+D&B layer backend**, then quit and reopen Tools. Choose **CPU** in the same
+menu and restart to disable CUDA.
+[`cuda_bands.py`](../src/shp_photocraft_tools/modules/dnb/cuda_bands.py) compiles
+the adjacent `.cu` resource using the existing Windows CUDA 13 NVRTC runtime.
+It uses device 0 with compute capability 8.0 or newer; validation so far is on
+an RTX 3090. No new Python packages are needed on the tested install.
+
+The shared final mask, profile handling, and cache keys and admission stay the
+same. Standalone D&B also keeps its CPU distance transform. The renderer uploads
+per uncached band, keeps the band intermediates on the GPU, and downloads the
+final layer. Jobs still yield between bands, not within a running CUDA band.
+Unsupported inputs, runtime or device errors, and VRAM limits use CPU with a
+logged reason (also in Send progress when available). Near-white pixels do
+not trigger fallback; small tone-curve rounding differences can be amplified
+by Soft Light inversion.
+The backend is fixed for the process so restarting also starts an empty cache.
+CUDA is not pixel-identical to CPU: a synthetic deep-shadow stress case at
+low edge and high strength showed a difference of 21 RGB16 layer codes.
+Use CPU when matching the reference output matters.
+
+For fallback tests use `python -m uv run --no-sync python -m unittest discover -s tests -p test_cuda_bands.py`.
+Set `SHP_TEST_DNB_CUDA=1` to also run hardware parity checks. The test compares
+editable pixels and a quantized software Soft Light composite separately, and
+verifies that near-white fixtures can run on CUDA. It does not
+substitute for validating the actual blend in Photoshop or PhotoCraft.
+
 ## Rules for focused changes
 
 - Keep route names, JSON fields, progress/error behavior, and editor checks
@@ -77,3 +137,35 @@ selectors below to `python -m uv run --no-sync python -m unittest`.
 See the [Photoshop connector guide](photoshop.md) for wire and live-validation
 details. The [historical D&B notes](source/dnb-readme.md) describe the original
 standalone project, not the current source layout or run commands.
+
+## Background cache debounce trial
+
+Background preparation waits for 150 ms of inactivity for the full-resolution
+mask and 300 ms for layers, temporarily replacing 600 ms and 1,500 ms.
+Foreground or explicit preparation does not wait for these timers, but can
+still wait for work in progress. To end the trial, restore the previous
+coordinator delays; the worker's general default is unchanged.
+
+## Automatic S estimator
+
+**Torso + head** is the default for Open/Get, batch, and watch-folder.
+Interactive Analysis reports the Torso + head estimate and the face-led
+baseline for the same subject when Torso + head is selected. Choose
+**Settings & Info → S estimator → Baseline (face-led)** to use the previous
+estimator on the next interactive Open/Get. The selection lasts for the
+current Tools session. Typing a value in **px / 63 mm** overrides the
+automatic estimate for the current image. Batch and watch-folder estimate
+scale independently for each image; they do not inherit that override or the
+interactive estimator selection.
+
+The torso + head estimate weights shoulder-to-hip midpoint distance at 75%
+and YuNet face-box height (a head-size proxy, not a crown-to-chin measurement)
+at 25%. The temporary image-calibrated test references are about 419.3 mm
+for the torso and 174.7 mm for the face-box proxy, fitted to the baseline on
+one frontal example. They are not general anthropometric averages. With two
+usable cues, a larger estimate up to 20% above the smaller is medium
+confidence; above 20% and up to 35% is low confidence. A single usable cue
+is also low confidence. If neither qualifies or the larger estimate is more
+than 35% above the smaller, the estimator returns the face-led baseline and
+its confidence, with a fallback reason. Projected lengths still vary with
+camera angle, posture, and individual anatomy.

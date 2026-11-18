@@ -61,6 +61,8 @@ HTML = Path(__file__).resolve().parent / "ui" / "index.html"
 PRESETS = ROOT / "presets.json"
 GLOBAL_SETTINGS = global_config_dir() / "settings.json"
 GLOBAL_SETTINGS_LOCK = threading.RLock()
+DNB_LAYER_BACKEND = "cpu"
+SKIN_MASK_BACKEND = "cpu"
 WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 FULL_MASK_LOCK = threading.RLock()
@@ -89,15 +91,10 @@ def encode(bgr_or_gray, fmt=".jpg", q=90, icc=None):
 SRGB_ICC = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 
 
-def colour_plan(path, raw8):
+def colour_plan(icc, raw8):
     """Decide how to treat the picture's colours. Returns (mode, icc_for_outputs, converted_raw8_or_None, note).
     sRGB or no profile: used as is. Adobe RGB: kept as is, analysed with its own gamma/luminance weights, and the same
     profile is embedded in every JPEG we write. Any other profile: converted to sRGB (and tagged sRGB)."""
-    try:
-        with Image.open(path) as image:
-            icc = image.info.get("icc_profile")
-    except Exception:
-        icc = None
     if not icc:
         return "srgb", None, None, "no embedded profile, treated as sRGB"
     try:
@@ -195,20 +192,22 @@ def parse_params(p):
     )
 
 
-def combine_mask(comps, flags, px_per_mm):
+def combine_mask(comps, flags, px_per_mm, *, feather=True):
     """Skin mask from the stored components: segmenter, minus eyes/brows/lips/nostrils, times the colour check, then
     feathered. Feather = Gaussian of sigma feather_mm; 'inward only' keeps the outer boundary where it is and fades the
     mask inside it, so the correction does not spill onto hair or background."""
-    m = comps["A"]
-    if flags["features"]:
-        m = m * (1 - comps["features"])
-    if flags["colour"]:
-        m = m * comps["colour"]
-    m = np.clip(m, 0, 1).astype(np.float32)
+    with progress.detail_stage("Combine stored skin mask components"):
+        m = comps["A"]
+        if flags["features"]:
+            m = m * (1 - comps["features"])
+        if flags["colour"]:
+            m = m * comps["colour"]
+        m = np.clip(m, 0, 1).astype(np.float32)
     sig = flags.get("feather", 0.0) * px_per_mm
-    if sig >= 0.5:
-        b = cv2.GaussianBlur(m, (0, 0), sig)
-        m = np.minimum(m, np.clip(2 * b - 1, 0, 1)) if flags.get("inward", True) else b
+    if feather and sig >= 0.5:
+        with progress.detail_stage("Feather skin mask"):
+            b = cv2.GaussianBlur(m, (0, 0), sig)
+            m = np.minimum(m, np.clip(2 * b - 1, 0, 1)) if flags.get("inward", True) else b
     return m
 
 
@@ -216,9 +215,10 @@ def add_color_range(img, mask, color_filter, px_per_mm):
     if not color_filter["on"]:
         return mask
     c = color_filter
-    cm = D.color_range_mask(img, c["hue"], c["saturation"], c["hue_range"], c["saturation_range"],
-                           c["blur_mm"] * px_per_mm, c["strength"], c["smooth_mm"] * px_per_mm)
-    return cm if mask is None else mask * cm
+    with progress.detail_stage("Calculate and combine selected colour range"):
+        cm = D.color_range_mask(img, c["hue"], c["saturation"], c["hue_range"], c["saturation_range"],
+                               c["blur_mm"] * px_per_mm, c["strength"], c["smooth_mm"] * px_per_mm)
+        return cm if mask is None else mask * cm
 
 
 def base_skin_mask(img, masks, p, S):
@@ -283,7 +283,7 @@ def cached_final_skin_mask(p, *, base_mask=None, state=None, commit_guard=None):
             with guard() as current:
                 if not current:
                     raise Superseded()
-                progress.call("Reusing cached full-resolution skin mask", lambda: None)
+                progress.cache_step("reused", "Reusing cached full-resolution skin mask", lambda: None)
                 STATE["full_mask_status_entry"] = (saved[0], mask_request_key(p, state=state))
                 return tuple(None if a is None else a.view() for a in saved[1:])
         with guard() as current:
@@ -291,10 +291,33 @@ def cached_final_skin_mask(p, *, base_mask=None, state=None, commit_guard=None):
                 raise Superseded()
             STATE["full_mask_cache"] = None
         def prepare():
+            if SKIN_MASK_BACKEND == "cuda":
+                ppm = p["S"] / D.IPD_MM
+                flags = p["mask_flags"]
+                use_components = base_mask is None and flags["on"] and bool(masks)
+                feather = flags.get("feather", 0.) * ppm if use_components else 0.
+                color = p["color_filter"] if base_mask is None and p["color_filter"]["on"] else None
+                luminance = (p["shadows"] is not None and p["highlights"] is not None) or p["protect"] > 0
+                stages = [label for enabled, label in ((feather >= .5, "Feather"),
+                          (color is not None, "selected colour range"), (luminance, "luminance/tone/structure")) if enabled]
+                base = combine_mask(masks, flags, ppm, feather=False) if use_components else base_mask
+                if not stages:
+                    return None if base is None else base.astype(np.float32), None
+                from . import cuda_bands
+
+                try:
+                    with progress.detail_stage(f"{', '.join(stages)} (CUDA, combined)"):
+                        return cuda_bands.render_final_mask(
+                            img, p["S"], base, p["shadows"], p["highlights"], p["tone_strength"],
+                            p["protect"], p["protect_mm"], p["protect_thr"],
+                            feather=feather, inward=flags.get("inward", True), color=color)
+                except (cuda_bands.CudaUnavailable, MemoryError) as exc:
+                    with progress.detail_stage(f"Final mask CPU fallback: {exc}"):
+                        pass
             base = base_mask if base_mask is not None else base_skin_mask(img, masks, p, p["S"])
             return D.combined_mask(img, p["S"], base, p["shadows"], p["highlights"],
                                    p["tone_strength"], p["protect"], p["protect_mm"], p["protect_thr"])
-        result = progress.call("Recomputing full-resolution skin mask", prepare)
+        result = progress.detailed_call("Recomputing full-resolution skin mask", prepare, cache="calculated")
         with guard() as current:
             if not current:
                 raise Superseded()
@@ -378,10 +401,11 @@ def cached_fs_split(source, frequency, commit_guard=None, workers=None, *, state
     reserve = layer_reserve(source)
     saved = lookup_layers(key, reserve, commit_guard)
     if saved is not None:
-        progress.call("Reusing cached Color and Detail", lambda: None)
+        progress.cache_step("reused", "Reusing cached Color and Detail", lambda: None)
         return key, {"color": saved[0], "detail": saved[1]}
     args = {} if workers is None else {"workers": workers}
-    layers = progress.call("Separating Color and Detail", FS.split, source, frequency["method"], frequency["radius"], **args)
+    layers = progress.cache_step("calculated", "Separating Color and Detail", FS.split,
+                                 source, frequency["method"], frequency["radius"], **args)
     retain_layers(key, (layers["color"], layers["detail"]), reserve, commit_guard)
     return key, layers
 
@@ -396,9 +420,9 @@ def cached_fs_blur(key, color, mask, frequency, reserve, commit_guard=None, cach
     blur_key = cache_key if cache_key is not None else fs_blur_key(key, mask, frequency)
     saved = lookup_layers(blur_key, reserve, commit_guard)
     if saved is not None:
-        progress.call("Reusing cached skin-aware Blur", lambda: None)
+        progress.cache_step("reused", "Reusing cached skin-aware Blur", lambda: None)
         return saved[0]
-    blur = progress.call("Computing skin-aware Blur", FS.skin_filter, color,
+    blur = progress.cache_step("calculated", "Computing skin-aware Blur", FS.skin_filter, color,
                          blur_mask if blur_mask is not None else np.ones(mask.shape, np.float32),
                          frequency["blur_radius"], "gaussian")
     retain_layers(blur_key, (blur,), reserve, commit_guard)
@@ -422,7 +446,8 @@ def layer_mask_key(p, masks):
     return (mask_settings_key(p, masks), tuple((key, layer_digest(masks[key])) for key in used))
 
 
-def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, between_bands=None):
+def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, between_bands=None,
+                     before_fallback=None):
     img = (STATE if state is None else state)["img" if kind == "masked" else "source_img"]
     masks = (STATE if state is None else state)["masks"]
     if kind == "masked":
@@ -444,7 +469,7 @@ def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, betwe
         keys.append(key)
         saved = lookup_layers(key, layer_reserve(img), commit_guard)
         if saved is not None:
-            progress.call("Reusing cached D&B layers", lambda: None)
+            progress.cache_step("reused", "Reusing cached D&B layers", lambda: None)
             layers.append((index, saved[0]))
             continue
         if kind == "masked" and base is None:
@@ -452,16 +477,9 @@ def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, betwe
                                  img, masks, p, p["S"])
             if between_bands is not None:
                 between_bands()
-        second = {**p["second_band"], "on": index == 2}
-        kwargs = {"mask": base, "shadows": p["shadows"], "highlights": p["highlights"],
-                  "tone_strength": p["tone_strength"], "protect": p["protect"],
-                  "protect_mm": p["protect_mm"], "protect_thr": p["protect_thr"]} if kind == "masked" else {}
-        result, _, _, _ = progress.call(
-            "Calculating D&B band", D.band_stack, img, p["S"], p["bands"], p["strength"], second,
-            first_on=index == 1, sigma=p["layer_blur_at_s181"] * p["S"] / 181,
-            edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"], mask_result=(total, structure),
-            render_result=False, **kwargs)
-        pixels = result[0][1]
+        pixels = processing_service.cached_dnb_band(
+            p, img, index, base, (total, structure), backend=DNB_LAYER_BACKEND,
+            before_fallback=before_fallback or between_bands)
         retain_layers(key, (pixels,), layer_reserve(img), commit_guard)
         layers.append((index, pixels))
         if between_bands is not None:
@@ -476,7 +494,8 @@ def full_resolution_inputs():
     )
 
 
-def prepare_layer_components(modes, state, guard, check, cooperate, tab, record):
+def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
+                             split_slot, start_blur, finish_overlap):
     source = state["source_img"]
 
     def admit(array, output_bytes):
@@ -497,15 +516,21 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record)
     if fs is None and combine and combine["combine"]["fs_mix"] > 0:
         fs = combine
     fs_keys, band_keys = [], []
+    blur_future = None
+    pair_blur = DNB_LAYER_BACKEND == "cuda" and dnb and (dnb["band1_on"] or dnb["second_band"]["on"])
 
     def prepare_frequency():
+        nonlocal blur_future
         if fs["directional"]["on"]:
             raise Skipped("Directional Blur is not precached.")
         validate_skintone_source(state)
         admit(source, source.nbytes * 2)
         workers = min(32, os.cpu_count() or 1, max(1, source.shape[0] * source.shape[1] // 1_000_000))
-        check("Checking or preparing Color and Detail")
-        key, layers = cached_fs_split(source, fs["frequency"], guard, workers=workers, state=state)
+        with split_slot():
+            started = time.perf_counter()
+            timing = progress.cache_timing()
+            check("Checking or preparing Color and Detail")
+            key, layers = cached_fs_split(source, fs["frequency"], guard, workers=workers, state=state)
         cooperate()
         keys = [key]
         check()
@@ -514,34 +539,68 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record)
             check("Preparing mask for Blur")
             mask = full_skin_mask(fs, state=state, commit_guard=guard)
             cooperate()
-            check("Checking or preparing Blur")
             blur_key = fs_blur_key(key, mask, fs["frequency"])
-            cached_fs_blur(key, layers["color"], mask, fs["frequency"], layer_reserve(source), guard, blur_key)
+            def blur():
+                cached_fs_blur(key, layers["color"], mask, fs["frequency"], layer_reserve(source), guard, blur_key)
+
+            if pair_blur:
+                leading_steps = timing()["steps"]
+
+                def complete_blur():
+                    blur_timing = progress.cache_timing()
+                    blur()
+                    return keys + [blur_key], progress.summarize_cache_timing(
+                        time.perf_counter() - started, leading_steps + blur_timing()["steps"])
+
+                blur_future = start_blur(complete_blur)
+                if blur_future is not None:
+                    return None
+            check("Checking or preparing Blur")
+            blur()
             cooperate()
             keys.append(blur_key)
-        return keys
+        return keys, timing()
+
+    def publish_frequency(result):
+        nonlocal fs_keys
+        fs_keys, timing = result
+        tab("frequency", "ready", "Matching FS components are cached", fs_keys, timing=timing)
 
     if fs:
         try:
-            fs_keys = prepare_frequency()
-            tab("frequency", "ready", "Matching FS components are cached", fs_keys)
+            result = prepare_frequency()
+            if result is not None:
+                publish_frequency(result)
         except (Skipped, ValueError) as error:
             tab("frequency", "unavailable", str(error))
     if dnb:
         try:
+            cooperate()
+            timing = progress.cache_timing()
             if not (dnb["band1_on"] or dnb["second_band"]["on"]):
                 raise Skipped("Enable a D&B band to prepare layers.")
             img = state["img"]
             admit(img, img.shape[0] * img.shape[1] * 4)
             check("Checking or preparing standalone D&B bands")
+            def before_fallback():
+                finish_overlap()
+                cooperate()
+
             _, _, keys = cached_dnb_bands(dnb, "masked", state=state, commit_guard=guard,
-                                          between_bands=cooperate)
+                                         between_bands=cooperate, before_fallback=before_fallback)
             cooperate()
-            tab("dnb", "ready", "Matching standalone D&B bands are cached", keys)
+            tab("dnb", "ready", "Matching standalone D&B bands are cached", keys, timing=timing())
         except (Skipped, ValueError) as error:
             tab("dnb", "unavailable", str(error))
+    if blur_future is not None:
+        try:
+            publish_frequency(blur_future.result())
+        except (Skipped, ValueError) as error:
+            tab("frequency", "unavailable", str(error))
     if combine:
         try:
+            cooperate()
+            timing = progress.cache_timing()
             need_bands = combine["band1_on"] or combine["second_band"]["on"]
             if need_bands and (len(modes) > 1 or combine["combine"]["dnb_mix"] > 0):
                 admit(source, source.shape[0] * source.shape[1] * 4)
@@ -558,7 +617,8 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record)
                 raise Skipped("Combine FS components are not precached.")
             if not keys:
                 raise Skipped("No enabled Combine components to prepare.")
-            tab("combine", "ready", "Matching Combine components are cached", keys)
+            tab("combine", "ready", "Matching Combine components are cached", keys,
+                timing=timing(shared=bool(fs_keys and combine["combine"]["fs_mix"] > 0)))
         except (Skipped, ValueError) as error:
             tab("combine", "unavailable", str(error))
 
@@ -613,7 +673,15 @@ def api_load(req, *, photoshop_size=None):
     h, w = img.shape[:2]
     with D.colour_mode(mode):
         return finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
-                                   opaque, skintone_error, colour_note, h, w, started)
+                                   opaque, skintone_error, colour_note, h, w, started,
+                                   body_priority=body_priority_requested(req))
+
+
+def body_priority_requested(req):
+    mode = req.get("scale_estimator", "body-priority")
+    if mode not in ("baseline", "body-priority"):
+        raise ValueError("S estimator must be baseline or body-priority")
+    return mode == "body-priority"
 
 
 def prepare_loaded_image(req, *, set_colour=True, photoshop_size=None):
@@ -626,6 +694,20 @@ def prepare_loaded_image(req, *, set_colour=True, photoshop_size=None):
         raise ValueError(f"cannot read {path}")
     if photoshop_size is not None and (raw.dtype != np.uint16 or raw.shape != (*photoshop_size, 3)):
         raise ValueError("Photoshop input changed or is not opaque full-size RGB16; Get Image again")
+    with Image.open(path) as source:
+        source_icc = source.info.get("icc_profile")
+    if photoshop_size is not None:
+        opaque = True
+    else:
+        original = progress.call("Decode input transparency", cv2.imread, str(path), cv2.IMREAD_UNCHANGED)
+        alpha_max = np.iinfo(original.dtype).max if np.issubdtype(original.dtype, np.integer) else 1.0
+        opaque = not (original.ndim == 3 and original.shape[2] == 4 and
+                      np.any(original[..., 3] != alpha_max))
+        del original
+    return prepare_image_pixels(path, raw, source_icc, opaque, set_colour=set_colour)
+
+
+def prepare_image_pixels(path, raw, source_icc, opaque, *, set_colour=False):
     if raw.ndim == 2:
         raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
     if raw.dtype in (np.uint8, np.uint16):
@@ -639,21 +721,10 @@ def prepare_loaded_image(req, *, set_colour=True, photoshop_size=None):
         raise ValueError("image contains non-finite RGB samples")
     source_img = img
     skintone_error = ST.source_error(source_img)
-    with Image.open(path) as source:
-        source_icc = source.info.get("icc_profile")
-    if photoshop_size is not None:
-        opaque = True
-    else:
-        original = progress.call("Decode input transparency", cv2.imread, str(path), cv2.IMREAD_UNCHANGED)
-        alpha_max = np.iinfo(original.dtype).max if np.issubdtype(original.dtype, np.integer) else 1.0
-        opaque = not (original.ndim == 3 and original.shape[2] == 4 and
-                      np.any(original[..., 3] != alpha_max))
-        del original
-    h, w = img.shape[:2]
     raw8 = (raw if raw.dtype == np.uint8 else
             (raw / 257.0).astype(np.uint8) if raw.dtype == np.uint16 else u8(img))
     del raw
-    mode, icc_out, converted, colour_note = progress.call("Prepare input color profile", colour_plan, path, raw8)
+    mode, icc_out, converted, colour_note = progress.call("Prepare input color profile", colour_plan, source_icc, raw8)
     if converted is not None:
         raw8, img = converted, converted.astype(np.float32) / 255.0
     if set_colour:
@@ -662,10 +733,13 @@ def prepare_loaded_image(req, *, set_colour=True, photoshop_size=None):
 
 
 def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
-                        opaque, skintone_error, colour_note, h, w, started, *, publish=True, pose_config=None):
+                        opaque, skintone_error, colour_note, h, w, started, *, publish=True, pose_config=None,
+                        capture_name=None, photoshop_doc=None, body_priority=True):
     prepared = time.perf_counter()
     pose_config = POSE.settings(pose_config or read_global_settings().get("pose"))
     pose_kwargs = {"pose_config": pose_config} if pose_config["backend"] != "rtmlib" else {}
+    if body_priority:
+        pose_kwargs["body_priority"] = True
     t = progress.call("Analyzing image / estimating S", M.pick_target, path, raw8,
                       include_unscaled=True, **pose_kwargs)
     analyzed = time.perf_counter()
@@ -676,8 +750,9 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
     if t is not None and t["S"] is not None:
         S, conf, desc, centre = t["S"], t["conf"], t["desc"], t["centre"]
         mask_started = time.perf_counter()
-        res = progress.call("Generating shared skin mask", K.skin_mask,
-                            raw8, t["face_info"], M.person_box(t, raw8.shape), S)
+        backend = {"backend": SKIN_MASK_BACKEND} if SKIN_MASK_BACKEND == "cuda" else {}
+        res = progress.detailed_call("Generating shared skin mask", K.skin_mask,
+                                     raw8, t["face_info"], M.person_box(t, raw8.shape), S, **backend)
         masks = {"A": res["A"], "features": res["features"], "colour": res["colour"]}
         seen, pbox = t["seen"], M.person_box(t, raw8.shape)
         mask_pct = round(100 * float((res["skin"] > 0.5).mean()), 1)
@@ -689,24 +764,32 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
         seen = t["seen"]
     if masks is None:
         progress.call("Mask not generated: no usable detected scale", lambda: None)
-    directory = path.parent.stat()
-    loaded = dict(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2),
+    directory = path.parent.stat() if path is not None else None
+    kind = "photoshop" if photoshop_doc is not None else "local"
+    loaded = dict(img=img, path=str(path) if path is not None else None, S=S,
+                 centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2),
                  masks=masks, icc=icc_out, pose_backend=pose_config["backend"], seen=seen, pbox=pbox,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
-                 source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
+                 source_kind=kind, source_directory=(directory.st_dev, directory.st_ino) if directory else None,
+                 capture_name=capture_name,
+                 capture_provenance={"editor": kind, "document": photoshop_doc.get("name")} if photoshop_doc else None)
     loaded["pose"] = ({"kp": np.array(t["kp"], copy=True), "backend": pose_config["backend"],
                       **({"sc": np.array(t["sc"], copy=True)} if t.get("sc") is not None else {})}
                      if t is not None and t.get("kp") is not None else None)
-    info = {"name": path.name, "width": w, "height": h, "S": S, "confidence": conf, "desc": desc,
+    info = {"name": path.name if path is not None else capture_name, "width": w, "height": h, "S": S,
+            "confidence": conf, "desc": desc,
             "pose_backend": pose_config["backend"],
             "seconds": time.perf_counter() - started,
             "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
                         "mask": mask_finished - mask_started if mask_started is not None else None},
             "has_mask": masks is not None, "mask_pct": mask_pct, "colour": colour_note, "skin_colour": skin_colour,
-            "skintone_error": skintone_error, "source_kind": "local"}
+            "skintone_error": skintone_error, "source_kind": kind}
+    if body_priority:
+        info["scale_comparison"] = (t or {}).get("scale_comparison", {
+            "baseline": None, "body_priority": None, "method": "no detected subject"})
     if not publish:
         return loaded, info
-    generation = publish_loaded_source(loaded, mode)
+    generation = publish_loaded_source(loaded, mode, kind=kind, document=photoshop_doc)
     return {**info, "generation": generation, "directional_pose": directional_availability()}
 
 
@@ -1594,6 +1677,7 @@ def restore_editor_selection():
             raise ValueError("source editor must be photocraft or photoshop")
     EDITOR["selected"] = selected
     BRIDGE["doc"] = None
+    return settings
 
 
 def api_photoshop_pair(req):
@@ -1629,19 +1713,30 @@ def api_pc_status(req):
 def api_pc_fetch(req):
     started = time.perf_counter()
     editor = EDITOR["selected"]
+    body_priority = body_priority_requested(req)
     capture_format = req.get("photoshop_capture", "raw")
     if capture_format not in ("raw", "png"):
         raise ValueError("Photoshop capture must be raw or png")
     options = {"capture_format": capture_format} if editor == "photoshop" else {}
-    path, doc = progress.call("Getting merged image from " + ("Photoshop" if editor == "photoshop" else "PhotoCraft"),
+    source, doc = progress.call("Getting merged image from " + ("Photoshop" if editor == "photoshop" else "PhotoCraft"),
                               bridge().fetch, ROOT / "inbox", **options)
     fetched = time.perf_counter()
-    res = (api_load({"path": str(path)}, photoshop_size=(doc["height"], doc["width"]))
-           if editor == "photoshop" else api_load({"path": str(path)}))
+    if editor == "photoshop" and capture_format == "raw":
+        loaded = progress.call("Loading image / preparing profile", prepare_image_pixels,
+                               None, source.pixels, source.icc, True)
+        capture_name = source.name
+        del source
+        with D.colour_mode(loaded[4]):
+            res = finish_loaded_image(*loaded, *loaded[1].shape[:2], fetched,
+                                      capture_name=capture_name, photoshop_doc=doc, body_priority=body_priority)
+    else:
+        load_request = {"path": str(source), "scale_estimator": req.get("scale_estimator", "body-priority")}
+        res = (api_load(load_request, photoshop_size=(doc["height"], doc["width"]))
+               if editor == "photoshop" else api_load(load_request))
+        BRIDGE["doc"] = doc
+        STATE["source_kind"] = res["source_kind"] = editor
     res["timings"]["loaded"] += fetched - started
     res["seconds"] = time.perf_counter() - started
-    BRIDGE["doc"] = doc
-    STATE["source_kind"] = res["source_kind"] = editor
     res["pc_doc"] = doc
     return res
 
@@ -1673,6 +1768,11 @@ def load_watch_image(path, target):
 
 
 def api_pc_send_layers(req):
+    with PSB.layer_preparation() if EDITOR["selected"] == "photoshop" else nullcontext():
+        return _send_editor_layers(req)
+
+
+def _send_editor_layers(req):
     if STATE["img"] is None or BRIDGE["doc"] is None:
         raise ValueError("get a picture from the selected editor first")
     if "generation" in req and req["generation"]!=STATE.get("landmark_generation"):
@@ -1823,8 +1923,10 @@ def read_global_settings():
             raise ValueError("mask placement must be folder or layers")
         if settings.get("source_editor", "photocraft") not in ("photocraft", "photoshop"):
             raise ValueError("source editor must be photocraft or photoshop")
+        backend = processing_service.dnb_backend_settings(settings)
         if migrate:
             write_global_settings(settings)
+        settings["dnb_layer_backend"] = backend
         return settings
 
 
@@ -1858,7 +1960,8 @@ def write_global_settings(settings):
 
 
 def api_global_settings(req):
-    transfer = global_transfer_settings(req["layer_transfer"])
+    backend_only = bool(req) and req.keys() <= {"dnb_layer_backend", "skin_mask_backend"}
+    transfer = None if backend_only else global_transfer_settings(req["layer_transfer"])
     if "pose" in req:
         pose_config = POSE.settings(req["pose"])
         if pose_config["backend"] in POSE.SCORED_BACKENDS:
@@ -1869,11 +1972,16 @@ def api_global_settings(req):
         placement = req.get("mask_placement", settings["mask_placement"])
         if placement not in ("folder", "layers"):
             raise ValueError("mask placement must be folder or layers")
-        settings["layer_transfer"] = transfer
+        if "dnb_layer_backend" in req:
+            settings["dnb_layer_backend"] = processing_service.dnb_backend_settings(req)
+        if "skin_mask_backend" in req:
+            settings["skin_mask_backend"] = K.backend_setting(req)
+        if transfer is not None:
+            settings["layer_transfer"] = transfer
         settings["mask_placement"] = placement
         settings["pose"] = pose_config
         write_global_settings(settings)
-    return settings
+    return {**settings, "active_dnb_layer_backend": DNB_LAYER_BACKEND, "active_skin_mask_backend": SKIN_MASK_BACKEND}
 
 
 def module_settings(settings):
@@ -1982,7 +2090,9 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, json.dumps(read_presets()).encode(), "application/json")
         if path == "/api/global-settings":
             try:
-                return self.send(200, json.dumps({**read_global_settings(), "photocraft_launch_available": sys.platform == "win32"}).encode(), "application/json")
+                return self.send(200, json.dumps({**read_global_settings(), "photocraft_launch_available": sys.platform == "win32",
+                                                  "active_dnb_layer_backend": DNB_LAYER_BACKEND,
+                                                  "active_skin_mask_backend": SKIN_MASK_BACKEND}).encode(), "application/json")
             except (OSError, ValueError) as error:
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
         if path == "/api/images":
@@ -2071,13 +2181,16 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
 
 def main():
+    global DNB_LAYER_BACKEND, SKIN_MASK_BACKEND
     ap = argparse.ArgumentParser(description="SHP Portrait Tools — Skin Tools web UI")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--dir", nargs="+", default=[])
     a = ap.parse_args()
     DIRS.extend(a.dir)
-    restore_editor_selection()
+    settings = restore_editor_selection()
+    DNB_LAYER_BACKEND = processing_service.dnb_backend_settings(settings)
+    SKIN_MASK_BACKEND = K.backend_setting(settings)
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
     srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")

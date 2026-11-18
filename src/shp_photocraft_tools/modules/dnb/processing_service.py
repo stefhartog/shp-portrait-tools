@@ -2,14 +2,55 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+import logging
 
 import numpy as np
 
+from . import cuda_bands
 from . import directional_blur as DB
 from . import dodge_burn as D
 from . import frequency_separation as FS
 from . import progress
 from . import skintone as ST
+
+
+logger = logging.getLogger(__name__)
+
+
+DNB_BACKENDS = ("cpu", "cuda")
+
+
+def dnb_backend_settings(settings):
+    backend = settings.get("dnb_layer_backend", "cpu")
+    if backend not in DNB_BACKENDS:
+        raise ValueError("D&B layer backend must be cpu or cuda")
+    return backend
+
+
+def cached_dnb_band(p, img, index, mask, mask_result, *, backend="cpu", before_fallback=None):
+    """Render a single cache miss; preview and flattened processing stay on CPU."""
+    sigma = p["layer_blur_at_s181"] * p["S"] / 181
+    second = {**p["second_band"], "on": index == 2}
+    if backend == "cuda":
+        bands, amount = (p["bands"], p["strength"]) if index == 1 else (
+            [(second["lo"], second["hi"], 1, second["taper"])], second["strength"])
+        try:
+            return progress.cache_step(
+                "calculated", "Calculating D&B band on CUDA", cuda_bands.render_band,
+                img, p["S"], bands, amount, p["edge"], p["tau"], p["max_ev"], sigma,
+                mask=mask, invert=index == 2 and second["invert"])
+        except cuda_bands.CudaUnavailable as exc:
+            logger.warning("D&B CUDA unavailable; using CPU: %s", exc)
+            if before_fallback is not None:
+                before_fallback()
+        label = "Calculating D&B band on CPU (CUDA fallback)"
+    else:
+        label = "Calculating D&B band"
+    layers, _, _, _ = progress.cache_step(
+        "calculated", label, D.band_stack, img, p["S"], p["bands"], p["strength"], second,
+        first_on=index == 1, sigma=sigma, edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"],
+        mask_result=mask_result, render_result=False, mask=mask)
+    return layers[0][1]
 
 
 def dnb_result(p, img, masks, *, base_skin_mask, final_mask, layered=False, commit_guard=None):

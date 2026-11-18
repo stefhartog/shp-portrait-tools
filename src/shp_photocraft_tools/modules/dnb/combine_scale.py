@@ -93,6 +93,46 @@ def combine(cues):
     return {"S": S, "confidence": conf, "used": used, "dropped": dropped, "sigma": sigma, "spread": spread}
 
 
+_BODY_TEST_CALIBRATION = 373.6 / 449.1
+_TORSO_TEST_MM = 0.30 * B.BODY_H_MM * _BODY_TEST_CALIBRATION
+_HEAD_PROXY_TEST_MM = 210.0 * _BODY_TEST_CALIBRATION
+
+
+def body_priority(face, body, shape, baseline):
+    """Experimental projected scale: shoulder-to-hip length and detector face-box height."""
+    h, w = shape[:2]
+    torso = head = None
+    references = (f"image-calibrated test references: torso {_TORSO_TEST_MM:.1f} mm, "
+                  f"head proxy {_HEAD_PROXY_TEST_MM:.1f} mm")
+    if body is not None:
+        kp, scores = body
+        indices = [B.I[name] for name in ("l_sho", "r_sho", "l_hip", "r_hip")]
+        points = kp[indices]
+        if (np.all(scores[indices] >= 0.65) and np.isfinite(points).all()
+                and np.all(points >= 0) and np.all(points < [w, h])):
+            length = float(np.linalg.norm(points[:2].mean(0) - points[2:].mean(0)))
+            if length >= 24:
+                torso = length * IPD_MM / _TORSO_TEST_MM
+    if face is not None and len(face) == 15:
+        x, y, width, height = face[:4]
+        if (face[14] >= 0.85 and np.isfinite(face[:4]).all() and height >= 24 and width > 0
+                and x >= 0 and y >= 0 and x + width <= w and y + height <= h):
+            head = float(height) * IPD_MM / _HEAD_PROXY_TEST_MM
+    if torso is not None and head is not None:
+        spread = max(torso, head) / min(torso, head) - 1
+        if spread <= 0.35:
+            return (0.75 * torso + 0.25 * head, "medium" if spread <= 0.20 else "low",
+                    f"torso 75%, head proxy 25%; {references}")
+        reason = "torso and head proxy disagree by more than 35%"
+    elif torso is not None:
+        return torso, "low", f"torso only; no reliable head box; {references}"
+    elif head is not None:
+        return head, "low", f"head proxy only; no reliable torso; {references}"
+    else:
+        reason = "no reliable torso or head box"
+    return baseline["S"], baseline["confidence"], f"baseline fallback: {reason}; {references}"
+
+
 def build_subjects(path, img, pose_config=None):
     """Detect faces and bodies, gather cues per person, and pick the AF target (if the file has an AF point).
     Returns (subjects, bodies, af, target, faces); a subject is (kind, face, face_info, body_index, body_estimate, cues)."""
@@ -123,7 +163,7 @@ def build_subjects(path, img, pose_config=None):
         est = B.estimate(kp, sc)
         cues = ([("body", est["S"], 0.20)] if est else []) + B.extra_cues(kp, sc)
         subjects.append(("body", None, None, bi, est, cues))
-    af = exif_af.af_point(path, w, h)
+    af = exif_af.af_point(path, w, h) if path is not None else None
     target = None
     if af is not None and subjects:
         def dist(sub):

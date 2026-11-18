@@ -10,6 +10,7 @@ Colour    a robust Lab colour model fitted on the confident skin pixels of the m
 
 skin_mask(img_u8, face_info, box, S) -> dict with 'skin' (final 0..1), 'A', 'features', 'colour' (all full-size float32).
 """
+from contextlib import nullcontext
 from pathlib import Path
 
 import cv2
@@ -19,6 +20,7 @@ from . import dnb_gpu  # noqa: F401
 import onnxruntime as ort
 
 from . import dodge_burn as D
+from . import progress
 
 from .paths import model_path
 _SEG = None
@@ -61,42 +63,74 @@ def rect_crop(shape, box, margin=1.1):
     return [int(max(0, cx - bw / 2)), int(max(0, cy - bh / 2)), int(min(w, cx + bw / 2)), int(min(h, cy + bh / 2))]
 
 
-def _run_seg(img_u8, rect):
+def backend_setting(settings):
+    backend = settings.get("skin_mask_backend", "cpu")
+    if backend not in ("cpu", "cuda"):
+        raise ValueError("Skin Mask backend must be cpu or cuda")
+    return backend
+
+
+def _refine_crop(prob, crop, attempt, backend):
+    if backend == "cuda":
+        from . import cuda_bands
+
+        try:
+            with progress.detail_stage(f"{attempt}: edge refinement (CUDA)"):
+                guide = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+                radius = max(4, round(max(prob.shape) * 0.006))
+                return cuda_bands.refine_skin(guide, prob, radius)
+        except (cuda_bands.CudaUnavailable, MemoryError) as exc:
+            label = f"{attempt}: edge refinement (CPU fallback: {exc})"
+    else:
+        # Keep the existing CPU timing label stable for callers.
+        label = f"{attempt}: edge refinement"
+    with progress.detail_stage(label):
+        return refine(prob, crop)
+
+
+def _run_seg(img_u8, rect, attempt, backend):
     x0, y0, x1, y1 = rect
     crop = img_u8[y0:y1, x0:x1]
     ch, cw = crop.shape[:2]
     k = 256.0 / max(ch, cw)
     rw, rh = max(1, round(cw * k)), max(1, round(ch * k))
-    small = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), (rw, rh), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-    inp = np.zeros((256, 256, 3), np.float32)  # letterbox: keep the aspect ratio, pad with black
-    oy, ox = (256 - rh) // 2, (256 - rw) // 2
-    inp[oy:oy + rh, ox:ox + rw] = small
-    s, name = seg()
-    p = softmax(s.run(None, {name: inp[None]})[0][0])
-    skin = cv2.resize((p[..., 2] + p[..., 3])[oy:oy + rh, ox:ox + rw], (cw, ch), interpolation=cv2.INTER_CUBIC)
-    return refine(np.clip(skin, 0, 1), crop)
+    with progress.detail_stage(f"{attempt}: prepare model input"):
+        small = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB), (rw, rh), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+        inp = np.zeros((256, 256, 3), np.float32)  # letterbox: keep the aspect ratio, pad with black
+        oy, ox = (256 - rh) // 2, (256 - rw) // 2
+        inp[oy:oy + rh, ox:ox + rw] = small
+    with (progress.detail_stage("Initialize segmentation model") if _SEG is None else nullcontext()):
+        s, name = seg()
+    with progress.detail_stage(f"{attempt}: segmentation inference"):
+        logits = s.run(None, {name: inp[None]})[0][0]
+    with progress.detail_stage(f"{attempt}: decode and upscale probabilities"):
+        p = softmax(logits)
+        skin = cv2.resize((p[..., 2] + p[..., 3])[oy:oy + rh, ox:ox + rw], (cw, ch), interpolation=cv2.INTER_CUBIC)
+    return _refine_crop(np.clip(skin, 0, 1), crop, attempt, backend)
 
 
-def mask_A(img_u8, box, margin=1.15, max_grow=3):
+def mask_A(img_u8, box, margin=1.15, max_grow=3, *, backend="cpu"):
     """Segmenter mask on a crop around box. If the mask runs into an edge of the crop (and that edge is not the image
     edge), the crop is enlarged on that side and the segmenter is run again."""
     h, w = img_u8.shape[:2]
     rect = rect_crop(img_u8.shape, box, margin)
     for it in range(max_grow + 1):
-        m = _run_seg(img_u8, rect)
-        ys, xs = np.where(m > 0.5)
-        if len(xs) == 0:
-            break
-        x0, y0, x1, y1 = rect
-        cw, ch = x1 - x0, y1 - y0
-        tx, ty = 0.015 * cw, 0.015 * ch
-        grow = [xs.min() < tx and x0 > 0, ys.min() < ty and y0 > 0, xs.max() > cw - tx and x1 < w, ys.max() > ch - ty and y1 < h]
-        if not any(grow) or it == max_grow:
-            break
-        rect = [max(0, int(x0 - (0.25 * cw if grow[0] else 0))), max(0, int(y0 - (0.25 * ch if grow[1] else 0))),
-                min(w, int(x1 + (0.25 * cw if grow[2] else 0))), min(h, int(y1 + (0.25 * ch if grow[3] else 0)))]
-    full = np.zeros((h, w), np.float32)
-    full[rect[1]:rect[3], rect[0]:rect[2]] = m
+        m = _run_seg(img_u8, rect, "Initial crop" if it == 0 else f"Crop retry {it}", backend)
+        with progress.detail_stage("Check crop edges"):
+            ys, xs = np.where(m > 0.5)
+            if len(xs) == 0:
+                break
+            x0, y0, x1, y1 = rect
+            cw, ch = x1 - x0, y1 - y0
+            tx, ty = 0.015 * cw, 0.015 * ch
+            grow = [xs.min() < tx and x0 > 0, ys.min() < ty and y0 > 0, xs.max() > cw - tx and x1 < w, ys.max() > ch - ty and y1 < h]
+            if not any(grow) or it == max_grow:
+                break
+            rect = [max(0, int(x0 - (0.25 * cw if grow[0] else 0))), max(0, int(y0 - (0.25 * ch if grow[1] else 0))),
+                    min(w, int(x1 + (0.25 * cw if grow[2] else 0))), min(h, int(y1 + (0.25 * ch if grow[3] else 0)))]
+    with progress.detail_stage("Place segmentation on full-resolution canvas"):
+        full = np.zeros((h, w), np.float32)
+        full[rect[1]:rect[3], rect[0]:rect[2]] = m
     return full, rect
 
 
@@ -195,41 +229,52 @@ def fit_colour(lab_pixels):
 
 def colour_keep(img_u8, A, features, S, lo=3.5, hi=6.0):
     """1 where a mask pixel still looks like the person's skin, 0 where its colour is far off (tattoo, ink)."""
-    ys, xs = np.where(A > 0.5)
-    keep = np.ones(A.shape, np.float32)
-    if len(xs) < 500:
-        return keep
-    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-    crop = img_u8[y0:y1, x0:x1].astype(np.float32) / 255.0
-    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
-    a = A[y0:y1, x0:x1]
-    px_mm = S / D.IPD_MM
-    k = max(3, int(1.5 * px_mm)) | 1
-    core = cv2.erode((a > 0.9).astype(np.uint8), np.ones((k, k), np.uint8)) & (features[y0:y1, x0:x1] < 0.2)
-    samples = lab[core > 0]
-    if len(samples) < 300:
-        return keep
-    if len(samples) > 200000:  # plenty for a 3-parameter colour model
-        samples = samples[np.random.default_rng(0).choice(len(samples), 200000, replace=False)]
-    mu, cov = fit_colour(samples)
-    flat = lab.reshape(-1, 3)
-    diff = flat - mu
-    diff[:, 0] = 0.0  # judge by chroma only: shadowed skin keeps its chroma, ink and clothing do not
-    d = np.sqrt(np.einsum("ij,jk,ik->i", diff, np.linalg.inv(cov), diff))
-    d[flat[:, 0] >= mu[0]] = 0.0           # brighter than average skin (highlights) is never removed
-    d = d.reshape(lab.shape[:2])
-    kp = 1.0 - D.smoothstep(lo, hi, d)
-    kp = cv2.medianBlur((kp * 255).astype(np.uint8), 5).astype(np.float32) / 255.0  # drop single-pixel speckles
-    kp = cv2.GaussianBlur(kp, (0, 0), max(0.8, 0.5 * px_mm))
-    keep[y0:y1, x0:x1] = kp
+    with progress.detail_stage("Select skin colour samples (fit only if enough)"):
+        ys, xs = np.where(A > 0.5)
+        keep = np.ones(A.shape, np.float32)
+        if len(xs) < 500:
+            return keep
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        crop = img_u8[y0:y1, x0:x1].astype(np.float32) / 255.0
+        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
+        a = A[y0:y1, x0:x1]
+        px_mm = S / D.IPD_MM
+        k = max(3, int(1.5 * px_mm)) | 1
+        core = cv2.erode((a > 0.9).astype(np.uint8), np.ones((k, k), np.uint8)) & (features[y0:y1, x0:x1] < 0.2)
+        samples = lab[core > 0]
+        if len(samples) < 300:
+            return keep
+        if len(samples) > 200000:  # plenty for a 3-parameter colour model
+            samples = samples[np.random.default_rng(0).choice(len(samples), 200000, replace=False)]
+    with progress.detail_stage("Fit skin colour model"):
+        mu, cov = fit_colour(samples)
+    with progress.detail_stage("Apply skin colour filter"):
+        flat = lab.reshape(-1, 3)
+        diff = flat - mu
+        diff[:, 0] = 0.0  # judge by chroma only: shadowed skin keeps its chroma, ink and clothing do not
+        d = np.sqrt(np.einsum("ij,jk,ik->i", diff, np.linalg.inv(cov), diff))
+        d[flat[:, 0] >= mu[0]] = 0.0           # brighter than average skin (highlights) is never removed
+        d = d.reshape(lab.shape[:2])
+        kp = 1.0 - D.smoothstep(lo, hi, d)
+        kp = cv2.medianBlur((kp * 255).astype(np.uint8), 5).astype(np.float32) / 255.0  # drop single-pixel speckles
+        kp = cv2.GaussianBlur(kp, (0, 0), max(0.8, 0.5 * px_mm))
+        keep[y0:y1, x0:x1] = kp
     return keep
 
 
-def skin_mask(img_u8, face_info, box, S, use_features=True, use_colour=True, colour_lo=3.5, colour_hi=6.0, use_nostrils=True):
-    A, rect = mask_A(img_u8, box)
-    feats = feature_mask(img_u8.shape, face_info, S) if use_features else np.zeros_like(A)
+def skin_mask(img_u8, face_info, box, S, use_features=True, use_colour=True, colour_lo=3.5, colour_hi=6.0, use_nostrils=True,
+              *, backend="cpu"):
+    A, rect = mask_A(img_u8, box, backend=backend)
+    face_detected = face_info is not None and not face_info[2] < 0.5
+    if use_features:
+        with (progress.detail_stage("Facial feature mask") if face_detected else nullcontext()):
+            feats = feature_mask(img_u8.shape, face_info, S)
+    else:
+        feats = np.zeros_like(A)
     if use_nostrils:
-        feats = np.maximum(feats, nostril_mask(img_u8, face_info, S))
+        with (progress.detail_stage("Nostril detection and mask") if face_detected else nullcontext()):
+            feats = np.maximum(feats, nostril_mask(img_u8, face_info, S))
     keep = colour_keep(img_u8, A, feats, S, colour_lo, colour_hi) if use_colour else np.ones_like(A)
-    skin = np.clip(A * (1 - feats) * keep, 0, 1).astype(np.float32)
+    with progress.detail_stage("Combine source mask components"):
+        skin = np.clip(A * (1 - feats) * keep, 0, 1).astype(np.float32)
     return {"skin": skin, "A": A, "features": feats, "colour": keep, "rect": rect}

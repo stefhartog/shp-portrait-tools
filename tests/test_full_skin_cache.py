@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from shp_photocraft_tools.modules.dnb import ui_server as U, dodge_burn as D, progress
+from shp_photocraft_tools.modules.dnb import cuda_bands
 
 
 class FullMaskCacheTests(unittest.TestCase):
@@ -60,6 +61,55 @@ class FullMaskCacheTests(unittest.TestCase):
             different = U.parse_params({**self.req, "mask": {"on": True, "features": False, "feather": 1}})
             U.full_skin_mask(different)
             self.assertEqual(compute.call_count, 2)
+
+    def test_mask_cache_details_track_executed_filters_only_on_miss(self):
+        self.p["color_filter"]["on"] = True
+        expected = U.tool_mask(self.img, U.STATE["masks"], self.p, self.p["S"])[1]
+        with progress.operation("mask-stage-cache-123456"):
+            timing = progress.cache_timing()
+            np.testing.assert_array_equal(U.full_skin_mask(self.p), expected)
+            job = timing()
+            self.assertEqual(job["outcome"], "calculated")
+            step, = job["steps"]
+            self.assertLessEqual(sum(d["seconds"] for d in step["details"]), step["seconds"])
+            self.assertEqual([d["label"] for d in step["details"]], [
+                "Combine stored skin mask components", "Feather skin mask",
+                "Calculate and combine selected colour range", "Prepare luminance and base mask",
+                "Calculate and combine tone mask", "Calculate and combine structure protection",
+            ])
+            timing = progress.cache_timing()
+            np.testing.assert_array_equal(U.full_skin_mask(self.p), expected)
+            reused = timing()
+            self.assertEqual(reused["outcome"], "reused")
+            self.assertNotIn("details", reused["steps"][0])
+
+    def test_cuda_mask_failure_reports_reason_and_caches_cpu_result(self):
+        self.p["color_filter"].update(on=True, hue=30, saturation=.4)
+        expected = U.tool_mask(self.img, U.STATE["masks"], self.p, self.p["S"])[1]
+        with patch.object(U, "SKIN_MASK_BACKEND", "cuda"), \
+             patch.object(cuda_bands, "render_final_mask",
+                          side_effect=cuda_bands.CudaUnavailable("low VRAM")) as cuda, \
+             progress.operation("mask-cache-cuda-fallback"):
+            timing = progress.cache_timing()
+            np.testing.assert_array_equal(U.full_skin_mask(self.p), expected)
+            step, = timing()["steps"]
+            self.assertTrue(any("CPU fallback: low VRAM" in d["label"] for d in step["details"]))
+            timing = progress.cache_timing()
+            np.testing.assert_array_equal(U.full_skin_mask(self.p), expected)
+            self.assertEqual(timing()["outcome"], "reused")
+        cuda.assert_called_once()
+
+    def test_cuda_mask_base_only_does_not_run_cuda_or_modify_supplied_base(self):
+        base = np.full(self.img.shape[:2], .4, np.float32)
+        params = dict(self.p, shadows=None, highlights=None, protect=0)
+        with patch.object(U, "SKIN_MASK_BACKEND", "cuda"), \
+             patch.object(cuda_bands, "render_final_mask") as cuda:
+            mask, structure = U.cached_final_skin_mask(params, base_mask=base)
+        cuda.assert_not_called()
+        self.assertIsNone(structure)
+        self.assertTrue(base.flags.writeable)
+        self.assertFalse(mask.flags.writeable)
+        np.testing.assert_array_equal(mask, base)
 
     def test_each_relevant_setting_is_in_the_key_and_disabled_controls_are_ignored(self):
         key = U.full_mask_key(self.p, self.img, U.STATE["masks"])

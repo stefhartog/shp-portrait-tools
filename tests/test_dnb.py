@@ -22,6 +22,7 @@ from PIL import Image, ImageCms
 from shp_photocraft_tools.modules.crop import server as C
 from shp_photocraft_tools.modules.dnb import dodge_burn as D, ui_server as S
 from shp_photocraft_tools.modules.dnb import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
+from shp_photocraft_tools.modules.dnb.skin_mask_compare import pick_target
 from shp_photocraft_tools.shared.ui import stylesheet
 
 PARAMS = {"S": 63, "bands": [[1.5, 40, 1, 0.5]], "strength": 1.2, "edge": 0.12, "tau": 1, "max_ev": 1,
@@ -144,6 +145,91 @@ class DnbTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "analysis fixture failed"):
                 S.api_load({"path": str(self.image)})
 
+    def test_body_priority_compares_same_sideways_subject_and_keeps_baseline_default(self):
+        M = skin_mask_compare
+        C = M.C
+        kp = np.zeros((17, 2), dtype=float)
+        scores = np.zeros(17)
+        for name, point in {"l_sho": (118, 130), "r_sho": (125, 125),
+                            "l_hip": (134, 530), "r_hip": (141, 525)}.items():
+            idx = C.B.I[name]
+            kp[idx], scores[idx] = point, .9
+        face = np.array([80, 5, 65, 155, *([0] * 10), .91])
+        face_info = (None, {"yaw_deg": 70}, .35)
+        subjects = [
+            ("face", face, face_info, 0, None, [("yunet_ipd", 27., .15)]),
+            ("face", face + 300, face_info, None, None, [("face_ipd", 70., .08)]),
+        ]
+        image = np.zeros((640, 640, 3), np.uint8)
+        with patch.object(C, "build_subjects", return_value=(subjects, [(kp, scores)], (120, 25), 0, [])):
+            baseline = pick_target(None, image, include_unscaled=True)
+            experiment = pick_target(None, image, include_unscaled=True, body_priority=True)
+        self.assertAlmostEqual(baseline["S"], 27)
+        self.assertNotIn("scale_comparison", baseline)
+        self.assertTrue(experiment["seen"][0]["target"])
+        self.assertAlmostEqual(experiment["scale_comparison"]["baseline"], baseline["S"])
+        self.assertAlmostEqual(experiment["S"], 59.09, delta=.06)
+        self.assertEqual(experiment["conf"], "medium")
+        # A low-scoring head still permits the torso, but at low confidence.
+        face[14] = .8
+        fallback = {"S": baseline["S"], "confidence": baseline["conf"]}
+        estimate, confidence, method = C.body_priority(face, (kp, scores), image.shape, fallback)
+        self.assertGreater(estimate, 49)
+        self.assertEqual(confidence, "low")
+        self.assertIn("torso only", method)
+        scores[C.B.I["l_hip"]] = .3
+        estimate, _, method = C.body_priority(face, (kp, scores), image.shape, {"S": 27, "confidence": "low"})
+        self.assertEqual(estimate, 27)
+        self.assertIn("baseline fallback", method)
+        face[14] = .91
+        self.assertIn("head proxy only", C.body_priority(face, (kp, scores), image.shape, fallback)[2])
+        scores[C.B.I["l_hip"]] = .9
+        face[3] = 85
+        self.assertIn("disagree", C.body_priority(face, (kp, scores), image.shape, {"S": 27, "confidence": "low"})[2])
+
+    def test_body_priority_reproduces_reference_image_scale_from_reported_estimates(self):
+        C = skin_mask_compare.C
+        # Equivalent weighted projection, not a reconstruction of the source photo.
+        old_torso_s = 380.0
+        old_head_s = (373.6 - 0.75 * old_torso_s) / 0.25
+        kp = np.zeros((17, 2), dtype=float)
+        for side, x in (("l", 200), ("r", 500)):
+            kp[C.B.I[f"{side}_sho"]] = (x, 1300)
+            kp[C.B.I[f"{side}_hip"]] = (x, 1300 + old_torso_s * 504 / 63)
+        face = np.array([150, 25, 400, old_head_s * 210 / 63, *([0] * 10), .95])
+        baseline = C.combine([("face_ipd", 449.1, .08)])
+        scale, confidence, method = C.body_priority(face, (kp, np.ones(17)), (5000, 1000), baseline)
+        self.assertAlmostEqual(scale, baseline["S"], places=8)
+        self.assertEqual(confidence, "medium")
+        self.assertIn("image-calibrated test references: torso 419.3 mm, head proxy 174.7 mm", method)
+
+    def test_open_defaults_to_body_priority_and_honors_baseline_and_manual_scale(self):
+        target = {"S": 52., "conf": "low", "desc": "torso only", "centre": None, "seen": [],
+                  "face_info": None, "kp": None, "scale_comparison": {
+                      "baseline": 31., "body_priority": 52., "method": "torso only"}}
+        def detect(*args, **kwargs):
+            if kwargs.get("body_priority"):
+                return target
+            return {k: v for k, v in {**target, "S": 31., "desc": "face-led"}.items()
+                    if k != "scale_comparison"}
+
+        with patch.object(S.M, "pick_target", side_effect=detect) as pick, \
+                patch.object(S.M, "person_box", return_value=(0, 0, 128, 96)), \
+                patch.object(S.K, "skin_mask", return_value={key: np.ones((96, 128), np.float32)
+                             for key in ("A", "features", "colour", "skin")}):
+            result = self.post("/api/load", {"path": str(self.image)})
+            self.assertTrue(pick.call_args.kwargs["body_priority"])
+            self.assertEqual(result["scale_comparison"]["baseline"], 31.)
+            self.assertEqual(result["S"], S.STATE["S"])
+            self.assertEqual(result["S"], 52.)
+            self.post("/api/run", {**PARAMS, "S": 77})
+            self.assertEqual(S.STATE["last"]["S"], 77 * S.STATE["last"]["k"])
+            self.assertEqual(S.STATE["S"], 52.)
+            baseline = self.post("/api/load", {"path": str(self.image), "scale_estimator": "baseline"})
+        self.assertNotIn("body_priority", pick.call_args.kwargs)
+        self.assertNotIn("scale_comparison", baseline)
+        self.assertEqual(baseline["S"], 31.)
+
     def test_get_load_timing_includes_photocraft_export_but_not_analysis(self):
         class FakeBridge:
             def fetch(inner, dest):
@@ -189,12 +275,78 @@ class DnbTests(unittest.TestCase):
 
         with patch.dict(S.EDITOR, selected="photoshop"), patch.object(S, "bridge", return_value=FakeBridge()), \
                 patch.object(S.cv2, "imread", wraps=cv2.imread) as decode:
-            result = S.api_pc_fetch({})
+            result = S.api_pc_fetch({"photoshop_capture": "png"})
         self.assertEqual(decode.call_count, 1)
         self.assertEqual((result["width"], result["height"]), (12, 9))
         self.assertEqual(S.STATE["source_icc"], S.SRGB_ICC)
         self.assertTrue(S.STATE["source_opaque"])
         self.assertEqual(S.BRIDGE["doc"], doc)
+
+    def test_raw_photoshop_preparation_matches_png_exactly_for_rgb8_rgb16_and_profiles(self):
+        desc = "sRGB built-in".encode("utf-16-be")
+        self.assertIn(desc, S.SRGB_ICC)
+        profiles = [(S.SRGB_ICC, "srgb"), (S.SRGB_ICC.replace(desc, "Adobe RGB tes".encode("utf-16-be")), "adobe"),
+                    (S.SRGB_ICC.replace(desc, "Custom RGB123".encode("utf-16-be")), "converted")]
+        rng = np.random.default_rng(42)
+        for depth in (8, 16):
+            pixels = rng.integers(0, 256 if depth == 8 else 65536, (9, 12, 3), dtype=np.uint16)
+            if depth == 8:
+                pixels *= 257
+            for icc, kind in profiles:
+                with self.subTest(depth=depth, colour=kind):
+                    self.image.write_bytes(S.PCB.tagged_rgb16(pixels, icc, {"opaque_alpha": False}))
+                    baseline = S.prepare_loaded_image({"path": str(self.image)}, set_colour=False, photoshop_size=(9, 12))
+                    direct = S.prepare_image_pixels(None, pixels, icc, True)
+                    for i in (1, 2, 3):
+                        np.testing.assert_array_equal(direct[i], baseline[i])
+                    self.assertEqual(direct[4:], baseline[4:])
+                    self.assertEqual(direct[4], "srgb" if kind == "converted" else kind)
+                    self.assertEqual(direct[5] != direct[6], kind == "converted")
+
+    def test_raw_photoshop_preview_cache_save_send_and_source_invalidation_without_file(self):
+        import hashlib
+        from test_photoshop import RecordingBroker, PROFILE, ICC
+
+        broker = RecordingBroker()
+        pixels = np.round(synthetic_image() * 65535).astype(np.uint16)
+        doc = {"index": 1, "name": "Disposable", "width": 128, "height": 96, "depth": 16,
+               "mode": "RGB", "alpha": "opaque", "profile": PROFILE, "capture": "c", "marker": "m",
+               "protocol": 1, "session": broker.session}
+        broker.inputs = (doc, pixels[..., ::-1].astype("<u2").tobytes(), ICC)
+        adapter = S.PSB.Bridge(broker)
+        params = dict(PARAMS, mode="mask")
+        with patch.dict(S.EDITOR, selected="photoshop"), patch.object(S, "bridge", return_value=adapter), \
+                patch.object(S.cv2, "imread", side_effect=AssertionError("Raw Get must not decode a file")), \
+                patch.object(S.PSB, "tagged_rgb16", side_effect=AssertionError("Raw Get must not stage PNG")):
+            first = S.api_pc_fetch({})
+            self.assertIsNone(S.STATE["path"])
+            self.assertIsNone(S.STATE["source_directory"])
+            self.assertEqual(S.STATE["source_kind"], "photoshop")
+            self.assertEqual(S.BRIDGE["doc"]["profile_hash"], hashlib.sha256(ICC).hexdigest())
+            self.assertFalse((self.root / "inbox").exists())
+            self.assertIsNone(S.M.pick_target.call_args.args[0])
+            self.assertEqual(S.api_run(PARAMS)["stats"]["preview_px"], [128, 96])
+            snapshot = S.image_session.full_resolution_snapshot(S.STATE, depth=16, colour_mode="srgb")
+            self.assertTrue(S.image_session.matches_source(S.STATE, snapshot))
+            parsed = S.parse_params(params)
+            S.full_skin_mask(parsed)
+            self.assertIsNotNone(S.STATE["full_mask_cache"])
+            sent = S.api_pc_send_layers(dict(params, generation=first["generation"]))
+            self.assertTrue(sent["sent"])
+            self.assertEqual(broker.captured[0]["doc"]["capture"], "c")
+            saved = S.api_save(params)
+            self.assertTrue(Path(saved["dir"]).name.startswith(first["name"]))
+            settings = json.loads((Path(saved["dir"]) / "settings.json").read_text())
+            self.assertIsNone(settings["image"])
+            self.assertEqual(settings["source"], {"editor": "photoshop", "document": "Disposable"})
+            broker.inputs = ({**doc, "capture": "new"}, broker.inputs[1], ICC)
+            second = S.api_pc_fetch({})
+            self.assertGreater(second["generation"], first["generation"])
+            self.assertFalse(S.image_session.matches_source(S.STATE, snapshot))
+            self.assertIsNone(S.STATE["full_mask_cache"])
+            with self.assertRaisesRegex(ValueError, "loaded image changed"):
+                S.api_pc_send_layers(dict(params, generation=first["generation"]))
+            self.assertEqual(S.BRIDGE["doc"]["capture"], "new")
 
     def test_presets_default_roundtrip_and_validation(self):
         self.assertEqual(json.loads(self.get("/api/presets")[0]), {"default": None, "presets": {}})
@@ -229,6 +381,25 @@ class DnbTests(unittest.TestCase):
         self.assertEqual(result["presets"]["Legacy"]["frequency_transfer"], legacy)
         self.assertEqual(json.loads(self.get("/api/global-settings")[0])["layer_transfer"], changed)
 
+    def test_cuda_backend_is_saved_for_next_start_and_cpu_remains_available(self):
+        baseline = json.loads(self.get("/api/global-settings")[0])
+        self.assertEqual(baseline["dnb_layer_backend"], "cpu")
+        request = {"dnb_layer_backend": "cuda"}
+        saved = self.post("/api/global-settings", request)
+        self.assertEqual(saved["dnb_layer_backend"], "cuda")
+        self.assertEqual(saved["layer_transfer"], baseline["layer_transfer"])
+        self.assertEqual(saved["active_dnb_layer_backend"], "cpu")
+        self.assertEqual(S.processing_service.dnb_backend_settings(S.restore_editor_selection()), "cuda")
+        with patch.object(S, "DNB_LAYER_BACKEND", "cuda"):
+            self.assertEqual(json.loads(self.get("/api/global-settings")[0])["active_dnb_layer_backend"], "cuda")
+            saved = self.post("/api/global-settings", {**request, "dnb_layer_backend": "cpu"})
+            self.assertEqual(saved["active_dnb_layer_backend"], "cuda")
+        self.assertEqual(S.processing_service.dnb_backend_settings(S.restore_editor_selection()), "cpu")
+        before = S.GLOBAL_SETTINGS.read_bytes()
+        with self.assertRaises(HTTPError):
+            self.post("/api/global-settings", {**request, "dnb_layer_backend": "bogus"})
+        self.assertEqual(S.GLOBAL_SETTINGS.read_bytes(), before)
+
     def test_global_settings_errors_do_not_overwrite_existing_preferences(self):
         S.GLOBAL_SETTINGS.parent.mkdir(parents=True)
         for invalid in ('{bad json', '[]', '{"layer_transfer":{"format":"jpeg"}}'):
@@ -243,6 +414,19 @@ class DnbTests(unittest.TestCase):
         with self.assertRaises(HTTPError):
             self.post("/api/global-settings", {"layer_transfer": {"parallel": "yes"}})
         self.assertEqual(S.read_global_settings()["layer_transfer"]["format"], "png")
+
+    def test_skin_mask_backend_is_independent_and_applies_on_restart(self):
+        baseline = self.post("/api/global-settings", {"dnb_layer_backend": "cuda"})
+        self.assertEqual(baseline["active_skin_mask_backend"], "cpu")
+        for choice in ("cuda", "cpu"):
+            saved = self.post("/api/global-settings", {"skin_mask_backend": choice})
+            self.assertEqual(saved["dnb_layer_backend"], "cuda")
+            self.assertEqual(saved["skin_mask_backend"], choice)
+            self.assertEqual(saved["active_skin_mask_backend"], "cpu")
+            self.assertEqual(S.K.backend_setting(S.read_global_settings()), choice)
+        with self.assertRaises(HTTPError):
+            self.post("/api/global-settings", {"skin_mask_backend": "bad"})
+        self.assertEqual(S.read_global_settings()["skin_mask_backend"], "cpu")
 
     def test_exclude_alpha_default_and_legacy_global_migration(self):
         self.assertFalse(S.read_global_settings()["layer_transfer"]["opaque_alpha"])

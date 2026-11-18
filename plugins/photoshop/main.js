@@ -68,15 +68,25 @@ function target(source) {
     return doc;
 }
 
-async function upload(job, name, bytes) {
+async function measured(timing, key, work) {
+    const now = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? () => performance.now() : () => Date.now();
+    const start = now();
+    try { return await work(); }
+    finally { timing[key] = (timing[key] || 0) + Math.max(0, now() - start) / 1000; }
+}
+
+async function upload(job, name, bytes, timing) {
     for (let offset = 0; offset < bytes.byteLength; offset += P.CHUNK) {
         ensureConnected();
-        await request(`chunk?request=${job.request}&name=${name}&offset=${offset}`, undefined,
-            bytes.slice(offset, offset + P.CHUNK));
+        const part = bytes.slice(offset, offset + P.CHUNK);
+        await measured(timing, "upload", () =>
+            request(`chunk?request=${job.request}&name=${name}&offset=${offset}`, undefined, part));
     }
 }
 
 async function capture(job) {
+    const timing = {}, pixelTiles = [];
     captures.clear();
     await profileReady;
     P.check(!profileWorking, "Finish selecting an ICC profile in the connector, then Get Image again.");
@@ -94,7 +104,7 @@ async function capture(job) {
     }
     let pngBytes;
     if (format === "png") {
-        pngBytes = await capturePng(job, info, before, checkSource);
+        pngBytes = await capturePng(job, info, before, checkSource, timing);
     } else {
         const chosen = selectedProfiles.get(info.index);
         const matches = profileStore.matching(info.profile);
@@ -113,23 +123,29 @@ async function capture(job) {
             const tile = await ps.core.executeAsModal(async context => {
                 P.check(!context.isCancelled, "Skin Tools capture cancelled.");
                 const doc = checkSource();
-                const captured = await ps.imaging.getPixels({documentID: doc.id,
+                const captured = await measured(timing, "capture", () => ps.imaging.getPixels({documentID: doc.id,
                     sourceBounds: {left: 0, top: y, right: info.width, bottom: y + height},
-                    componentSize: info.depth, applyAlpha: false});
+                    componentSize: info.depth, applyAlpha: false}));
                 try {
                     P.check(captured.level === 0 && captured.imageData.colorProfile === info.profile,
                         "Photoshop returned downsampled or converted pixels.");
-                    const data = await captured.imageData.getData({fullRange: true});
+                    const sample = {};
+                    const data = await measured(sample, "readback", () => captured.imageData.getData({fullRange: true}));
                     P.check(!context.isCancelled, "Skin Tools capture cancelled.");
-                    return P.padTile(captured.imageData, data, captured.sourceBounds, info.width, y, height, info.depth);
+                    const pixels = await measured(sample, "pack", () =>
+                        P.padTile(captured.imageData, data, captured.sourceBounds, info.width, y, height, info.depth));
+                    pixelTiles.push([captured.imageData.components, sample.readback, sample.pack]);
+                    timing.serialize = (timing.serialize || 0) + sample.readback + sample.pack;
+                    return pixels;
                 } finally { captured.imageData.dispose(); }
             }, {commandName: "Capture Skin Tools pixels", timeOut: 1});
             const data = tile.buffer;
-            await request(`chunk?request=${job.request}&name=pixels&offset=${offset}`, undefined, data);
+            await measured(timing, "upload", () =>
+                request(`chunk?request=${job.request}&name=pixels&offset=${offset}`, undefined, data));
             offset += data.byteLength;
             status(`Capturing ${Math.round((y + height) / info.height * 100)}%`);
         }
-        await upload(job, "icc", profileBytes);
+        await upload(job, "icc", profileBytes, timing);
     }
     await ps.core.executeAsModal(async context => {
         P.check(!context.isCancelled, "Skin Tools capture cancelled.");
@@ -138,10 +154,11 @@ async function capture(job) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     captures.clear();
     captures.set(id, {info, marker: before});
-    return {doc: {...info, marker: before, capture: id}, ...(format === "png" ? {png_bytes: pngBytes} : {})};
+    return {doc: {...info, marker: before, capture: id}, timing,
+        ...(format === "png" ? {png_bytes: pngBytes} : {pixel_tiles: pixelTiles})};
 }
 
-async function capturePng(job, info, before, checkSource) {
+async function capturePng(job, info, before, checkSource, timing) {
     const folder = await (await fs.getTemporaryFolder()).createFolder(job.request.slice(0, 20));
     let failure;
     try {
@@ -163,7 +180,7 @@ async function capturePng(job, info, before, checkSource) {
                     copied.depth === info.depth && copied.profile === info.profile,
                 "Photoshop changed the capture copy's dimensions, depth or profile.");
                 P.check(ps.app.activeDocument.id === copy.id, "Photoshop did not select the capture copy.");
-                await copy.saveAs.png(file, {}, true);
+                await measured(timing, "export", () => copy.saveAs.png(file, {}, true));
                 P.check(!context.isCancelled, "Skin Tools capture cancelled.");
                 P.check(marker(doc) === before && doc.saved === saved && doc.path === path && doc.name === name,
                     "Photoshop changed the source while exporting the copy; inspect the document.");
@@ -194,11 +211,12 @@ async function capturePng(job, info, before, checkSource) {
             while (offset < size) {
                 ensureConnected();
                 const buffer = new ArrayBuffer(Math.min(P.CHUNK, size - offset));
-                const result = await nodefs.read(fd, buffer, 0, buffer.byteLength, offset);
+                const result = await measured(timing, "file_read", () => nodefs.read(fd, buffer, 0, buffer.byteLength, offset));
                 P.check(Number.isInteger(result.bytesRead) && result.bytesRead > 0 && result.bytesRead <= buffer.byteLength,
                     "Photoshop PNG copy was truncated while reading.");
-                await request(`chunk?request=${job.request}&name=png&offset=${offset}`, undefined,
-                    result.bytesRead === buffer.byteLength ? buffer : buffer.slice(0, result.bytesRead));
+                const part = result.bytesRead === buffer.byteLength ? buffer : buffer.slice(0, result.bytesRead);
+                await measured(timing, "upload", () =>
+                    request(`chunk?request=${job.request}&name=png&offset=${offset}`, undefined, part));
                 offset += result.bytesRead;
                 status(`Transferring PNG copy ${Math.round(offset / size * 100)}%`);
             }
@@ -213,7 +231,7 @@ async function capturePng(job, info, before, checkSource) {
     }
 }
 
-async function stage(job, bundle) {
+async function stage(job, bundle, timing) {
     const folder = await (await fs.getTemporaryFolder()).createFolder(job.request);
     const tiles = {}, lookups = {};
     const total = Object.values(bundle.blobs).reduce((sum, blob) => sum + blob.bytes, 0);
@@ -222,9 +240,10 @@ async function stage(job, bundle) {
         for (const [name, blob] of Object.entries(bundle.blobs)) {
             if (blob.kind === "icc-lut") {
                 ensureConnected();
-                const bytes = await request(`chunk?request=${job.request}&name=${name}&offset=0&length=${blob.bytes}`);
+                const bytes = await measured(timing, "download", () =>
+                    request(`chunk?request=${job.request}&name=${name}&offset=0&length=${blob.bytes}`));
                 P.check(bytes.byteLength === blob.bytes, "Incomplete Hue lookup.");
-                lookups[name] = P.validateLookup(bytes);
+                lookups[name] = await measured(timing, "stage", () => P.validateLookup(bytes));
                 downloaded += bytes.byteLength;
                 continue;
             }
@@ -234,10 +253,14 @@ async function stage(job, bundle) {
             for (let y = 0; y < blob.height; y += rows) {
                 ensureConnected();
                 const height = Math.min(rows, blob.height - y), length = height * stride;
-                const bytes = await request(`chunk?request=${job.request}&name=${name}&offset=${y * stride}&length=${length}`);
+                const bytes = await measured(timing, "download", () =>
+                    request(`chunk?request=${job.request}&name=${name}&offset=${y * stride}&length=${length}`));
                 P.check(bytes.byteLength === length, "Incomplete layer tile.");
-                const file = await folder.createFile(`${name}-${y}`, {overwrite: false});
-                await file.write(bytes, {format: binary});
+                const file = await measured(timing, "stage", async () => {
+                    const file = await folder.createFile(`${name}-${y}`, {overwrite: false});
+                    await file.write(bytes, {format: binary});
+                    return file;
+                });
                 tiles[name].push({file, y, height});
                 downloaded += length;
                 status(`Receiving editable layers ${Math.round(downloaded / total * 100)}%`);
@@ -346,10 +369,11 @@ async function applyValidated(job, bundle) {
         P.check(!context.isCancelled, "Skin Tools import cancelled.");
         target(bundle.doc);
     }, {commandName: "Check Skin Tools target", timeOut: 1});
-    const staged = await stage(job, bundle);
+    const timing = {};
+    const staged = await stage(job, bundle, timing);
     let result, importCommitted = false, importFailure;
     try {
-        result = await ps.core.executeAsModal(async context => {
+        result = await measured(timing, "import", () => ps.core.executeAsModal(async context => {
             ensureConnected();
             const doc = target(bundle.doc), previous = ps.app.activeDocument;
             const history = await context.hostControl.suspendHistory({documentID: doc.id, name: "Skin Tools"});
@@ -406,7 +430,7 @@ async function applyValidated(job, bundle) {
                 if (rollbackError)
                     throw new Error(`${importError ? importError.message : "Import failed"}. Rollback failed: ${rollbackError.message}. Inspect the document before retrying.`);
             }
-        }, {commandName: "Import Skin Tools layers", timeOut: 1});
+        }, {commandName: "Import Skin Tools layers", timeOut: 1}));
     } catch (error) {
         importFailure = error;
         if (importCommitted)
@@ -418,7 +442,7 @@ async function applyValidated(job, bundle) {
             throw new Error(`${importFailure ? `${importFailure.message}. ` : ""}${importCommitted ? "Layers were committed" : "Import did not complete"}; temporary buffer cleanup failed: ${error.message}. Inspect the document; do not resend.`);
         }
     }
-    return {...result, repeatable: true};
+    return {...result, repeatable: true, timing};
 }
 
 async function perform(job) {

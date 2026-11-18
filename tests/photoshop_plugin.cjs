@@ -660,6 +660,15 @@ async function test() {
     rgba[3] = 123;
     assert.throws(() => P.padTile(image, rgba, bounds, 2, 0, 1, 16), /Non-opaque/);
     assert.throws(() => P.padTile(image, rgba, bounds, 3, 0, 1, 16), /Transparent/);
+    for (const [depth, Type, max] of [[8, Uint8ClampedArray, 255], [16, Uint16Array, 65535]]) {
+        const rgb = new Type([99, 0, 1, max, max, 128, 0, 99]).subarray(1, 7);
+        const packed = P.padTile({...image, componentSize: depth, components: 3}, rgb, bounds, 2, 0, 1, depth);
+        assert.deepEqual([...packed], [0, 1, max, max, 128, 0]);
+        rgb.fill(0);
+        assert.deepEqual([...packed], [0, 1, max, max, 128, 0], "tile owns its data");
+        assert.throws(() => P.padTile({...image, componentSize: depth, components: 3},
+            rgb.subarray(0, 5), bounds, 2, 0, 1, depth), /Invalid trimmed/);
+    }
 
     const h = harness(), job = h.makeJob();
     h.enforceScopedReads();
@@ -673,6 +682,8 @@ async function test() {
     h.ps.app.activeDocument = h.other;
     const first = await h.context.perform(job), second = await h.context.perform(job);
     assert(first.result, first.error);
+    for (const phase of ["download", "stage", "import"])
+        assert(Number.isFinite(first.result.timing[phase]) && first.result.timing[phase] >= 0);
     assert.equal(first, second, "Duplicate request must reuse its outcome without inserting again");
     assert.equal(h.original.layers.length, 1);
     assert.deepEqual(h.original.layers[0].layers.map(layer => layer.name), ["Detail", "Corrections", "Color"]);
@@ -752,6 +763,11 @@ async function test() {
     assert.equal(status.result.doc.index, capture.original.id);
     const captured = await capture.context.capture({request: "capture"});
     assert.equal(captured.doc.depth, 16);
+    assert.equal(captured.pixel_tiles.length, 1);
+    const [components, readback, packing] = captured.pixel_tiles[0];
+    assert.equal(components, 4);
+    assert([readback, packing].every(value => Number.isFinite(value) && value >= 0));
+    assert.equal(captured.timing.serialize, readback + packing);
     assert.equal(capture.allocated(), 0);
     assert.equal(capture.calls.filter(item => item[0] === "upload").length, 2);
     assert.equal(capture.calls.find(item => item[0] === "upload")[2], 4 * 3 * 3 * 2);
@@ -766,6 +782,8 @@ async function test() {
         } else {
             const result = await candidate.context.capture(job);
             assert.equal(result.png_bytes, 4);
+            for (const phase of ["export", "file_read", "upload"])
+                assert(Number.isFinite(result.timing[phase]) && result.timing[phase] >= 0);
             assert.equal(candidate.calls.filter(item => item[0] === "upload").length, 1);
             assert.match(candidate.calls.find(item => item[0] === "upload")[1], /name=png/);
         }

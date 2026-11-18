@@ -147,6 +147,12 @@
       </details>
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
       <div class="row"><label style="width:auto" title="After a settled preview on any skin tab, prepare reusable full-resolution FS, standalone D&amp;B and Combine layers serially when enough RAM is available. Previews can run during preparation; Send may wait for the current stage."><input id="layerPrecache" type="checkbox" checked> precache full-resolution layers</label></div>
+      <div class="row"><label for="dnbLayerBackend">D&amp;B layer backend</label><select id="dnbLayerBackend"><option value="cpu">CPU (default)</option><option value="cuda">CUDA when supported (experimental)</option></select></div>
+      <p class="hint" id="dnbLayerBackendHint">Applies after quitting and reopening Tools. Experimental CUDA can produce different editable shadow and highlight values. Unsupported inputs or CUDA failures use CPU.</p>
+      <div class="row"><label for="skinMaskBackend">Skin Mask backend</label><select id="skinMaskBackend"><option value="cpu">CPU (default)</option><option value="cuda">CUDA when supported (experimental)</option></select></div>
+      <p class="hint" id="skinMaskBackendHint">Applies to Load/Get edge refinement and full-resolution mask filters after quitting and reopening Tools.</p>
+      <div class="row"><label for="scaleEstimator">S estimator</label><select id="scaleEstimator"><option value="body-priority">Torso + head (default)</option><option value="baseline">Baseline (face-led)</option></select></div>
+      <p class="hint">Applies on the next Open/Get. Torso + head uses image-calibrated test references. Batch and watch-folder use Torso + head.</p>
       <details id="g-pose">
         <summary>Pose analysis backend</summary>
         <div class="row"><label for="poseBackend">backend</label><select id="poseBackend"><option value="rtmlib">rtmpose / rtmlib (default)</option><option value="google-full">google full (experimental, isolated)</option><option value="opencv-zoo">opencv zoo mediapipe (experimental, cpu)</option></select></div>
@@ -169,6 +175,14 @@
       <details id="calculationLog" open>
         <summary>Calculation timings</summary>
         <pre id="calculationLogText">No calculations yet.</pre>
+      </details>
+      <details>
+        <summary>Photoshop transfer timings</summary>
+        <pre id="photoshopTransferLogText">No Photoshop transfer timings yet.</pre>
+        <details id="photoshopPixelTiles" hidden>
+          <summary>Raw Get tile timings (included above)</summary>
+          <pre id="photoshopPixelTilesText"></pre>
+        </details>
       </details>
     </div>
   </details>
@@ -266,7 +280,7 @@
         <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
       </div>
       <div id="info">No photo loaded.</div>
-      <div class="row"><label for="S" title="Pixels per 63 mm at the subject. Estimated from the face; type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
+      <div class="row"><label for="S" title="Estimated pixels per 63 mm at the subject. Type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
       <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
       <div id="landmarkEditor" hidden>
         <div class="row"><label for="landmarkSubject">subject</label><select id="landmarkSubject"></select></div>
@@ -322,7 +336,9 @@
 
 <script>
 const generalSettingIds = new Set(['maskPrecache','layerPrecache','transferFormat','transferCompression','transferAlpha',
-  'transferParallel','transferHint','maskPlacement','calculationLogText',
+  'transferParallel','transferHint','maskPlacement','calculationLogText','photoshopTransferLogText','dnbLayerBackend','dnbLayerBackendHint',
+  'photoshopPixelTiles','photoshopPixelTilesText',
+  'skinMaskBackend','skinMaskBackendHint','scaleEstimator',
   'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint',
   'editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode','photoshopHueMode','photoshopCaptureMode']);
 const $ = (id) => document.getElementById(id) ||
@@ -396,7 +412,7 @@ async function api(path, body) {
   return j;
 }
 let statusOk = false;
-const temporaryLog = {notes:[], lastMessage:null, load:'', send:'', calculations:[]};
+const temporaryLog = {notes:[], lastMessage:null, load:'', send:'', calculations:[], cache:{}, photoshop:{}};
 function logNote(message) {
   const log = temporaryLog;
   if (!message || log.lastMessage === message) return;
@@ -413,8 +429,43 @@ function renderTemporaryLog() {
   renderCalculationLog();
 }
 function renderCalculationLog() {
-  const entries = [...(temporaryLog.calculations || []), temporaryLog.load, temporaryLog.send].filter(Boolean);
+  const cache = Object.values(temporaryLog.cache || {}).flat();
+  const entries = [...(temporaryLog.calculations || []), temporaryLog.load, temporaryLog.send,
+                   ...(cache.length ? ['Full-resolution cache (latest preparation)', ...cache] : [])].filter(Boolean);
   $('calculationLogText').textContent = entries.length ? entries.join('\n') : 'No calculations yet.';
+}
+function calculationDetailLines(step, indent='  ') {
+  return (step.details || []).map(detail =>
+    `${indent}${detail.label}: ${detail.seconds.toFixed(3)} s${detail.error ? ' — failed: '+detail.error : ''}`);
+}
+function cacheTimingLine(label, timing, status, showDetails=false) {
+  const outcomes = {calculated:'calculated', reused:'reused', mixed:'calculated + reused'};
+  if (!Number.isFinite(timing?.seconds) || !outcomes[timing.outcome]) return `${label}: ${status}`;
+  const stages = timing.steps.filter(step => step.cache === 'calculated')
+    .map(step => `${step.label} ${step.seconds.toFixed(2)} s`);
+  if (timing.shared_fs) stages.push('shared FS components');
+  const total = `${label}: ${outcomes[timing.outcome]} in ${timing.seconds.toFixed(2)} s` +
+    (stages.length ? ` (${stages.join('; ')})` : '');
+  const details = showDetails ? timing.steps.flatMap(step => calculationDetailLines(step)) : [];
+  return [total, ...details].join('\n');
+}
+function updateCacheTimingRows(kind, value) {
+  const statuses = {idle:'not prepared', queued:'pending', running:'preparing', skipped:'skipped',
+                    unavailable:'unavailable', superseded:'superseded', error:'unavailable', ready:'timing unavailable'};
+  if (kind === 'mask') {
+    temporaryLog.cache.mask = [cacheTimingLine('Skin Mask', value.timing,
+      value.enabled === false ? 'disabled' : statuses[value.status] || 'not prepared', true)];
+  } else {
+    temporaryLog.cache.layers = Object.entries({frequency:'FS & Tone', dnb:'D&B', combine:'Combine'})
+      .map(([mode, label]) => {
+        const status = value.tabs?.[mode]?.state;
+        const pending = status === 'queued' && ['queued','running'].includes(value.status);
+        const fallback = pending ? 'pending' : statuses[status === 'queued' ? value.status : status]
+          || statuses[value.status] || 'not prepared';
+        return cacheTimingLine(label, value.timings?.[mode], fallback);
+      });
+  }
+  renderCalculationLog();
 }
 function recordCalculation(message) {
   temporaryLog.calculations = [...(temporaryLog.calculations || []), message].slice(-100);
@@ -441,6 +492,7 @@ function renderAnalysisSummary() {
     `${image.name} — ${image.width} × ${image.height}`,
     `Colour/profile: ${image.colour || 'unavailable'}`,
     `S: ${scale > 0 ? value(scale)+' px / 63 mm ('+scaleType+')' : 'unavailable'}`,
+    image.scale_comparison ? `S comparison: baseline ${value(image.scale_comparison.baseline)}; torso + head ${value(image.scale_comparison.body_priority)} (${image.scale_comparison.method})` : '',
     `Detection confidence: ${image.confidence || 'unavailable'}; ${image.desc || 'no scale cue'}`,
     `Detected mask: ${image.has_mask ? 'available' : 'unavailable'}${Number.isFinite(image.mask_pct) ? ' ('+image.mask_pct+'%)' : ''}`,
     `Hue midpoint: ${value(state.skintone.hue_center,'°')}`,
@@ -675,6 +727,50 @@ $('directionalOn').onclick=event=>event.stopPropagation();
   };
 });
 let maskPlacement = 'folder';
+let dnbLayerBackend = 'cpu';
+function syncDnbLayerBackend(settings) {
+  dnbLayerBackend = settings.dnb_layer_backend || 'cpu';
+  $('dnbLayerBackend').value = dnbLayerBackend;
+  const active = settings.active_dnb_layer_backend || 'cpu';
+  $('dnbLayerBackendHint').textContent = `Current mode: ${active.toUpperCase()}. ` +
+    (active !== dnbLayerBackend ? 'Quit and reopen Tools to apply. ' : '') +
+    'Experimental CUDA can produce different editable shadow and highlight values. ' +
+    'Unsupported inputs or CUDA failures use CPU; Send timings show the fallback reason.';
+}
+$('dnbLayerBackend').onchange = async () => {
+  const control = $('dnbLayerBackend');
+  if (state.busy) { control.value = dnbLayerBackend; return; }
+  setBusy(true);
+  try {
+    const saved = await api('/api/global-settings', {dnb_layer_backend:control.value});
+    syncDnbLayerBackend(saved);
+  } catch(e) {
+    control.value = dnbLayerBackend;
+    setStatus('D&B layer backend could not be saved: '+e.message, true);
+  } finally { setBusy(false); }
+};
+let skinMaskBackend = 'cpu';
+function syncSkinMaskBackend(settings) {
+  skinMaskBackend = settings.skin_mask_backend || 'cpu';
+  $('skinMaskBackend').value = skinMaskBackend;
+  const active = settings.active_skin_mask_backend || 'cpu';
+  $('skinMaskBackendHint').textContent = `Current mode: ${active.toUpperCase()}. ` +
+    (active !== skinMaskBackend ? `Pending: ${skinMaskBackend.toUpperCase()}. Quit and reopen Tools to apply. ` : '') +
+    'CUDA accelerates Load/Get edge refinement and full-resolution cache feathering, selected colour range, luminance, tone and structure. ' +
+    'Stored skin-mask components are combined on CPU. Small mask differences are possible. ' +
+    'Calculation timings show the backend used and any CPU fallback reason.';
+}
+$('skinMaskBackend').onchange = async () => {
+  const control = $('skinMaskBackend');
+  if (state.busy) { control.value = skinMaskBackend; return; }
+  setBusy(true);
+  try {
+    syncSkinMaskBackend(await api('/api/global-settings', {skin_mask_backend:control.value}));
+  } catch(e) {
+    control.value = skinMaskBackend;
+    setStatus('Skin Mask backend could not be saved: '+e.message, true);
+  } finally { setBusy(false); }
+};
 let poseConfig = {backend:'rtmlib', python:'', model:''};
 function syncPose() {
   $('poseBackend').value=poseConfig.backend;
@@ -1006,17 +1102,50 @@ async function operationApi(path, body, sending=false) {
         setStatus(snapshot.cancel_requested ? 'Cancelling batch...'
           : `Batch processing... (${completed}/${snapshot.batch.items.length})`);
       }
-      if (snapshot.done) recordCalculation(snapshot.steps.map(step =>
-        `${step.label}: ${step.seconds.toFixed(2)}s${step.error ? ' — '+step.error : ''}`).join('\n'));
+      if (snapshot.done) recordCalculation(snapshot.steps.flatMap(step => [
+        `${step.label}: ${step.seconds.toFixed(2)}s${step.error ? ' — '+step.error : ''}`,
+        ...calculationDetailLines(step)]).join('\n'));
       return;
     }
     const completed = {'Loading image / preparing profile':'Image loading and profile preparation (total)',
       'Analyzing image / estimating S':'Image analysis (total)',
-      'Generating shared skin mask':'Mask generated',
+      'Generating shared skin mask':'Load/Get source skin mask (total)',
       'Getting merged image from PhotoCraft':'PhotoCraft export and file transfer',
       'Getting merged image from Photoshop':'Photoshop Get (total)'};
-    const lines = snapshot.steps.map(step =>
-      `${step.error ? step.label+' failed: '+step.error : completed[step.label] || step.label} in ${step.seconds.toFixed(2)}s`);
+    const transfers = snapshot.steps.filter(step => step.transfer);
+    if (transfers.length && temporaryLog.photoshop) {
+      const direction = transfers[0].transfer;
+      const row = (step, prefix='') => `${prefix}${step.label}: ${step.seconds.toFixed(3)} s` +
+        (Number.isSafeInteger(step.bytes) ? ` · ${step.bytes.toLocaleString()} bytes` : '');
+      const outer = snapshot.steps.find(step => step.label === 'Getting merged image from Photoshop');
+      const total = direction === 'get' ? outer?.seconds : (snapshot.done ? snapshot.seconds : null);
+      const pixels = transfers.find(step => step.pixel_tiles)?.pixel_tiles;
+      const format = components => components === 3 ? 'RGB' : 'RGBA';
+      temporaryLog.photoshop[direction] = [
+        `${direction === 'get' ? 'Photoshop Get' : 'Photoshop Send'}${Number.isFinite(total) ? ` (total): ${total.toFixed(3)} s` : ''}`,
+        ...(pixels ? [`Raw source: ${pixels.width} × ${pixels.height}, ${pixels.depth}-bit/channel, ${
+          [...new Set(pixels.tiles.map(tile => format(tile[0])))].join('/')} readback → RGB payload; ${
+          pixels.tiles.length} tiles · ${pixels.pixel_bytes.toLocaleString()} pixel bytes + ${pixels.icc_bytes.toLocaleString()} ICC bytes`] : []),
+        ...transfers.flatMap(step => [row(step), ...(step.details || []).map(detail => row(detail, '  '))]),
+        ...(transfers.some(step => step.details?.length && /capture and transfer|transfer and import/.test(step.label))
+          ? [] : ['Connector phase timings are unavailable until reported by the updated panel.']),
+      ].join('\n');
+      const transferLog = $('photoshopTransferLogText');
+      if (transferLog) transferLog.textContent =
+        Object.values(temporaryLog.photoshop).join('\n\n') + '\n\nIndented rows are included in their parent; totals also include unlisted overhead.';
+      if (direction === 'get') {
+        const tilePanel = $('photoshopPixelTiles'), tileText = $('photoshopPixelTilesText');
+        if (tilePanel) tilePanel.hidden = !pixels;
+        if (tileText) tileText.textContent = pixels ? pixels.tiles.map(([components, readback, pack], i) => {
+          const y = i * pixels.rows, height = Math.min(pixels.rows, pixels.height - y);
+          const bytes = pixels.width * height * 3 * (pixels.depth / 8);
+          return `Tile ${i+1}: y=${y}, ${pixels.width} × ${height} ${format(components)} · getData ${(readback*1000).toFixed(2)} ms · pack ${(pack*1000).toFixed(2)} ms · ${bytes.toLocaleString()} RGB bytes`;
+        }).join('\n') : '';
+      }
+    }
+    const lines = snapshot.steps.filter(step => !step.transfer).flatMap(step => [
+      `${step.error ? step.label+' failed: '+step.error : completed[step.label] || step.label} in ${step.seconds.toFixed(2)}s`,
+      ...calculationDetailLines(step)]);
     if (snapshot.active) lines.push(snapshot.active+'...');
     if (snapshot.done) lines.push(`${sending ? 'Send' : 'Backend Load/Get'} ${snapshot.error ? 'failed' : 'completed'} in ${snapshot.seconds.toFixed(2)}s`);
     if (operation.pollError) lines.push('Live progress unavailable: '+operation.pollError);
@@ -1083,6 +1212,8 @@ function applyLoaded(r) {
     syncPose();
     closeLandmarks(false);
     state.loadEpoch = (state.loadEpoch || 0) + 1;
+    temporaryLog.cache = {};
+    renderCalculationLog();
     tabSel.A = 'result'; syncTabs();
     state.imageGeneration = r.generation;
     state.hueCenterNote = '';
@@ -1158,7 +1289,7 @@ async function loadImage() {
   setBusy(true); setStatus('Loading image...');
   let loaded = false;
   try {
-    applyLoaded(await operationApi('/api/load', {path}));
+    applyLoaded(await operationApi('/api/load', {path, scale_estimator:$('scaleEstimator')?.value || 'body-priority'}));
     loaded = true;
     await initializeHueCenter();
   } catch (e) {
@@ -1349,6 +1480,7 @@ function invalidateMaskCacheStatus() {
   ++maskPrecacheWatch;
   clearTimeout(watchMaskPrecache.timer);
   renderMaskCacheStatus({status:'idle', cached:false});
+  if (temporaryLog.cache.mask) updateCacheTimingRows('mask', {status:'idle'});
 }
 $('maskPrecache').checked = localStorage.getItem('shp-mask-precache') !== '0';
 $('maskPrecache').onchange = () => {
@@ -1366,6 +1498,7 @@ function invalidateLayerPrecache() {
   ++layerPrecacheWatch;
   clearTimeout(watchLayerPrecache.timer);
   $('layerCacheStatus').textContent = 'not prepared';
+  if (temporaryLog.cache.layers) updateCacheTimingRows('layers', {status:'idle'});
   for (const mode of ['frequency','dnb','combine']) {
     if (cacheTabs[mode].state === 'warming')
       cacheTabs[mode] = {state:'idle',label:'Preparation stopped; cache not checked'};
@@ -1391,6 +1524,7 @@ function watchLayerPrecache(info, epoch) {
       : value.message || labels[value.status] || value.status;
     $('layerCacheStatus').textContent = message;
     if (value.stamp === layerCacheStamp() && value.generation === state.imageGeneration) {
+      updateCacheTimingRows('layers', value);
       for (const mode of ['frequency','dnb','combine']) {
         const record = value.records?.[mode], tab = value.tabs?.[mode];
         const matching = record?.stamp === layerCacheStamp() && record.generation === state.imageGeneration;
@@ -1430,6 +1564,7 @@ function watchLayerPrecache(info, epoch) {
     try { display(await api('/api/layer-precache')); }
     catch (e) {
       if (watch === layerPrecacheWatch && epoch === state.loadEpoch) {
+        updateCacheTimingRows('layers', {status:'error'});
         for (const mode of ['frequency','dnb','combine'])
           cacheTabs[mode] = {state:'unavailable',label:'Layer cache status unavailable: '+e.message};
         announceCacheTabs();
@@ -1447,6 +1582,7 @@ function watchMaskPrecache(info, epoch) {
   const display = value => {
     if (watch !== maskPrecacheWatch || epoch !== state.loadEpoch) return;
     renderMaskCacheStatus(value);
+    updateCacheTimingRows('mask', value);
     if (['queued','running'].includes(value.status)) {
       watchMaskPrecache.timer = setTimeout(poll, 700);
       return;
@@ -1459,8 +1595,7 @@ function watchMaskPrecache(info, epoch) {
       const message = `Background skin mask failed: ${value.error}. Send will recompute it.`;
       if (!state.busy) setStatus(message, true); else logNote(message);
     } else if (value.status === 'ready' && value.cached) {
-      const message = `Full-resolution skin mask ready in background (${value.seconds.toFixed(2)} s).`;
-      recordCalculation(message); logNote(message);
+      logNote('Full-resolution skin mask ready in background.');
     } else if (value.message) logNote(value.message);
   };
   const poll = async () => {
@@ -1468,6 +1603,7 @@ function watchMaskPrecache(info, epoch) {
     catch (e) {
       if (watch === maskPrecacheWatch && epoch === state.loadEpoch) {
         renderMaskCacheStatus({status:'error', error:e.message});
+        updateCacheTimingRows('mask', {status:'error'});
         logNote(`Background mask status failed: ${e.message}`);
       }
     }
@@ -1520,8 +1656,9 @@ async function pcGet() {
     }
     const message = path ? 'Opening local image...' : 'Getting image from selected editor...';
     setStatus(message);
-    const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', path ? {path} :
-      photoshop ? {photoshop_capture:$('photoshopCaptureMode').value} : {});
+    const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', {
+      ...(path ? {path} : photoshop ? {photoshop_capture:$('photoshopCaptureMode').value} : {}),
+      scale_estimator:$('scaleEstimator')?.value || 'body-priority'});
     applyLoaded(r);
     loaded = true;
     await initializeHueCenter();
@@ -2324,6 +2461,8 @@ async function loadPresets() {
     $('pcConnect').hidden = !global.photocraft_launch_available;
     state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...global.layer_transfer};
     maskPlacement = global.mask_placement || 'folder';
+    syncDnbLayerBackend(global);
+    syncSkinMaskBackend(global);
     poseConfig = global.pose || {backend:'rtmlib',python:'',model:''};
     syncPose();
     syncTransfer();

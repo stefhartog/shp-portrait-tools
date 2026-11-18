@@ -165,6 +165,13 @@ workflow, not a requirement to use every effect.
 
 ### If the scale estimate is wrong
 
+**Torso + head** is the automatic default for Open/Get, batch, and watch-folder.
+If the pose makes this estimate unreliable, compare it with **Baseline
+(face-led)** in Analysis. To use the baseline on the next interactive Open/Get,
+select it under **Settings & Info → S estimator**. Batch and watch-folder
+still estimate each image independently. See the [scale estimator guide](skin-tools-architecture.md#automatic-s-estimator)
+for the cue weights, test calibration, and fallback rules.
+
 Under **Skin Mask > Image analysis**, choose **Adjust scale landmarks**.
 Select the **subject** and **point**; click to place a point, drag to move it, or
 use arrow keys to nudge it. Eye centers mean the visible pupil centers.

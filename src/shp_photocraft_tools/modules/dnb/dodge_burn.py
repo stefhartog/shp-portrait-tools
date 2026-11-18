@@ -27,6 +27,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import progress
+
 IPD_MM = 63.0
 
 
@@ -453,17 +455,20 @@ def structure_map(Y, S, size_mm, threshold):
 def combined_mask(img, S, mask=None, shadows=None, highlights=None, tone_strength=1.0,
                   protect=0.0, protect_mm=4.0, protect_thr=0.03):
     """Mask shared by D&B, standalone skin-mask output and frequency separation."""
-    Y = luminance_linear(img).astype(np.float32)
-    total = None if mask is None else mask.astype(np.float32)
+    with progress.detail_stage("Prepare luminance and base mask"):
+        Y = luminance_linear(img).astype(np.float32)
+        total = None if mask is None else mask.astype(np.float32)
     if shadows is not None and highlights is not None:
-        wt = tone_mask(Y, S, shadows, highlights)
-        wt = (1.0 - tone_strength * (1.0 - wt)).astype(np.float32)
-        total = wt if total is None else total * wt
+        with progress.detail_stage("Calculate and combine tone mask"):
+            wt = tone_mask(Y, S, shadows, highlights)
+            wt = (1.0 - tone_strength * (1.0 - wt)).astype(np.float32)
+            total = wt if total is None else total * wt
     st = None
     if protect > 0:
-        st = structure_map(Y, S, protect_mm, protect_thr)
-        keep = (1.0 - min(protect, 1.0) * st).astype(np.float32)
-        total = keep if total is None else total * keep
+        with progress.detail_stage("Calculate and combine structure protection"):
+            st = structure_map(Y, S, protect_mm, protect_thr)
+            keep = (1.0 - min(protect, 1.0) * st).astype(np.float32)
+            total = keep if total is None else total * keep
     return total, st
 
 
