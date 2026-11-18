@@ -480,7 +480,8 @@ def cached_dnb_bands(p, kind, *, mask=None, commit_guard=None):
         result, _, _, _ = progress.call(
             "Calculating D&B band", D.band_stack, img, p["S"], p["bands"], p["strength"], second,
             first_on=index == 1, sigma=p["layer_blur_at_s181"] * p["S"] / 181,
-            edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"], mask_result=(total, structure), **kwargs)
+            edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"], mask_result=(total, structure),
+            render_result=False, **kwargs)
         pixels = result[0][1]
         retain_layers(key, (pixels,), layer_reserve(img), commit_guard)
         layers.append((index, pixels))

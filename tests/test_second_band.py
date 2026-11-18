@@ -14,6 +14,49 @@ import test_dnb_transfer as DT
 
 
 class BandTests(unittest.TestCase):
+    def test_layer_only_process_preserves_change_and_mask_diagnostics(self):
+        image = np.random.default_rng(46).uniform(.2, .8, (48, 64, 3)).astype(np.float32)
+        mask = np.tile(np.linspace(0, 1, 64, dtype=np.float32), (48, 1))
+        for region in (None, mask):
+            with self.subTest(masked=region is not None):
+                args = (image, 181, [(1.5, 20, 1, .5)], .7)
+                expected = D.process(*args, mask=region, protect=.3)
+                with patch.object(D, "softlight", side_effect=AssertionError("unused process blend")):
+                    actual = D.process(*args, mask=region, protect=.3, render_result=False)
+                self.assertIsNone(actual[1])
+                for index in (0, 2, 3, 4):
+                    np.testing.assert_equal(actual[index], expected[index])
+
+    def test_layer_only_skips_blending_and_preserves_layers_masks_and_diagnostics(self):
+        image = np.random.default_rng(45).uniform(.2, .8, (48, 64, 3)).astype(np.float32)
+        bands = [(1.5, 20, 1, .5)]
+        for masked in (False, True):
+            kwargs = {"tau": .2}
+            if masked:
+                kwargs.update(mask=np.tile(np.linspace(0, 1, 64, dtype=np.float32), (48, 1)),
+                              protect=.3, protect_mm=2)
+            for first_on, second_on, invert in ((True, False, False), (False, True, False),
+                                               (False, True, True), (True, True, True)):
+                for sigma in (0, 2):
+                    with self.subTest(masked=masked, first=first_on, second=second_on,
+                                      invert=invert, sigma=sigma):
+                        second = D.second_band_settings({"on": second_on, "invert": invert})
+                        expected = D.band_stack(image, 181, bands, .7, second,
+                                                first_on=first_on, sigma=sigma, **kwargs)
+                        with patch.object(D, "softlight", side_effect=AssertionError("unused blend")), \
+                             patch.object(D, "compute_change_band", wraps=D.compute_change_band) as analysis:
+                            actual = D.band_stack(image, 181, bands, .7, second,
+                                                  first_on=first_on, sigma=sigma,
+                                                  render_result=False, **kwargs)
+                        self.assertIsNone(actual[1])
+                        self.assertEqual(analysis.call_count,
+                                         (int(first_on) + int(second_on)) * (2 if masked else 1))
+                        self.assertEqual([i for i, _ in actual[0]], [i for i, _ in expected[0]])
+                        for (_, a), (_, b) in zip(actual[0], expected[0]):
+                            np.testing.assert_array_equal(a, b)
+                        np.testing.assert_equal(actual[2], expected[2])
+                        np.testing.assert_equal(actual[3], expected[3])
+
     def test_legacy_disabled_exact_bypass_inversion_neutral_and_mask_reuse(self):
         image=np.random.default_rng(44).uniform(.2,.8,(48,64,3)).astype(np.float32)
         bands=[(1.5,20,1,.5)]

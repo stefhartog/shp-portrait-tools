@@ -351,7 +351,8 @@ class LayerSendCacheTests(unittest.TestCase):
                "second_band": {"on": True, "lo": 2, "hi": 20, "strength": .7, "invert": True}}
         p = U.parse_params({**req, "mode": "dnb"})
         expected, _, _ = U.dnb_full_result(p, layered=True)
-        actual, _, _ = U.cached_dnb_bands(p, "masked")
+        with patch.object(D, "softlight", side_effect=AssertionError("unused cache blend")):
+            actual, _, _ = U.cached_dnb_bands(p, "masked")
         for (i, a), (j, b) in zip(expected, actual):
             self.assertEqual(i, j)
             np.testing.assert_array_equal(a, b)
@@ -360,7 +361,8 @@ class LayerSendCacheTests(unittest.TestCase):
         expected, _, _, _ = D.band_stack(self.state["source_img"], p["S"], p["bands"], p["strength"],
             p["second_band"], first_on=p["band1_on"], sigma=p["layer_blur_at_s181"] * p["S"] / 181,
             edge=p["edge"], tau=p["tau"], max_ev=p["max_ev"], mask_result=(mask, None))
-        actual, _, _ = U.cached_dnb_bands(p, "unmasked", mask=mask)
+        with patch.object(D, "softlight", side_effect=AssertionError("unused cache blend")):
+            actual, _, _ = U.cached_dnb_bands(p, "unmasked", mask=mask)
         for (i, a), (j, b) in zip(expected, actual):
             self.assertEqual(i, j)
             np.testing.assert_array_equal(a, b)

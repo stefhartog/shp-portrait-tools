@@ -87,11 +87,13 @@ def softlight(cb, cs):
     return np.where(cs <= 0.5, cb - (1 - 2 * cs) * cb * (1 - cb), cb + (2 * cs - 1) * (d - cb))
 
 
-def blur_softlight_layer(img, cs, after, mask, sigma):
-    """Keep the legacy composite exactly when disabled; otherwise mask after blending."""
+def blur_softlight_layer(img, cs, after, mask, sigma, *, render_result=True):
+    """Blur the layer and optionally render its masked composite; preserve zero-blur results."""
     if sigma == 0:
-        return cs, after
+        return cs, after if render_result else None
     cs = cv2.GaussianBlur(cs, (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
+    if not render_result:
+        return cs, None
     blended = np.clip(softlight(img, cs[..., None]), 0, 1)
     after = blended if mask is None else img + (blended - img) * mask[..., None]
     return cs, after.astype(np.float32)
@@ -467,7 +469,7 @@ def combined_mask(img, S, mask=None, shadows=None, highlights=None, tone_strengt
 
 def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows=None, highlights=None, guided_up=True,
             mask=None, blend_mm=6.0, protect=0.0, protect_mm=4.0, protect_thr=0.03, tone_strength=1.0,
-            mask_result=None):
+            mask_result=None, *, render_result=True):
     """Whole pipeline for library/UI use. img: float32 BGR 0..1. Returns (cs, after, change, diag, total_mask):
     cs         = gray Soft Light layer (0..1) with NO mask of any kind applied: no skin mask and no tone window. Inside the
                  skin and up to blend_mm outside it the layer comes from the mask-aware analysis (hair and background do
@@ -477,7 +479,8 @@ def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows
     change     = the ln-luminance change of that result,
     total_mask = skin mask x tone window x (1 - protect x structure) (None if none is used): the one mask to use as the
                  layer mask of cs. The structure map is returned as diag["structure"] (None if protect is 0).
-    mask_result optionally reuses an unchanged (total_mask, structure) from combined_mask."""
+    mask_result optionally reuses an unchanged (total_mask, structure) from combined_mask.
+    render_result=False skips the composite (after is None), retaining layers, change and diagnostics."""
     Y = luminance_linear(img).astype(np.float32)
     change_u, diag = compute_change_band(Y, S, strength, bands, edge, tau, max_ev, guided_up, None, None,
                                          mask=mask, apply_mask=False)
@@ -491,7 +494,10 @@ def process(img, S, bands, strength=1.0, edge=0.12, tau=1.0, max_ev=1.0, shadows
     total, diag["structure"] = (combined_mask(img, S, mask, shadows, highlights, tone_strength,
                                              protect, protect_mm, protect_thr)
                                 if mask_result is None else mask_result)
-    if total is None:
+    if not render_result:
+        change = change_u if total is None else change_u * total
+        after = None
+    elif total is None:
         change, after = change_u, np.clip(softlight(img, cs[..., None]), 0, 1).astype(np.float32)
     else:
         change = change_u * total
@@ -518,8 +524,8 @@ def second_band_settings(raw=None):
     return result
 
 
-def band_stack(img, S, bands, strength, second, *, first_on=True, sigma=0, **kwargs):
-    """Generate independent original-based layers; preserve the legacy single-band path."""
+def band_stack(img, S, bands, strength, second, *, first_on=True, sigma=0, render_result=True, **kwargs):
+    """Generate original-based layers; render_result=False omits only the discarded composite."""
     mask_result = kwargs.pop("mask_result", None)
     if mask_result is None:
         mask_result = combined_mask(img, S, kwargs.get("mask"), kwargs.get("shadows"),
@@ -527,7 +533,7 @@ def band_stack(img, S, bands, strength, second, *, first_on=True, sigma=0, **kwa
                                     kwargs.get("protect", 0), kwargs.get("protect_mm", 4),
                                     kwargs.get("protect_thr", .03))
     total, structure = mask_result
-    layers, after = [], img.copy()
+    layers, after = [], img.copy() if render_result else None
     diag = {"levels": [], "structure": structure}
     for index, enabled, selected, amount, invert in (
             (1, first_on, bands, strength, False),
@@ -536,12 +542,14 @@ def band_stack(img, S, bands, strength, second, *, first_on=True, sigma=0, **kwa
         if not enabled:
             continue
         cs, legacy, _, diagnostics, _ = process(img, S, selected, amount,
-                                               mask_result=mask_result, **kwargs)
-        cs, legacy = blur_softlight_layer(img, cs, legacy, total, sigma)
+                                               mask_result=mask_result, render_result=render_result, **kwargs)
+        cs, legacy = blur_softlight_layer(img, cs, legacy, total, sigma, render_result=render_result)
         diag["levels"].extend(diagnostics["levels"])
         if invert:
             cs = 1 - cs
         layers.append((index, cs))
+        if not render_result:
+            continue
         if first_on and not second["on"]:
             after = legacy
         else:
