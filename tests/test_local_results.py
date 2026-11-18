@@ -132,6 +132,39 @@ class LocalResultTests(unittest.TestCase):
                 S.api_send_result({**T.PARAMS, "mode": "mask"})
         self.assertFalse(list(self.root.glob("*_shpskinmask_*")))
 
+    def test_editor_send_routes_forward_result_or_mask_to_the_loaded_document(self):
+        loaded = self.post("/api/load", {"path": str(self.image)})
+        pixels = T.synthetic_image()
+        mask = pixels[..., 0]
+        document = {"name": "captured document"}
+        request = {**T.PARAMS, "generation": loaded["generation"]}
+        for editor in ("photoshop", "photocraft"):
+            with self.subTest(editor=editor), \
+                 patch.dict(S.STATE, source_kind=editor, icc=S.SRGB_ICC, source_icc=S.SRGB_ICC), \
+                 patch.dict(S.BRIDGE, doc=document), patch.dict(S.EDITOR, selected=editor), \
+                 patch.object(S, "api_pc_status", return_value={"connected": True}), \
+                 patch.object(S, "bridge") as select_bridge, \
+                 patch.object(S, "skin_result", return_value=(pixels, S.SRGB_ICC)), \
+                 patch.object(S, "full_skin_mask", return_value=mask), \
+                 patch.object(S, "write_local_result") as local:
+                adapter = select_bridge.return_value
+                adapter.send_result.return_value = {"kind": "result"}
+                adapter.send_mask.return_value = {"kind": "mask"}
+                for mode, kind in (("dnb", "result"), ("mask", "mask")):
+                    response = self.send({**request, "mode": mode})
+                    self.assertEqual(
+                        set(response), {"sent", "kind", "mask_precache", "layer_precache"},
+                    )
+                    self.assertIs(response["sent"], True)
+                    self.assertEqual(response["kind"], kind)
+                for method, expected in ((adapter.send_result, S.FS.rgb16(pixels)),
+                                         (adapter.send_mask, S.u8(mask))):
+                    method.assert_called_once()
+                    np.testing.assert_array_equal(method.call_args.args[0], expected)
+                    self.assertIs(method.call_args.args[1], document)
+                    self.assertEqual(method.call_args.kwargs, {"source_icc": S.SRGB_ICC})
+                local.assert_not_called()
+
     def test_global_formats_compression_alpha_and_mask_exemption(self):
         loaded = self.post("/api/load", {"path": str(self.image)})
         result = T.synthetic_image()

@@ -13,7 +13,6 @@ Previews are computed on a downscaled copy (max ~1600 px) of the subject crop or
 works at full resolution.
 """
 import argparse
-import datetime
 import io
 import hashlib
 import json
@@ -50,7 +49,7 @@ from . import skintone as ST
 from . import directional_blur as DB
 from . import combine_scale as C
 from . import estimate_body_scale as B
-from . import image_session, preview_service, processing_service, progress
+from . import image_session, preview_service, processing_service, progress, transfer_service
 from .cache_coordinator import CacheCoordinator
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE
 from .mask_precache import Skipped, Superseded
@@ -1544,114 +1543,14 @@ def prepare_skin_result(p, *, report_progress=False):
 
 
 def api_save(req):
-    """Writes the three files for a layer-based workflow (Photoshop / PhotoCraft):
-    1_result: the picture with the settings applied, 2_skinmask: the combined mask to apply to layer 3, and
-    3_softlight_layer: 16-bit gray layer for Soft Light mode with no mask of any kind applied."""
     if STATE["img"] is None:
         raise ValueError("load an image first")
-    p = parse_params(req)
-    if p["mode"]=="combine":
-        return save_combined(req,p)
-    if p["mode"] != "dnb":
-        return save_skin(req, p)
-    t = time.time()
-    img = STATE["img"]
-    layers, after, total = dnb_full_result(p, layered=True)
-    cs = processing_service.first_band(layers, img.shape[:2])
-    stem = Path(STATE["path"]).stem
-    out = ROOT / "results" / f"{stem}_{datetime.datetime.now():%Y%m%d-%H%M%S}"
-    out.mkdir(parents=True, exist_ok=True)
-    transfer = read_global_settings()["layer_transfer"]
-    (out / f"{stem}_1_result.{transfer['format']}").write_bytes(
-        PCB.tagged_rgb16(FS.rgb16(after), STATE["icc"] or SRGB_ICC, transfer))
-    mask_out = total if total is not None else np.ones(img.shape[:2], np.float32)
-    cv2.imwrite(str(out / f"{stem}_2_skinmask.png"), u8(mask_out))
-    # Three identical channels, not a Gray image: PhotoCraft (and Photoshop) convert a Gray image to RGB with a gray
-    # profile, which shifts 50% gray and made the layer brighten the picture by about 8 levels in a test.
-    g16 = np.round(cs * 65535).astype(np.uint16)
-    if p["band1_on"]:
-        cv2.imwrite(str(out / f"{stem}_3_softlight_layer.png"), np.dstack([g16, g16, g16]))
-    for index, pixels in layers:
-        if index == 2:
-            gray = np.round(pixels * 65535).astype(np.uint16)
-            if not cv2.imwrite(str(out / f"{stem}_4_softlight_band2.png"), np.repeat(gray[..., None], 3, axis=2)):
-                raise OSError("could not write the second D&B band layer")
-    d = (after - img).mean(axis=2)
-    settings = {k: v for k, v in module_settings(req).items() if k != "view"}
-    settings["output_settings"] = transfer
-    settings.update(image=STATE["path"], stats={"p95": float(np.percentile(np.abs(d), 95) * 255), "max": float(np.abs(d).max() * 255)},
-                    layer_order=[f"band {index}" for index, _ in reversed(layers)],
-                    band1_on=p["band1_on"], second_band=p["second_band"],
-                    files={"1_result": "picture with the settings applied (combined mask applied)",
-                           "2_skinmask": "ONE mask = skin x color range x tone range x structure protection (8-bit gray; all white if none are used); use as the layer mask of file 3",
-                           "3_softlight_layer": "16-bit RGB PNG (three identical gray channels, so no gray-profile conversion on import), Soft Light blend mode, 50% gray = no change, NO mask applied"},
-                    soft_light="W3C soft-light formula; Photoshop's soft light differs slightly",
-                    colour="embedded source ICC profile, or sRGB when source had none; flattened result is RGB16")
-    (out / "settings.json").write_text(json.dumps(settings, indent=2))
-    return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
-
-
-def save_combined(req,p):
-    validate_skintone_source()
-    _, _, result = prepare_skin_result(p)
-    stem=Path(STATE["path"]).stem
-    out=ROOT/"results"/f"{stem}_combine_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
-    out.mkdir(parents=True,exist_ok=False)
-    transfer = read_global_settings()["layer_transfer"]
-    filename = "result." + transfer["format"]
-    (out/filename).write_bytes(PCB.tagged_rgb16(FS.rgb16(result),STATE["source_icc"] or SRGB_ICC,transfer))
-    (out/"settings.json").write_text(json.dumps({**module_settings(req),"image":STATE["path"],
-                                               "output_settings":transfer},indent=2))
-    return {"dir":str(out),"files":[filename,"settings.json"]}
-
-
-def save_skin(req, p):
-    if p["mode"] == "frequency":
-        validate_skintone_source()
-    t = time.time()
-    mask, layers, result = prepare_skin_result(p)
-    stem = Path(STATE["path"]).stem
-    out = ROOT / "results" / f"{stem}_{p['mode']}_{datetime.datetime.now():%Y%m%d-%H%M%S-%f}"
-    out.mkdir(parents=True, exist_ok=True)
-    mask_name = "skinmask.png"
-    if not cv2.imwrite(str(out / mask_name), u8(mask)):
-        raise ValueError("could not write skin mask")
-    for key in ("color", "blur", "detail", "directional"):
-        if key not in layers:
-            continue
-        pixels = layers[key]
-        (out / f"{key}.png").write_bytes(PCB.tagged_rgb16(FS.rgb16(pixels), STATE["source_icc"] or SRGB_ICC))
-    if "directional_mask" in layers:
-        if not cv2.imwrite(str(out / "directional_mask.png"), u8(layers["directional_mask"])):
-            raise ValueError("could not write Directional Blur mask")
-    if result is not None:
-        transfer = read_global_settings()["layer_transfer"]
-        (out / ("result." + transfer["format"])).write_bytes(
-            PCB.tagged_rgb16(FS.rgb16(result), STATE["source_icc"] or SRGB_ICC, transfer))
-        if p["skintone"]["on"]:
-            for name, table in zip(("Hue",), ST.tables(dict(p["skintone"], hue_amount=100))):
-                (out / f"{name}.cube").write_text(ST.cube_text(table, name))
-    recipe = ("SHP FS + Skintone: Normal unmasked outer group. Top-down: Detail (Linear Light, unmasked), "
-                         + (f"Hue (opacity {p['skintone']['hue_amount']}%; with skinmask.png; Hue.cube, native Color Lookup, Normal, "
-                            "trilinear, dither off), " if p["skintone"]["on"] else "")
-                         + (f"Directional Blur (Normal, opacity {layers['directional_strength']}%, with directional_mask.png), "
-                            if "directional" in layers else "")
-                         + (f"Blur (Normal, opacity {p['frequency']['blur_strength']}%, "
-                            + ("with skinmask.png" if p["frequency"]["blur_mask"] else "unmasked") + "), " if p["frequency"]["on"] else "")
-                         + "Color (Normal, unmasked)."
-                         if result is not None else mask_name + ": reusable grayscale layer in Normal mode; no healing.")
-    (out / "settings.json").write_text(json.dumps({**module_settings(req), "image": STATE["path"],
-        **({"output_settings": transfer} if result is not None else {}),
-        "layer_recipe": recipe,
-        "pixels": ("HSV of native document RGB, 33-cube sampled hue soft limits on Color plus masked Blur. "
-                   "No saturation correction. Neutrals protected. Gaussian/median Color/Detail separation and "
-                   "skin-aware Gaussian Blur use full-image radii. RGB16, source numeric space. Hue LUT is "
-                   "embedded by Send only while Skintone correction is on; off bypasses hue calculations."
-                   if result is not None else
-                   "Advisory signed luminance-anomaly candidates, grayscale8; no correction or healing."
-                   "Separation radius: Gaussian sigma or median square radius, full-image pixels; Blur: Gaussian sigma. "
-                   "Median uses equal votes among positive-mask samples. RGB16, source numeric space.")}, indent=2))
-    return {"dir": str(out), "files": sorted(f.name for f in out.iterdir()), "seconds": round(time.time() - t, 1)}
+    return transfer_service.save_bundle(
+        req, parse_params(req), state=STATE, root=ROOT, srgb=SRGB_ICC,
+        settings_for_request=module_settings, transfer_options=layer_transfer_options, u8=u8,
+        dnb_full_result=dnb_full_result, prepare_skin_result=prepare_skin_result,
+        validate_skintone_source=validate_skintone_source,
+    )
 
 
 BRIDGE = {"b": None, "doc": None}
@@ -1780,22 +1679,12 @@ def api_pc_send_layers(req):
         raise ValueError("the loaded image changed; Get Image again before Send Layers")
     p = parse_params(req)
     validate_editor_source(p)
-    if p["mode"]=="combine":
-        return {"sent":True,**send_combined_layers(p)}
-    if p["mode"] != "dnb":
-        if p["mode"] == "frequency":
-            return {"sent": True, **send_skintone_parallel(p)}
-        mask = processing_service.shared_mask(p, full_skin_mask, report_progress=True)
-        if p["mode"] == "mask":
-            mask8 = u8(mask)
-            del mask
-            r = bridge().send_mask(mask8, BRIDGE["doc"], source_icc=STATE["source_icc"])
-        return {"sent": True, **r}
-    payload, mask8 = processing_service.dnb_layers(
-        p, STATE["img"].shape[:2], cached_bands=cached_dnb_bands, mask8=u8,
+    return transfer_service.send_editor_layers(
+        p, shape=STATE["img"].shape[:2], document=BRIDGE["doc"], source_icc=STATE["source_icc"],
+        bridge=bridge, u8=u8, full_skin_mask=full_skin_mask, cached_dnb_bands=cached_dnb_bands,
+        send_combined_layers=send_combined_layers, send_skintone_parallel=send_skintone_parallel,
+        send_band_payload=send_band_payload,
     )
-    r = send_band_payload(payload, mask8)
-    return {"sent": True, **r}
 
 
 def skin_result(p):
@@ -1814,8 +1703,7 @@ def api_pc_send(req):
     validate_editor_source(p)
     if p["mode"] == "mask":
         return api_pc_send_layers(req)
-    result,icc=skin_result(p)
-    return {"sent":True,**bridge().send_result(FS.rgb16(result),BRIDGE["doc"],source_icc=icc)}
+    return transfer_service.send_editor_result(p, document=BRIDGE["doc"], bridge=bridge, skin_result=skin_result)
 
 
 def validate_editor_source(p):
@@ -1883,27 +1771,15 @@ def api_send_result(req):
     if STATE.get("source_kind") != "local" or not STATE.get("path"):
         raise ValueError("Get Image again to establish the output destination")
     p = parse_params(req)
-    transfer = read_global_settings()["layer_transfer"] if p["mode"] != "mask" else None
-    if p["mode"] == "dnb":
-        cs, result, total = dnb_full_result(p)
-        del cs, total
-        data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
-                             FS.rgb16(result), STATE["icc"] or SRGB_ICC, transfer)
-    else:
-        mask, _, result = prepare_skin_result(p, report_progress=True)
-        if p["mode"] == "mask":
-            ok, encoded = cv2.imencode(".png", u8(mask))
-            if not ok:
-                raise ValueError("could not encode the skin mask")
-            data = encoded.tobytes()
-        else:
-            data = progress.call("Encoding full-resolution result", PCB.tagged_rgb16,
-                                 FS.rgb16(result), STATE["source_icc"] or SRGB_ICC, transfer)
-    suffix = {"dnb": "shpdnb", "mask": "shpskinmask", "frequency": "shpfs", "combine":"shpcombine"}[p["mode"]]
-    path = progress.call("Saving result beside source", write_local_result, STATE["path"], suffix, data,
-                         STATE.get("source_directory"),
-                         extension="." + transfer["format"] if transfer else ".png")
-    return {"saved": True, "path": path}
+    return transfer_service.send_local_result(
+        p, state=STATE, srgb=SRGB_ICC, transfer_options=layer_transfer_options, u8=u8,
+        dnb_full_result=dnb_full_result, prepare_skin_result=prepare_skin_result,
+        write_local_result=write_local_result,
+    )
+
+
+def layer_transfer_options():
+    return read_global_settings()["layer_transfer"]
 
 
 def read_presets():
