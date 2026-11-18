@@ -52,7 +52,7 @@ from . import skintone as ST
 from . import directional_blur as DB
 from . import combine_scale as C
 from . import estimate_body_scale as B
-from . import progress
+from . import preview_service, progress
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE
 from .mask_precache import MaskPrecache, Skipped, Superseded
 from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
@@ -1292,6 +1292,28 @@ def api_color_pick(req):
     return {"hue": float(hsv[0]), "saturation": float(hsv[1]), "value": float(hsv[2]), "rgb": rgb, "light": light}
 
 
+def select_mask_preparation(params, *, enabled=True):
+    STATE["mask_status_key"] = mask_request_key(params)
+    MASK_PRECACHE.select(STATE["mask_status_key"])
+    if not enabled:
+        MASK_PRECACHE.reset()
+
+
+def attach_preparation_status(result):
+    result["mask_precache"] = mask_cache_status()
+    result["layer_precache"] = layer_cache_status()
+
+
+def api_preview_request(req):
+    return preview_service.run(
+        req, state=STATE, lock=foreground_lock, render=api_run, parse_params=parse_params,
+        matches_preparation=matching_layer_preparation, layer_precache=LAYER_PRECACHE,
+        layer_active=LAYER_PRECACHE_ACTIVE, select_mask=select_mask_preparation,
+        queue_mask=queue_mask_precache, queue_layers=queue_layer_precache,
+        attach_status=attach_preparation_status,
+    )
+
+
 def api_run(req):
     if STATE["img"] is None:
         raise ValueError("load an image first")
@@ -2404,7 +2426,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                 return self.send(200, b'{"cancelled":true}', "application/json")
             if self.path == "/api/batch/cancel":
                 return self.send(200, json.dumps(api_batch_cancel(req)).encode(), "application/json")
-            fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_run, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
+            fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_preview_request, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
                   "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/send_layers":api_pc_send_layers, "/api/pc/launch": api_pc_launch,
                   "/api/editor": api_editor, "/api/editor/pair": api_photoshop_pair, "/api/editor/revoke": api_photoshop_revoke,
@@ -2416,53 +2438,27 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             if fn is None:
                 return self.send(404, b"not found", "text/plain")
             chart_request = self.path in ("/api/profile", "/api/tone")
-            same_layer_preparation = self.path == "/api/run" and matching_layer_preparation(req)
-            if not chart_request and not same_layer_preparation:
-                LAYER_PRECACHE.reset("Preparation stopped by another action; run a preview to prepare again.")
-            token = req.pop("_progress", None)
-            with progress.operation(token):
-                preview_request = self.path == "/api/run"
-                with (nullcontext() if chart_request else foreground_lock(full_resolution=not preview_request)):
-                    if same_layer_preparation:
-                        same_layer_preparation = matching_layer_preparation(req)
-                    if not chart_request and not same_layer_preparation:
+            if fn is api_preview_request:
+                res = fn(req)
+            else:
+                if not chart_request:
+                    LAYER_PRECACHE.reset(preview_service.STOPPED)
+                token = req.pop("_progress", None)
+                with progress.operation(token), (nullcontext() if chart_request else foreground_lock(full_resolution=True)):
+                    if not chart_request:
                         # Another preview may have queued new work while this request waited.
                         with LAYER_PRECACHE.condition:
                             if LAYER_PRECACHE.signature is not None:
-                                LAYER_PRECACHE.reset("Preparation stopped by another action; run a preview to prepare again.")
+                                LAYER_PRECACHE.reset(preview_service.STOPPED)
                     if self.path in ("/api/pc/send", "/api/pc/send_layers"):
                         req["frequency_transfer"] = read_global_settings()["layer_transfer"]
-                    mask_params = None
-                    if self.path in ("/api/run", "/api/pc/send", "/api/pc/send_layers", "/api/send-result", "/api/save") and STATE["img"] is not None:
-                        if self.path == "/api/run" and type(req.get("precache_mask", True)) is not bool:
-                            raise ValueError("precache_mask must be a boolean")
-                        if self.path == "/api/run" and type(req.get("precache_layers", False)) is not bool:
-                            raise ValueError("precache_layers must be a boolean")
-                        stamp = req.get("layer_cache_revision")
-                        if self.path == "/api/run" and stamp is not None and (
-                                not isinstance(stamp, str) or not 1 <= len(stamp) <= 128):
-                            raise ValueError("layer_cache_revision must be a short string")
-                        if self.path == "/api/run":
-                            STATE["mask_precache_enabled"] = req.get("precache_mask", True)
-                        mask_params = parse_params(req)
-                        STATE["mask_status_key"] = mask_request_key(mask_params)
-                        MASK_PRECACHE.select(STATE["mask_status_key"])
-                        if self.path == "/api/run" and req.get("precache_mask", True) is False:
-                            MASK_PRECACHE.reset()
+                    mask_request = (self.path in ("/api/pc/send", "/api/pc/send_layers", "/api/send-result", "/api/save")
+                                    and STATE["img"] is not None)
+                    if mask_request:
+                        select_mask_preparation(parse_params(req))
                     res = fn(req)
-                    if self.path == "/api/run" and mask_params is not None:
-                        if req.get("precache_mask", True) is not False:
-                            queue_mask_precache(mask_params)
-                        if req.get("precache_layers", False) and not same_layer_preparation:
-                            queue_layer_precache(mask_params, req.get("layer_cache_revision"), req)
-                        elif not req.get("precache_layers", False):
-                            with LAYER_PRECACHE.condition:
-                                LAYER_PRECACHE_ACTIVE.update(mode=mask_params["mode"], stamp=req.get("layer_cache_revision"),
-                                                             generation=STATE.get("landmark_generation"), tabs={}, budget_note=None)
-                            LAYER_PRECACHE.skip(None, "Background layer preparation is disabled in Settings & Info.")
-                    if mask_params is not None:
-                        res["mask_precache"] = mask_cache_status()
-                        res["layer_precache"] = layer_cache_status()
+                    if mask_request:
+                        attach_preparation_status(res)
             if token is not None:
                 res["_progress"] = progress.snapshot(token, consume=True)
             self.send(200, json.dumps(res).encode(), "application/json")

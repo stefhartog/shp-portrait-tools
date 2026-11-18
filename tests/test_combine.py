@@ -68,6 +68,29 @@ class CombineApiTests(unittest.TestCase):
                 "skintone":{"on":False},"frequency":{"radius_at_s181":2},
                 "combine":{"fs_mix":55,"dnb_mix":35},"second_band":{"on":True,"invert":True}}
 
+    def test_preview_route_preserves_render_cache_and_rejects_stale_requests(self):
+        loaded = self.post("/api/load", {"path": str(self.image)})
+        req = {**self.request(), "generation": loaded["generation"], "layer_cache_revision": "route"}
+        expected = U.api_run(req)
+        images = dict(U.STATE["imgs"])
+        actual = self.post("/api/run", req)
+        self.assertTrue(actual["cached"])
+        self.assertEqual(actual["stats"], expected["stats"])
+        self.assertEqual(U.STATE["imgs"], images)
+        self.assertEqual(actual["layer_precache"]["status"], "skipped")
+        self.assertFalse(actual["mask_precache"]["enabled"])
+        for updated, message in (
+            ({"generation": loaded["generation"] + 1}, "the loaded image changed; preview discarded"),
+            ({"precache_mask": 1}, "precache_mask must be a boolean"),
+            ({"precache_layers": 1}, "precache_layers must be a boolean"),
+            ({"layer_cache_revision": ""}, "layer_cache_revision must be a short string"),
+        ):
+            with self.subTest(updated=updated), self.assertRaises(HTTPError) as caught:
+                self.post("/api/run", {**req, **updated})
+            self.assertEqual(caught.exception.code, 400)
+            self.assertEqual(json.load(caught.exception)["error"], f"ValueError: {message}")
+            self.assertEqual(U.STATE["version"], actual["version"])
+
     def test_mix_preview_reuses_components_and_matches_fresh_pixels(self):
         self.post("/api/load", {"path": str(self.image)})
         req = self.request()
