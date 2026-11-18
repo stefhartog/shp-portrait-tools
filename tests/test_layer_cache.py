@@ -466,7 +466,7 @@ class LayerSendCacheTests(unittest.TestCase):
             finally:
                 scheduler.close()
 
-    def test_mix_preview_yields_to_foreground_without_superseding_worker(self):
+    def test_mix_preview_renders_while_background_split_is_held(self):
         scheduler = MaskPrecache(U.precache_layers, delay=.01)
         server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)
         thread = threading.Thread(target=server.serve_forever)
@@ -475,9 +475,11 @@ class LayerSendCacheTests(unittest.TestCase):
         req = {**PARAMS, "mode": "combine", "S": 181, "precache_layers": True,
                "layer_cache_revision": "global", "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                "skintone": {"on": False}, "second_band": {"on": True}}
-        started, release, foreground = threading.Event(), threading.Event(), threading.Event()
+        started, release, foreground, full_resolution = (threading.Event() for _ in range(4))
         errors = []
+        self.state.update(centre=(12, 10), avers=0)
         original_split = U.cached_fs_split
+        original_run = U.api_run
 
         def delayed(*args, **kwargs):
             started.set()
@@ -487,7 +489,9 @@ class LayerSendCacheTests(unittest.TestCase):
 
         def run(request):
             if request.get("mix_only"):
+                result = original_run(request)
                 foreground.set()
+                return result
             return {"version": 1}
 
         def post(body):
@@ -502,6 +506,10 @@ class LayerSendCacheTests(unittest.TestCase):
             except Exception as error:
                 errors.append(error)
 
+        def wait_for_full_resolution():
+            with U.foreground_lock(full_resolution=True):
+                full_resolution.set()
+
         try:
             with patch.object(U, "LAYER_PRECACHE", scheduler), \
                  patch.object(U, "api_run", side_effect=run), \
@@ -513,21 +521,29 @@ class LayerSendCacheTests(unittest.TestCase):
                 self.assertTrue(U.matching_layer_preparation(
                     {**req, "mix_only": True, "combine": {"fs_mix": 40, "dnb_mix": 60}}))
                 self.assertFalse(U.matching_layer_preparation({**req, "mix_only": True, "strength": .4}))
+                full_thread = threading.Thread(target=wait_for_full_resolution)
                 request_thread = threading.Thread(target=changed_mix)
-                request_thread.start()
+                full_thread.start()
                 try:
-                    self.assertTrue(U.FOREGROUND_WAITING.wait(5))
-                    release.set()
-                    self.assertTrue(foreground.wait(5))
-                    request_thread.join(5)
+                    self.assertTrue(U.FOREGROUND_WAITING.wait(3))
+                    request_thread.start()
+                    self.assertTrue(foreground.wait(3))
+                    request_thread.join(3)
                     self.assertFalse(request_thread.is_alive())
                     self.assertFalse(errors)
+                    self.assertFalse(release.is_set())
+                    self.assertFalse(full_resolution.is_set())
+                    self.assertIn("result", self.state["imgs"])
                     self.assertEqual(scheduler.status()["sequence"], sequence)
+                    release.set()
+                    self.assertTrue(full_resolution.wait(3))
                     self.assertEqual(self.settle(scheduler)["status"], "ready")
                     self.assertEqual(scheduler.status()["sequence"], sequence)
                 finally:
                     release.set()
-                    request_thread.join(5)
+                    full_thread.join(5)
+                    if request_thread.ident is not None:
+                        request_thread.join(5)
         finally:
             scheduler.close()
             server.shutdown()
@@ -599,32 +615,27 @@ class LayerSendCacheTests(unittest.TestCase):
             finally:
                 scheduler.close()
 
-    def test_cancelled_computation_never_commits_and_foreground_waits(self):
+    def test_stale_generation_cannot_publish_components_or_ready_status(self):
         scheduler = MaskPrecache(U.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
                             "frequency": {"on": False, "radius": 2}})
-        started, release, foreground = threading.Event(), threading.Event(), threading.Event()
+        started, release = threading.Event(), threading.Event()
         original = FS.split
         def slow(*args, **kwargs):
             started.set()
             if not release.wait(5):
                 raise TimeoutError("test release timed out")
             return original(*args, **kwargs)
-        def request():
-            scheduler.reset()
-            with U.LOCK:
-                foreground.set()
         with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", side_effect=slow):
             try:
-                U.queue_layer_precache(p)
+                U.queue_layer_precache(p, "old")
                 self.assertTrue(started.wait(5))
-                thread = threading.Thread(target=request)
-                thread.start()
-                self.assertFalse(foreground.wait(.05))
+                self.state["landmark_generation"] += 1
                 release.set()
-                thread.join(5)
-                self.assertTrue(foreground.is_set())
+                self.assertEqual(self.settle(scheduler)["status"], "superseded")
                 self.assertEqual(U.LAYER_CACHE.bytes, 0)
+                self.assertNotIn("frequency", U.layer_cache_status()["records"])
+                self.assertNotEqual(U.layer_cache_status()["tabs"]["frequency"]["state"], "ready")
             finally:
                 release.set()
                 scheduler.close()
@@ -651,7 +662,7 @@ class LayerSendCacheTests(unittest.TestCase):
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
         with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", wraps=FS.split) as split:
             try:
-                with U.FULL_MASK_LOCK, U.LOCK:
+                with U.FULL_RESOLUTION_LOCK:
                     U.queue_layer_precache(p)
                     time.sleep(.15)
                     self.assertEqual(split.call_count, 0)

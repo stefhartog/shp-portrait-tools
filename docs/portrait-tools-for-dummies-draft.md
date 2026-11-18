@@ -335,10 +335,12 @@ need to be recalculated. Each D&B band is cached separately. Image analysis
 also shows preparation details and Send Layers reports components actually
 reused. Preparation can use substantial CPU and temporary
 RAM; it is skipped unless free RAM exceeds 4 GiB plus 128 bytes per source
-pixel at each stage. You can turn it off in Settings & Info. A foreground action
-normally supersedes preparation. A mix-only preview instead lets it continue
-after yielding at the end of the current calculation. Median Fast preparation uses
-multiple CPU cores; OpenCV controls parallelism for its other operations.
+pixel at admission. You can turn it off in Settings & Info. Previews no longer
+wait for the current full-resolution stage to finish, but background CPU and
+memory use can still slow rendering. Layer preparation defers new stages while
+foreground work is active; a full-resolution Send may wait for an in-flight
+stage rather than start another in parallel. Median Fast preparation uses multiple
+CPU cores; OpenCV controls parallelism for its other operations.
 
 Send Layers reuses matching Color, Detail, Blur and D&B pixels, whether prepared
 in advance or by an earlier send. Mix and Blur opacity changes do not invalidate

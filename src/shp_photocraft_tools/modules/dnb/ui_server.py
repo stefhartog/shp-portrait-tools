@@ -66,6 +66,7 @@ GLOBAL_SETTINGS_LOCK = threading.RLock()
 WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 LOCK = threading.Lock()
+FULL_RESOLUTION_LOCK = threading.Lock()
 FULL_MASK_LOCK = threading.RLock()
 FOREGROUND_WAITING = threading.Event()
 FOREGROUND_WAITERS_LOCK = threading.Lock()
@@ -80,22 +81,21 @@ DIRS = []
 
 
 @contextmanager
-def foreground_lock():
+def foreground_lock(*, full_resolution=False):
     global FOREGROUND_WAITERS
     with FOREGROUND_WAITERS_LOCK:
         FOREGROUND_WAITERS += 1
         FOREGROUND_WAITING.set()
     try:
-        LOCK.acquire()
+        # A Send can wait for an in-flight full-resolution stage without
+        # holding the preview lock. Always acquire the full-resolution lock first.
+        with (FULL_RESOLUTION_LOCK if full_resolution else nullcontext()), LOCK:
+            yield
     finally:
         with FOREGROUND_WAITERS_LOCK:
             FOREGROUND_WAITERS -= 1
             if not FOREGROUND_WAITERS:
                 FOREGROUND_WAITING.clear()
-    try:
-        yield
-    finally:
-        LOCK.release()
 
 
 def u8(x):
@@ -262,9 +262,10 @@ def tool_mask(img, masks, p, S):
     return mask, total, structure
 
 
-def full_skin_mask(p, *, commit_guard=None):
-    total, _ = cached_final_skin_mask(p, commit_guard=commit_guard)
-    return np.ones(STATE["img"].shape[:2], np.float32) if total is None else total
+def full_skin_mask(p, *, state=None, commit_guard=None):
+    state = STATE if state is None else state
+    total, _ = cached_final_skin_mask(p, state=state, commit_guard=commit_guard)
+    return np.ones(state["img"].shape[:2], np.float32) if total is None else total
 
 
 def mask_settings_key(p, masks):
@@ -311,9 +312,12 @@ def cached_final_skin_mask(p, *, base_mask=None, state=None, commit_guard=None):
                 if not current:
                     raise Superseded()
                 progress.call("Reusing cached full-resolution skin mask", lambda: None)
-                STATE["full_mask_status_entry"] = (saved[0], mask_request_key(p))
+                STATE["full_mask_status_entry"] = (saved[0], mask_request_key(p, state=state))
                 return tuple(None if a is None else a.view() for a in saved[1:])
-        STATE["full_mask_cache"] = None
+        with guard() as current:
+            if not current:
+                raise Superseded()
+            STATE["full_mask_cache"] = None
         def prepare():
             base = base_mask if base_mask is not None else base_skin_mask(img, masks, p, p["S"])
             return D.combined_mask(img, p["S"], base, p["shadows"], p["highlights"],
@@ -337,17 +341,18 @@ def cached_final_skin_mask(p, *, base_mask=None, state=None, commit_guard=None):
                     if a is not None:
                         a.flags.writeable = False
                 STATE["full_mask_cache"] = (key, *arrays)
-                STATE["full_mask_status_entry"] = (key, mask_request_key(p))
+                STATE["full_mask_status_entry"] = (key, mask_request_key(p, state=state))
                 return tuple(None if a is None else a.view() for a in arrays)
         progress.call("Full-resolution mask exceeds cache budget; not retained", lambda: None)
         return arrays
 
 
-def mask_request_key(p):
-    return (STATE.get("landmark_generation"), STATE.get("path"), STATE.get("icc"), STATE.get("source_icc"),
-            id(STATE["img"]), id(STATE["source_img"]),
-            id(STATE["masks"]), tuple((key, id(a)) for key, a in (STATE["masks"] or {}).items()),
-            mask_settings_key(p, STATE["masks"]))
+def mask_request_key(p, *, state=None):
+    state = STATE if state is None else state
+    return (state.get("landmark_generation"), state.get("path"), state.get("icc"), state.get("source_icc"),
+            id(state["img"]), id(state["source_img"]),
+            id(state["masks"]), tuple((key, id(a)) for key, a in (state["masks"] or {}).items()),
+            mask_settings_key(p, state["masks"]))
 
 
 def precache_mask(job, guard):
@@ -355,7 +360,7 @@ def precache_mask(job, guard):
     # Background progress owns its record; never append to a completed preview.
     token = f"mask-precache-{time.monotonic_ns()}"
     try:
-        with progress.operation(token):
+        with FULL_RESOLUTION_LOCK, progress.operation(token), D.colour_mode(state["colour_mode"]):
             cached_final_skin_mask(p, state=state, commit_guard=guard)
     finally:
         progress.snapshot(token, consume=True)
@@ -377,15 +382,24 @@ def layer_digest(array):
     return (array.shape, array.dtype.str, digest.digest())
 
 
-def layer_source_key(source):
-    doc = BRIDGE.get("doc") or {}
-    return (STATE.get("source_kind"), doc.get("depth"), layer_digest(source),
-            hashlib.sha256(STATE.get("source_icc") or b"").digest(),
-            hashlib.sha256(STATE.get("icc") or b"").digest())
+def layer_source_key(source, *, state=None):
+    depth = (BRIDGE.get("doc") or {}).get("depth") if state is None else state["depth"]
+    state = STATE if state is None else state
+    return (state.get("source_kind"), depth, layer_digest(source),
+            hashlib.sha256(state.get("source_icc") or b"").digest(),
+            hashlib.sha256(state.get("icc") or b"").digest())
 
 
 def layer_reserve(source):
     return LAYER_MEMORY_RESERVE + source.shape[0] * source.shape[1] * 64
+
+
+def lookup_layers(key, reserve, commit_guard):
+    guard = commit_guard if commit_guard is not None else lambda: nullcontext(True)
+    with guard() as current:
+        if not current:
+            raise Superseded()
+        return LAYER_CACHE.get(key, reserve)
 
 
 def retain_layers(key, arrays, reserve, commit_guard=None):
@@ -399,10 +413,10 @@ def retain_layers(key, arrays, reserve, commit_guard=None):
             progress.call("Layer cache skipped (memory budget, available RAM, or array layout)", lambda: None)
 
 
-def cached_fs_split(source, frequency, commit_guard=None, workers=None):
-    key = ("fs-split-v1", layer_source_key(source), frequency["method"], frequency["radius"])
+def cached_fs_split(source, frequency, commit_guard=None, workers=None, *, state=None):
+    key = ("fs-split-v1", layer_source_key(source, state=state), frequency["method"], frequency["radius"])
     reserve = layer_reserve(source)
-    saved = LAYER_CACHE.get(key, reserve)
+    saved = lookup_layers(key, reserve, commit_guard)
     if saved is not None:
         progress.call("Reusing cached Color and Detail", lambda: None)
         return key, {"color": saved[0], "detail": saved[1]}
@@ -420,7 +434,7 @@ def fs_blur_key(key, mask, frequency):
 def cached_fs_blur(key, color, mask, frequency, reserve, commit_guard=None, cache_key=None):
     blur_mask = mask if frequency["blur_mask"] else None
     blur_key = cache_key if cache_key is not None else fs_blur_key(key, mask, frequency)
-    saved = LAYER_CACHE.get(blur_key, reserve)
+    saved = lookup_layers(blur_key, reserve, commit_guard)
     if saved is not None:
         progress.call("Reusing cached skin-aware Blur", lambda: None)
         return saved[0]
@@ -448,31 +462,36 @@ def layer_mask_key(p, masks):
     return (mask_settings_key(p, masks), tuple((key, layer_digest(masks[key])) for key in used))
 
 
-def cached_dnb_bands(p, kind, *, mask=None, commit_guard=None):
-    img = STATE["img"] if kind == "masked" else STATE["source_img"]
+def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, between_bands=None):
+    img = (STATE if state is None else state)["img" if kind == "masked" else "source_img"]
+    masks = (STATE if state is None else state)["masks"]
     if kind == "masked":
-        identity = layer_mask_key(p, STATE["masks"])
-        total, structure = cached_final_skin_mask(p, commit_guard=commit_guard)
+        identity = layer_mask_key(p, masks)
+        total, structure = cached_final_skin_mask(p, state=state, commit_guard=commit_guard)
+        if between_bands is not None:
+            between_bands()
     else:
         if mask is None:
             raise ValueError("Combine requires its full-resolution mask")
         identity = layer_digest(mask)
         total, structure = mask, None
-    source_key = layer_source_key(img)
+    source_key = layer_source_key(img, state=state)
     indices = ([1] if p["band1_on"] else []) + ([2] if p["second_band"]["on"] else [])
     keys, layers = [], []
     base = None
     for index in indices:
         key = layer_band_key(p, source_key, identity, kind, index)
         keys.append(key)
-        saved = LAYER_CACHE.get(key, layer_reserve(img))
+        saved = lookup_layers(key, layer_reserve(img), commit_guard)
         if saved is not None:
             progress.call("Reusing cached D&B layers", lambda: None)
             layers.append((index, saved[0]))
             continue
         if kind == "masked" and base is None:
             base = progress.call("Preparing D&B base skin/color mask", base_skin_mask,
-                                 img, STATE["masks"], p, p["S"])
+                                 img, masks, p, p["S"])
+            if between_bands is not None:
+                between_bands()
         second = {**p["second_band"], "on": index == 2}
         kwargs = {"mask": base, "shadows": p["shadows"], "highlights": p["highlights"],
                   "tone_strength": p["tone_strength"], "protect": p["protect"],
@@ -485,6 +504,8 @@ def cached_dnb_bands(p, kind, *, mask=None, commit_guard=None):
         pixels = result[0][1]
         retain_layers(key, (pixels,), layer_reserve(img), commit_guard)
         layers.append((index, pixels))
+        if between_bands is not None:
+            between_bands()
     return layers, total, keys
 
 
@@ -498,6 +519,16 @@ def mask_cache_status():
     return status
 
 
+def full_resolution_inputs():
+    # Called under the preview lock. Load/Get replaces these arrays and the mask
+    # mapping as a unit; neither preview rendering nor preparation edits them.
+    state = {key: STATE.get(key) for key in ("img", "source_img", "masks", "path",
+             "landmark_generation", "icc", "source_icc", "source_kind", "source_opaque", "skintone_error")}
+    state["depth"] = (BRIDGE.get("doc") or {}).get("depth")
+    state["colour_mode"] = D._colour_mode.get() or D.COLOUR["mode"]
+    return state
+
+
 def queue_mask_precache(p):
     if p["mode"] not in ("mask", "dnb", "frequency", "combine"):
         return
@@ -506,14 +537,19 @@ def queue_mask_precache(p):
     if count > FULL_MASK_CACHE_LIMIT:
         MASK_PRECACHE.skip(mask_request_key(p), "Background mask skipped: exceeds the 256 MiB cache budget.")
         return
-    state = {key: STATE.get(key) for key in ("img", "source_img", "masks", "path",
-                                             "landmark_generation", "icc", "source_icc")}
-    MASK_PRECACHE.request(mask_request_key(p), (deepcopy(p), state))
+    MASK_PRECACHE.request(mask_request_key(p), (deepcopy(p), full_resolution_inputs()))
 
 
-def precache_layers(job, guard):
-    modes, source, generation, stamp = job
+def precache_layers(job, scheduler_guard):
+    modes, state, stamp = job
+    source, generation = state["source_img"], state["landmark_generation"]
     held = False
+
+    @contextmanager
+    def guard():
+        with scheduler_guard() as current:
+            yield (current and generation == STATE.get("landmark_generation")
+                   and all(STATE.get(key) is state[key] for key in ("source_img", "img", "masks")))
 
     def check(message=None):
         with guard() as current:
@@ -540,34 +576,28 @@ def precache_layers(job, guard):
             check()
             if (not FOREGROUND_WAITING.is_set()
                     and MASK_PRECACHE.status()["status"] not in ("queued", "running")
-                    and FULL_MASK_LOCK.acquire(blocking=False)):
-                if LOCK.acquire(blocking=False):
-                    if not FOREGROUND_WAITING.is_set() and MASK_PRECACHE.status()["status"] not in ("queued", "running"):
-                        held = True
-                        return
-                    LOCK.release()
-                FULL_MASK_LOCK.release()
+                    and FULL_RESOLUTION_LOCK.acquire(blocking=False)):
+                if not FOREGROUND_WAITING.is_set() and MASK_PRECACHE.status()["status"] not in ("queued", "running"):
+                    held = True
+                    return
+                FULL_RESOLUTION_LOCK.release()
             time.sleep(.05)
 
     def cooperate():
         nonlocal held
-        if FOREGROUND_WAITING.is_set():
-            LOCK.release()
-            FULL_MASK_LOCK.release()
+        check()
+        if FOREGROUND_WAITING.is_set() or MASK_PRECACHE.status()["status"] in ("queued", "running"):
+            FULL_RESOLUTION_LOCK.release()
             held = False
             acquire()
             check()
-            if STATE["source_img"] is not source or STATE.get("landmark_generation") != generation:
-                raise Superseded()
 
     check("Waiting for mask preparation or foreground work")
     acquire()
     token = f"layer-precache-{time.monotonic_ns()}"
     try:
-        with progress.operation(token):
+        with progress.operation(token), D.colour_mode(state["colour_mode"]):
             check()
-            if STATE["source_img"] is not source or STATE.get("landmark_generation") != generation:
-                raise Superseded()
             fs = modes.get("frequency")
             combine = modes.get("combine")
             dnb = modes.get("dnb")
@@ -586,18 +616,18 @@ def precache_layers(job, guard):
             def prepare_frequency():
                 if fs["directional"]["on"]:
                     raise Skipped("Directional Blur is not precached.")
-                validate_skintone_source()
+                validate_skintone_source(state)
                 admit(source, source.nbytes * 2)
                 workers = min(32, os.cpu_count() or 1, max(1, source.shape[0] * source.shape[1] // 1_000_000))
                 check("Checking or preparing Color and Detail")
-                key, layers = cached_fs_split(source, fs["frequency"], guard, workers=workers)
+                key, layers = cached_fs_split(source, fs["frequency"], guard, workers=workers, state=state)
                 cooperate()
                 keys = [key]
                 check()
                 if fs["frequency"]["on"]:
                     admit(source, source.nbytes)
                     check("Preparing mask for Blur")
-                    mask = full_skin_mask(fs, commit_guard=guard)
+                    mask = full_skin_mask(fs, state=state, commit_guard=guard)
                     cooperate()
                     check("Checking or preparing Blur")
                     blur_key = fs_blur_key(key, mask, fs["frequency"])
@@ -616,9 +646,11 @@ def precache_layers(job, guard):
                 try:
                     if not (dnb["band1_on"] or dnb["second_band"]["on"]):
                         raise Skipped("Enable a D&B band to prepare layers.")
-                    admit(STATE["img"], STATE["img"].shape[0] * STATE["img"].shape[1] * 4)
+                    img = state["img"]
+                    admit(img, img.shape[0] * img.shape[1] * 4)
                     check("Checking or preparing standalone D&B bands")
-                    _, _, keys = cached_dnb_bands(dnb, "masked", commit_guard=guard)
+                    _, _, keys = cached_dnb_bands(dnb, "masked", state=state, commit_guard=guard,
+                                                  between_bands=cooperate)
                     cooperate()
                     tab("dnb", "ready", "Matching standalone D&B bands are cached", keys)
                 except (Skipped, ValueError) as error:
@@ -629,9 +661,10 @@ def precache_layers(job, guard):
                     if need_bands and (len(modes) > 1 or combine["combine"]["dnb_mix"] > 0):
                         admit(source, source.shape[0] * source.shape[1] * 4)
                         check("Checking or preparing Combine D&B bands")
-                        mask = full_skin_mask(combine, commit_guard=guard)
+                        mask = full_skin_mask(combine, state=state, commit_guard=guard)
                         cooperate()
-                        _, _, band_keys = cached_dnb_bands(combine, "unmasked", mask=mask, commit_guard=guard)
+                        _, _, band_keys = cached_dnb_bands(combine, "unmasked", mask=mask, state=state,
+                                                           commit_guard=guard, between_bands=cooperate)
                         cooperate()
                         with guard() as current:
                             if not current:
@@ -656,8 +689,7 @@ def precache_layers(job, guard):
     finally:
         progress.snapshot(token, consume=True)
         if held:
-            LOCK.release()
-            FULL_MASK_LOCK.release()
+            FULL_RESOLUTION_LOCK.release()
 
 
 LAYER_PRECACHE = MaskPrecache(precache_layers, delay=1.5, name="layer-precache")
@@ -680,8 +712,8 @@ def layer_cache_status():
 
 
 def queue_layer_precache(p, stamp=None, raw=None):
-    source = STATE.get("source_img")
-    generation = STATE.get("landmark_generation")
+    state = full_resolution_inputs()
+    source, generation = state["source_img"], state["landmark_generation"]
     modes, invalid = {}, {}
     if raw is None:
         modes[p["mode"]] = p
@@ -705,13 +737,12 @@ def queue_layer_precache(p, stamp=None, raw=None):
     with LAYER_PRECACHE.condition:
         LAYER_PRECACHE_ACTIVE.update(mode=p["mode"], generation=generation, stamp=stamp,
                                     tabs=tabs, budget_note=note)
-    if source is None:
-        LAYER_PRECACHE.skip(signature, "No source image to prepare.")
-        return
-    if not STATE.get("source_opaque"):
-        LAYER_PRECACHE.skip(signature, "Layer preparation is unavailable for a transparent source.")
-        return
-    LAYER_PRECACHE.request(signature, (deepcopy(modes), source, generation, stamp))
+        if source is None:
+            LAYER_PRECACHE.skip(signature, "No source image to prepare.")
+        elif not state["source_opaque"]:
+            LAYER_PRECACHE.skip(signature, "Layer preparation is unavailable for a transparent source.")
+        else:
+            LAYER_PRECACHE.request(signature, (deepcopy(modes), state, stamp))
 
 
 def matching_layer_preparation(req):
@@ -2390,9 +2421,15 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                 LAYER_PRECACHE.reset("Preparation stopped by another action; run a preview to prepare again.")
             token = req.pop("_progress", None)
             with progress.operation(token):
-                with (nullcontext() if chart_request else foreground_lock()):
+                preview_request = self.path == "/api/run"
+                with (nullcontext() if chart_request else foreground_lock(full_resolution=not preview_request)):
                     if same_layer_preparation:
                         same_layer_preparation = matching_layer_preparation(req)
+                    if not chart_request and not same_layer_preparation:
+                        # Another preview may have queued new work while this request waited.
+                        with LAYER_PRECACHE.condition:
+                            if LAYER_PRECACHE.signature is not None:
+                                LAYER_PRECACHE.reset("Preparation stopped by another action; run a preview to prepare again.")
                     if self.path in ("/api/pc/send", "/api/pc/send_layers"):
                         req["frequency_transfer"] = read_global_settings()["layer_transfer"]
                     mask_params = None

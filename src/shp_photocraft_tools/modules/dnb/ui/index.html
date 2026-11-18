@@ -146,7 +146,7 @@
         </div>
       </details>
       <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
-      <div class="row"><label style="width:auto" title="After a settled preview on any skin tab, prepare reusable full-resolution FS, standalone D&amp;B and Combine layers serially when enough RAM is available. Foreground operations may wait for a calculation already in progress."><input id="layerPrecache" type="checkbox" checked> precache full-resolution layers</label></div>
+      <div class="row"><label style="width:auto" title="After a settled preview on any skin tab, prepare reusable full-resolution FS, standalone D&amp;B and Combine layers serially when enough RAM is available. Previews can run during preparation; Send may wait for the current stage."><input id="layerPrecache" type="checkbox" checked> precache full-resolution layers</label></div>
       <details id="g-pose">
         <summary>Pose analysis backend</summary>
         <div class="row"><label for="poseBackend">backend</label><select id="poseBackend"><option value="rtmlib">rtmpose / rtmlib (default)</option><option value="google-full">google full (experimental, isolated)</option><option value="opencv-zoo">opencv zoo mediapipe (experimental, cpu)</option></select></div>
