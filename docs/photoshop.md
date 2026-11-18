@@ -2,6 +2,9 @@
 
 ## Status and scope
 
+For where Photoshop capture and Send fit into the rest of the backend, see the
+[Skin Tools developer guide](skin-tools-architecture.md).
+
 This branch implements a local UXP connector and a separate Skin Tools editor adapter.
 The user confirmed live image capture and layer sending with version 0.1.3.
 Version 0.1.6's experimental native Hue Color Lookup failed in Photoshop with

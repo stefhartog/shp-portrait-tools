@@ -161,4 +161,5 @@ ComfyUI and the selected generation models.
 - [Fresh Linux setup](docs/portrait-tools-fresh-linux-setup.md) — step-by-step installation.
 - [Model and ComfyUI requirements](MODELS.md) — model files, nodes and licenses.
 - [Detailed feature notes](docs/portrait-tools-for-dummies-draft.md) — controls and workflows.
+- [Skin Tools developer guide](docs/skin-tools-architecture.md) — module boundaries, request flows, and focused tests.
 - [Source provenance](PROVENANCE.md) — upstream project and model references.

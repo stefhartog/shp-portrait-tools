@@ -1,5 +1,8 @@
 # dnb: scale analysis for automatic dodge & burn
 
+> Historical standalone project notes. For the current implementation and test
+> commands, see the [Skin Tools developer guide](../skin-tools-architecture.md).
+
 Goal: an automatic dodge & burn tool (Linux standalone first, later Windows/macOS and PhotoCraft). The first
 building block is **scale analysis**: how many pixels a subject occupies, so brush radii and filter sizes can be
 expressed relative to the subject instead of in raw pixels.

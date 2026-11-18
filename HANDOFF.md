@@ -69,10 +69,13 @@ stale completions; failed images report an error while keeping a valid prior fra
 
 ## Architecture and entrypoints
 
+For the newer Skin Tools module split, use the [Skin Tools developer guide](docs/skin-tools-architecture.md).
+The table below gives the broader application context from this handoff.
+
 | Surface | Responsibility |
 |---|---|
 | `modules/crop/` | AI Fill HTTP UI/server: Crop & Expand and Patch Fill, Comfy graphs, generated RGBA insertion. Only expansion resizes/crops the target canvas. |
-| `modules/dnb/` | Skin Tools shared source/analysis/UI/server: Skin Mask, FS & Tone, Dodge & Burn and Combine. Engines are reused, not copied into Combine. |
+| `modules/dnb/` | Skin Mask, FS & Tone, Dodge & Burn and Combine share one HTTP service. Source state, previews, background preparation, full-resolution assembly, and transfers have separate modules; Combine reuses the same engines. |
 | `shared/ui/` | Packaged local CSS, theme and lifecycle scripts, served identically by both modules. No Git CSS dependency/CDN. |
 | `shared/photocraft/` | Auth/config/env precedence, JSON-lines transport, reconnect/errors, document/session negotiation and merged-document fetch. Module-specific application remains separate. |
 | `launcher.py`, `supervisor.py`, `shell/` | Identity-verified owned startup, fixed proxy, mounted views, mode handshake, controls and lifecycle. |

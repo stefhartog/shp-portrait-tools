@@ -1,5 +1,8 @@
 # dnb handoff
 
+> Historical standalone project handoff. For current code ownership and request
+> flow, see the [Skin Tools developer guide](../skin-tools-architecture.md).
+
 Automatic dodge & burn for portraits. Python prototype, used as an add-on for PhotoCraft. A Rust port (Windows/macOS,
 PhotoCraft plug-in) is planned but deferred: iterate on the Python version first.
 
