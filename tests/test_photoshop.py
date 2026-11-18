@@ -530,7 +530,7 @@ class AdapterTests(unittest.TestCase):
                                 time.sleep(.002)
                         self.assertIsNotNone(job)
                         self.assertEqual(job["kind"], "status")
-                        self.assertTrue(U.LOCK.locked())
+                        self.assertTrue(U.CACHE_COORDINATOR.preview_lock.locked())
                         code, response = request("POST", "/api/photoshop/reply",
                                                  {"request": job["request"], "value": {"result": {"doc": None}}},
                                                  {**headers, "Content-Type": "application/json"})

@@ -150,7 +150,7 @@ class BatchApiTests(unittest.TestCase):
             self.assertEqual(args[2]["combine"]["fs_mix"], 55)
             return real_combine(*args, **kwargs)
 
-        with U.LOCK, progress.operation("batch-snapshot-12345"), \
+        with U.CACHE_COORDINATOR.preview_lock, progress.operation("batch-snapshot-12345"), \
              patch.object(U.M, "pick_target", side_effect=self.target) as analyze, \
              patch.object(U.M, "person_box", return_value=(0, 0, 128, 96)), \
              patch.object(U.K, "skin_mask", side_effect=self.components), \
@@ -260,7 +260,7 @@ class BatchApiTests(unittest.TestCase):
             progress.cancel_batch("batch-cancel-load-12345")
             return original(*args, **kwargs)
 
-        with progress.operation("batch-cancel-load-12345"), U.LOCK, \
+        with progress.operation("batch-cancel-load-12345"), U.CACHE_COORDINATOR.preview_lock, \
              patch.object(U, "prepare_loaded_image", side_effect=load), \
              patch.object(U.M, "pick_target", side_effect=AssertionError("analysis after cancellation")):
             result = U.api_batch({"paths": [str(self.image), str(other)], "settings": self.request()})

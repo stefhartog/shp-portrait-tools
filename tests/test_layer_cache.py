@@ -70,8 +70,8 @@ class LayerSendCacheTests(unittest.TestCase):
 
         for item in (patch.object(U, "STATE", self.state),
                      patch.object(U, "BRIDGE", {"doc": {"index": 1}, "b": None}),
-                     patch.object(U, "LAYER_PRECACHE_RECORDS", {}),
-                     patch.object(U, "LAYER_PRECACHE_ACTIVE", {"mode": None, "stamp": None, "generation": None, "tabs": {}, "budget_note": None}),
+                     patch.object(U.CACHE_COORDINATOR, "layer_records", {}),
+                     patch.object(U.CACHE_COORDINATOR, "layer_active", {"mode": None, "stamp": None, "generation": None, "tabs": {}, "budget_note": None}),
                      patch.dict(U.EDITOR, selected="photocraft"),
                      patch.object(U, "bridge", return_value=FakeBridge()),
                      patch.object(U, "read_global_settings", return_value={"mask_placement": "folder"}),
@@ -260,14 +260,14 @@ class LayerSendCacheTests(unittest.TestCase):
         self.state["masks"] = {"A": np.full(shape, .8, np.float32),
                                "features": np.zeros(shape, np.float32),
                                "colour": np.ones(shape, np.float32)}
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
-        with patch.object(U, "LAYER_PRECACHE", scheduler):
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
                 for mode in ("dnb", "combine"):
                     req = {**PARAMS, "mode": mode, "S": 181, "frequency": {"on": False, "radius": 2},
                            "skintone": {"on": False}}
                     p = U.parse_params(req)
-                    U.queue_layer_precache(p)
+                    U.CACHE_COORDINATOR.queue_layer_precache(p)
                     self.assertEqual(self.settle(scheduler)["status"], "ready")
                     with patch.object(D, "band_stack", wraps=D.band_stack) as stack:
                         U.api_pc_send_layers(req)
@@ -299,18 +299,18 @@ class LayerSendCacheTests(unittest.TestCase):
         return scheduler.status()
 
     def test_mask_dwell_prepares_all_modes_and_reuses_only_unchanged_bands(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         req = {**PARAMS, "mode": "mask", "S": 181,
                "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                "second_band": {"on": True, "lo": 2, "hi": 20, "strength": .7},
                "skintone": {"on": False}}
-        with patch.object(U, "LAYER_PRECACHE", scheduler), \
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), \
              patch.object(FS, "split", wraps=FS.split) as split, \
              patch.object(D, "band_stack", wraps=D.band_stack) as stack:
             try:
-                U.queue_layer_precache(U.parse_params(req), "first", req)
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(req), "first", req)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                records = U.layer_cache_status()["records"]
+                records = U.CACHE_COORDINATOR.layer_cache_status()["records"]
                 self.assertTrue(all(records[mode]["cached"] for mode in ("frequency", "dnb", "combine")))
                 self.assertEqual((split.call_count, stack.call_count), (1, 4))
                 for mode in ("frequency", "dnb", "combine"):
@@ -318,25 +318,25 @@ class LayerSendCacheTests(unittest.TestCase):
                 self.assertEqual((split.call_count, stack.call_count), (1, 4))
 
                 changed = {**req, "strength": .4}
-                U.queue_layer_precache(U.parse_params(changed), "second", changed)
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(changed), "second", changed)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
                 self.assertEqual((split.call_count, stack.call_count), (1, 6))
-                self.assertTrue(all(U.layer_cache_status()["records"][mode]["cached"]
+                self.assertTrue(all(U.CACHE_COORDINATOR.layer_cache_status()["records"][mode]["cached"]
                                     for mode in ("frequency", "dnb", "combine")))
 
                 changed = {**changed, "second_band": {**req["second_band"], "strength": .4}}
-                U.queue_layer_precache(U.parse_params(changed), "third", changed)
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(changed), "third", changed)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
                 self.assertEqual((split.call_count, stack.call_count), (1, 8))
 
                 changed = {**changed, "frequency": {**req["frequency"], "radius": 3}}
-                U.queue_layer_precache(U.parse_params(changed), "fourth", changed)
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(changed), "fourth", changed)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
                 self.assertEqual((split.call_count, stack.call_count), (2, 8))
 
                 self.state["source_img"][0, 0, 0] += .01
                 self.state["landmark_generation"] += 1
-                U.queue_layer_precache(U.parse_params(changed), "fifth", changed)
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(changed), "fifth", changed)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
                 self.assertEqual((split.call_count, stack.call_count), (3, 12))
             finally:
@@ -371,26 +371,26 @@ class LayerSendCacheTests(unittest.TestCase):
         class Source:
             shape = (7008, 4672, 3)
             nbytes = 7008 * 4672 * 3 * 4
-        scheduler = MaskPrecache(U.precache_layers, delay=10)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=10)
         req = {**PARAMS, "mode": "mask", "S": 181, "second_band": {"on": True}}
         U.LAYER_CACHE.limit = 2 * 1024**3
         retained = Source.nbytes * 3 + Source.shape[0] * Source.shape[1] * 4 * 4
         self.assertGreater(retained, 1536 * 1024**2)
         self.assertLess(retained, U.LAYER_CACHE.limit)
-        with patch.object(U, "LAYER_PRECACHE", scheduler):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
                 self.state["source_img"] = Source()
-                U.queue_layer_precache(U.parse_params(req), "fit", req)
-                self.assertIsNone(U.layer_cache_status()["budget_note"])
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(req), "fit", req)
+                self.assertIsNone(U.CACHE_COORDINATOR.layer_cache_status()["budget_note"])
                 self.state["source_img"] = type("Large", (), {"shape": (10000, 8000, 3),
                                                                "nbytes": 10000 * 8000 * 3 * 4})()
-                U.queue_layer_precache(U.parse_params(req), "large", req)
-                self.assertIn("Some components may be evicted", U.layer_cache_status()["budget_note"])
+                U.CACHE_COORDINATOR.queue_layer_precache(U.parse_params(req), "large", req)
+                self.assertIn("Some components may be evicted", U.CACHE_COORDINATOR.layer_cache_status()["budget_note"])
             finally:
                 scheduler.close()
 
     def test_mask_preview_http_prepares_all_tab_records(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
@@ -399,9 +399,9 @@ class LayerSendCacheTests(unittest.TestCase):
                "layer_cache_revision": "global", "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                "skintone": {"on": False}, "second_band": {"on": True}}
         try:
-            with patch.object(U, "LAYER_PRECACHE", scheduler), \
+            with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), \
                  patch.object(U, "api_run", return_value={"version": 1}), \
-                 patch.object(U, "queue_mask_precache"):
+                 patch.object(U.CACHE_COORDINATOR, "queue_mask_precache"):
                 request = Request(base + "/api/run", json.dumps(req).encode(),
                                   {"Content-Type": "application/json", "Origin": base})
                 with urlopen(request, timeout=5) as response:
@@ -420,16 +420,16 @@ class LayerSendCacheTests(unittest.TestCase):
             thread.join()
 
     def test_latest_preparation_exact_pixels_and_foreground_reuse(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.04)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.04)
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
                             "frequency": {"method": "median_fast", "radius": 2, "blur_radius": 3},
                             "skintone": {"on": False}})
         newest = {**p, "frequency": {**p["frequency"], "radius": 3}}
-        with patch.object(U, "LAYER_PRECACHE", scheduler):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
                 with patch.object(FS, "split", wraps=FS.split) as split:
-                    U.queue_layer_precache(p)
-                    U.queue_layer_precache(newest)
+                    U.CACHE_COORDINATOR.queue_layer_precache(p)
+                    U.CACHE_COORDINATOR.queue_layer_precache(newest)
                     self.assertEqual(self.settle(scheduler)["status"], "ready")
                     self.assertEqual(split.call_count, 1)
                     U.send_skintone_parallel(newest)
@@ -443,31 +443,31 @@ class LayerSendCacheTests(unittest.TestCase):
                 scheduler.close()
 
     def test_tab_records_track_exact_retention_generation_and_mode(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "combine", "S": 181,
                             "frequency": {"on": False, "radius": 2},
                             "skintone": {"on": False}})
-        with patch.object(U, "LAYER_PRECACHE", scheduler):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
-                U.queue_layer_precache(p, "revision-1")
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "revision-1")
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                records = U.layer_cache_status()["records"]
+                records = U.CACHE_COORDINATOR.layer_cache_status()["records"]
                 self.assertEqual(set(records), {"combine", "combine_bands", "frequency"})
                 self.assertEqual(records["combine"], {"generation": 1, "stamp": "revision-1", "cached": True})
                 self.assertEqual(records["frequency"], {"generation": 1, "stamp": "revision-1", "cached": True})
                 self.state["landmark_generation"] = 2
-                self.assertFalse(U.layer_cache_status()["records"]["combine"]["cached"])
+                self.assertFalse(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 self.state["landmark_generation"] = 1
-                self.assertTrue(U.layer_cache_status()["records"]["combine"]["cached"])
+                self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 with patch.object(U.LAYER_CACHE, "memory", return_value=0):
-                    self.assertTrue(U.layer_cache_status()["records"]["combine"]["cached"])
+                    self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 U.LAYER_CACHE.clear()
-                self.assertFalse(U.layer_cache_status()["records"]["combine"]["cached"])
+                self.assertFalse(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
             finally:
                 scheduler.close()
 
     def test_mix_preview_renders_while_background_split_is_held(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
@@ -476,9 +476,12 @@ class LayerSendCacheTests(unittest.TestCase):
                "layer_cache_revision": "global", "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                "skintone": {"on": False}, "second_band": {"on": True}}
         started, release, foreground, full_resolution = (threading.Event() for _ in range(4))
+        release_foreground = threading.Event()
+        stage_order = []
         errors = []
         self.state.update(centre=(12, 10), avers=0)
         original_split = U.cached_fs_split
+        original_blur = U.cached_fs_blur
         original_run = U.api_run
 
         def delayed(*args, **kwargs):
@@ -486,6 +489,10 @@ class LayerSendCacheTests(unittest.TestCase):
             if not release.wait(5):
                 raise TimeoutError("test did not release split")
             return original_split(*args, **kwargs)
+
+        def blur(*args, **kwargs):
+            stage_order.append("blur")
+            return original_blur(*args, **kwargs)
 
         def run(request):
             if request.get("mix_only"):
@@ -508,24 +515,28 @@ class LayerSendCacheTests(unittest.TestCase):
 
         def wait_for_full_resolution():
             with U.foreground_lock(full_resolution=True):
+                stage_order.append("foreground")
                 full_resolution.set()
+                if not release_foreground.wait(5):
+                    errors.append(TimeoutError("test did not release foreground"))
 
         try:
-            with patch.object(U, "LAYER_PRECACHE", scheduler), \
+            with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), \
                  patch.object(U, "api_run", side_effect=run), \
-                 patch.object(U, "queue_mask_precache"), \
+                 patch.object(U.CACHE_COORDINATOR, "queue_mask_precache"), \
+                 patch.object(U, "cached_fs_blur", side_effect=blur), \
                  patch.object(U, "cached_fs_split", side_effect=delayed):
                 post(req)
                 self.assertTrue(started.wait(5))
                 sequence = scheduler.status()["sequence"]
-                self.assertTrue(U.matching_layer_preparation(
+                self.assertTrue(U.CACHE_COORDINATOR.matching_layer_preparation(
                     {**req, "mix_only": True, "combine": {"fs_mix": 40, "dnb_mix": 60}}))
-                self.assertFalse(U.matching_layer_preparation({**req, "mix_only": True, "strength": .4}))
+                self.assertFalse(U.CACHE_COORDINATOR.matching_layer_preparation({**req, "mix_only": True, "strength": .4}))
                 full_thread = threading.Thread(target=wait_for_full_resolution)
                 request_thread = threading.Thread(target=changed_mix)
                 full_thread.start()
                 try:
-                    self.assertTrue(U.FOREGROUND_WAITING.wait(3))
+                    self.assertTrue(U.CACHE_COORDINATOR.foreground_waiting.wait(3))
                     request_thread.start()
                     self.assertTrue(foreground.wait(3))
                     request_thread.join(3)
@@ -537,10 +548,15 @@ class LayerSendCacheTests(unittest.TestCase):
                     self.assertEqual(scheduler.status()["sequence"], sequence)
                     release.set()
                     self.assertTrue(full_resolution.wait(3))
+                    self.assertEqual(stage_order, ["foreground"])
+                    self.assertEqual(scheduler.status()["status"], "running")
+                    release_foreground.set()
                     self.assertEqual(self.settle(scheduler)["status"], "ready")
+                    self.assertEqual(stage_order, ["foreground", "blur"])
                     self.assertEqual(scheduler.status()["sequence"], sequence)
                 finally:
                     release.set()
+                    release_foreground.set()
                     full_thread.join(5)
                     if request_thread.ident is not None:
                         request_thread.join(5)
@@ -551,7 +567,7 @@ class LayerSendCacheTests(unittest.TestCase):
             thread.join()
 
     def test_combine_publishes_shared_fs_before_bands_and_tracks_eviction(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "combine", "S": 181,
                             "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                             "skintone": {"on": False}})
@@ -564,17 +580,17 @@ class LayerSendCacheTests(unittest.TestCase):
                 raise RuntimeError("test timed out waiting for D&B")
             return original(*args, **kwargs)
 
-        with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(D, "band_stack", side_effect=delayed):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(D, "band_stack", side_effect=delayed):
             try:
-                U.queue_layer_precache(p, "revision-1")
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "revision-1")
                 self.assertTrue(entered.wait(5))
-                status = U.layer_cache_status()
+                status = U.CACHE_COORDINATOR.layer_cache_status()
                 self.assertTrue(status["records"]["frequency"]["cached"])
                 self.assertNotIn("combine", status["records"])
                 self.assertNotIn("dnb", status["records"])
                 release.set()
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                self.assertTrue(U.layer_cache_status()["records"]["combine"]["cached"])
+                self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 frequency = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
                                             "frequency": {"on": True, "radius": 2, "blur_radius": 3},
                                             "skintone": {"on": False}})
@@ -583,11 +599,11 @@ class LayerSendCacheTests(unittest.TestCase):
                     U.send_skintone_parallel(frequency)
                     self.assertEqual(split.call_count, 0)
                     self.assertEqual(blur.call_count, 0)
-                fs_keys = U.LAYER_PRECACHE_RECORDS["frequency"][2]
+                fs_keys = U.CACHE_COORDINATOR.layer_records["frequency"][2]
                 with U.LAYER_CACHE.lock:
                     _, size = U.LAYER_CACHE.entries.pop(fs_keys[-1])
                     U.LAYER_CACHE.bytes -= size
-                status = U.layer_cache_status()["records"]
+                status = U.CACHE_COORDINATOR.layer_cache_status()["records"]
                 self.assertFalse(status["frequency"]["cached"])
                 self.assertFalse(status["combine"]["cached"])
             finally:
@@ -595,28 +611,28 @@ class LayerSendCacheTests(unittest.TestCase):
                 scheduler.close()
 
     def test_combine_does_not_claim_unprepared_directional_or_disabled_fs(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         base = {**PARAMS, "mode": "combine", "S": 181,
                 "frequency": {"on": False, "radius": 2}, "skintone": {"on": False}}
-        with patch.object(U, "LAYER_PRECACHE", scheduler):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
                 p = U.parse_params({**base, "combine": {"fs_mix": 0, "dnb_mix": 100}})
-                U.queue_layer_precache(p, "no-fs")
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "no-fs")
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                self.assertNotIn("frequency", U.layer_cache_status()["records"])
-                self.assertTrue(U.layer_cache_status()["records"]["combine"]["cached"])
+                self.assertNotIn("frequency", U.CACHE_COORDINATOR.layer_cache_status()["records"])
+                self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 p = {**p, "combine": {"fs_mix": 100, "dnb_mix": 100},
                      "directional": {**U.DB.DEFAULTS, "on": True}}
-                U.queue_layer_precache(p, "directional")
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "directional")
                 self.assertEqual(self.settle(scheduler)["status"], "skipped")
-                records = U.layer_cache_status()["records"]
+                records = U.CACHE_COORDINATOR.layer_cache_status()["records"]
                 self.assertNotEqual(records["combine"]["stamp"], "directional")
                 self.assertNotIn("frequency", records)
             finally:
                 scheduler.close()
 
     def test_stale_generation_cannot_publish_components_or_ready_status(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
                             "frequency": {"on": False, "radius": 2}})
         started, release = threading.Event(), threading.Event()
@@ -626,29 +642,29 @@ class LayerSendCacheTests(unittest.TestCase):
             if not release.wait(5):
                 raise TimeoutError("test release timed out")
             return original(*args, **kwargs)
-        with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", side_effect=slow):
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(FS, "split", side_effect=slow):
             try:
-                U.queue_layer_precache(p, "old")
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "old")
                 self.assertTrue(started.wait(5))
                 self.state["landmark_generation"] += 1
                 release.set()
                 self.assertEqual(self.settle(scheduler)["status"], "superseded")
                 self.assertEqual(U.LAYER_CACHE.bytes, 0)
-                self.assertNotIn("frequency", U.layer_cache_status()["records"])
-                self.assertNotEqual(U.layer_cache_status()["tabs"]["frequency"]["state"], "ready")
+                self.assertNotIn("frequency", U.CACHE_COORDINATOR.layer_cache_status()["records"])
+                self.assertNotEqual(U.CACHE_COORDINATOR.layer_cache_status()["tabs"]["frequency"]["state"], "ready")
             finally:
                 release.set()
                 scheduler.close()
 
     def test_low_or_unknown_memory_skips_before_allocating(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181})
-        with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", wraps=FS.split) as split:
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(FS, "split", wraps=FS.split) as split:
             try:
                 for free in (0, None):
                     U.LAYER_CACHE.memory = lambda: free
                     scheduler.reset()
-                    U.queue_layer_precache(p)
+                    U.CACHE_COORDINATOR.queue_layer_precache(p)
                     status = self.settle(scheduler)
                     self.assertEqual(status["status"], "skipped")
                     self.assertIn("RAM", status["message"])
@@ -658,12 +674,12 @@ class LayerSendCacheTests(unittest.TestCase):
                 scheduler.close()
 
     def test_mask_and_foreground_locks_exclude_preparation(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
-        with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", wraps=FS.split) as split:
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(FS, "split", wraps=FS.split) as split:
             try:
-                with U.FULL_RESOLUTION_LOCK:
-                    U.queue_layer_precache(p)
+                with U.CACHE_COORDINATOR.full_resolution_lock:
+                    U.CACHE_COORDINATOR.queue_layer_precache(p)
                     time.sleep(.15)
                     self.assertEqual(split.call_count, 0)
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
@@ -672,7 +688,7 @@ class LayerSendCacheTests(unittest.TestCase):
                 scheduler.close()
 
     def test_http_preview_enables_preparation_and_cancels_same_origin_only(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=10)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=10)
         server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
@@ -683,9 +699,9 @@ class LayerSendCacheTests(unittest.TestCase):
             with urlopen(request, timeout=5) as response:
                 return json.load(response)
         try:
-            with patch.object(U, "LAYER_PRECACHE", scheduler), \
+            with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), \
                  patch.object(U, "api_run", return_value={"version": 1}), \
-                 patch.object(U, "queue_mask_precache"):
+                 patch.object(U.CACHE_COORDINATOR, "queue_mask_precache"):
                 response = post("/api/run", {"mode": "frequency", "S": 181, "precache_layers": True})
                 self.assertEqual(response["layer_precache"]["status"], "queued")
                 post("/api/profile", {"bands": [[1, 2, 1, .2]], "strength": 1})
@@ -713,7 +729,7 @@ class LayerSendCacheTests(unittest.TestCase):
             thread.join()
 
     def test_graph_requests_are_responsive_and_do_not_cancel_running_preparation(self):
-        scheduler = MaskPrecache(U.precache_layers, delay=.01)
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
@@ -730,9 +746,9 @@ class LayerSendCacheTests(unittest.TestCase):
             with urlopen(request, timeout=2) as response:
                 return json.load(response)
         try:
-            with patch.object(U, "LAYER_PRECACHE", scheduler), patch.object(FS, "split", side_effect=slow):
+            with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(FS, "split", side_effect=slow):
                 p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
-                U.queue_layer_precache(p)
+                U.CACHE_COORDINATOR.queue_layer_precache(p)
                 self.assertTrue(started.wait(5))
                 self.assertIn("Color and Detail", scheduler.status()["message"])
                 post("/api/profile", {"bands": [[1, 2, 1, .2]], "strength": 1})

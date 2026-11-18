@@ -24,9 +24,9 @@ class MaskPrecacheTests(unittest.TestCase):
         U.STATE.update(img=img, source_img=img, masks=None, path="synthetic.png",
                        landmark_generation=1, source_icc=None, icc=None, full_mask_cache=None)
         self.p = U.parse_params({"mode": "frequency", "S": 181})
-        self.scheduler = MaskPrecache(U.precache_mask, delay=.04)
+        self.scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_mask, delay=.04)
         self.addCleanup(self.scheduler.close)
-        self.patch = patch.object(U, "MASK_PRECACHE", self.scheduler)
+        self.patch = patch.object(U.CACHE_COORDINATOR, "mask_jobs", self.scheduler)
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
@@ -40,12 +40,12 @@ class MaskPrecacheTests(unittest.TestCase):
 
     def test_debounce_latest_settings_and_ignore_fs_dnb_correction_only_edits(self):
         with patch.object(D, "combined_mask", wraps=D.combined_mask) as compute:
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             newest = {**self.p, "tone_strength": .3}
-            U.queue_mask_precache(newest)
+            U.CACHE_COORDINATOR.queue_mask_precache(newest)
             seq = self.scheduler.status()["sequence"]
-            U.queue_mask_precache({**newest, "frequency": {**newest["frequency"], "radius": 24}})
-            U.queue_mask_precache({**newest, "mode": "dnb", "bands": [(.5, 2, 1, .2)], "strength": 4})
+            U.CACHE_COORDINATOR.queue_mask_precache({**newest, "frequency": {**newest["frequency"], "radius": 24}})
+            U.CACHE_COORDINATOR.queue_mask_precache({**newest, "mode": "dnb", "bands": [(.5, 2, 1, .2)], "strength": 4})
             self.assertEqual(seq, self.scheduler.status()["sequence"])
             self.assertEqual(self.settled()["status"], "ready")
             self.assertEqual(compute.call_count, 1)
@@ -62,17 +62,17 @@ class MaskPrecacheTests(unittest.TestCase):
             return original(*args)
         with patch.object(D, "combined_mask", side_effect=slow) as compute, ThreadPoolExecutor(max_workers=1) as pool:
             began = time.perf_counter()
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             self.assertLess(time.perf_counter() - began, .05)
             self.assertTrue(started.wait(5))
-            self.assertEqual(U.mask_cache_status()["status"], "running")
-            self.assertFalse(U.mask_cache_status()["cached"])
+            self.assertEqual(U.CACHE_COORDINATOR.mask_cache_status()["status"], "running")
+            self.assertFalse(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
             began = time.perf_counter()
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             self.scheduler.status()
             self.assertLess(time.perf_counter() - began, .05)
             def send():
-                with U.LOCK:
+                with U.CACHE_COORDINATOR.preview_lock:
                     self.scheduler.select(U.mask_request_key(self.p))
                     return U.full_skin_mask(self.p)
             job = pool.submit(send)
@@ -92,10 +92,10 @@ class MaskPrecacheTests(unittest.TestCase):
                 self.assertTrue(release.wait(5))
             return original(*args)
         with patch.object(D, "combined_mask", side_effect=slow):
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             self.assertTrue(started.wait(5))
             newest = {**self.p, "tone_strength": .2}
-            U.queue_mask_precache(newest)
+            U.CACHE_COORDINATOR.queue_mask_precache(newest)
             release.set()
             self.assertEqual(self.settled()["status"], "ready")
         key = U.full_mask_key(newest, U.STATE["img"], U.STATE["masks"])
@@ -109,27 +109,27 @@ class MaskPrecacheTests(unittest.TestCase):
             self.assertTrue(release.wait(5))
             return original(*args)
         with patch.object(D, "combined_mask", side_effect=slow):
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             self.assertTrue(started.wait(5))
             self.scheduler.reset()
             U.STATE.update(img=U.STATE["img"].copy(), landmark_generation=2, full_mask_cache=None)
             release.set()
         # A new request is serialized behind the old computation and surfaces real errors.
         with patch.object(D, "combined_mask", side_effect=ValueError("mask failed")):
-            U.queue_mask_precache(self.p)
+            U.CACHE_COORDINATOR.queue_mask_precache(self.p)
             status = self.settled()
             self.assertEqual(status["status"], "error")
             self.assertIn("mask failed", status["error"])
-            self.assertFalse(U.mask_cache_status()["cached"])
+            self.assertFalse(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         self.assertIsNone(U.STATE["full_mask_cache"])
         self.assertIsNotNone(U.full_skin_mask(self.p))
 
     def test_over_budget_does_not_start_worker_and_both_normal_modes_share_jobs(self):
         for mode in ("blemish",):
-            U.queue_mask_precache({**self.p, "mode": mode})
+            U.CACHE_COORDINATOR.queue_mask_precache({**self.p, "mode": mode})
             self.assertIsNone(self.scheduler.thread)
         U.STATE["img"] = np.broadcast_to(np.float32(.5), (9000, 9000, 3))
-        U.queue_mask_precache(self.p)
+        U.CACHE_COORDINATOR.queue_mask_precache(self.p)
         self.assertIsNone(self.scheduler.thread)
         self.assertEqual(self.scheduler.status()["status"], "skipped")
         self.assertIn("budget", self.scheduler.status()["message"])
@@ -166,22 +166,22 @@ class MaskPrecacheTests(unittest.TestCase):
             thread.join()
 
     def test_cache_status_tracks_retained_mask_send_hits_stale_settings_and_sources(self):
-        U.queue_mask_precache({**self.p, "mode": "mask"})
+        U.CACHE_COORDINATOR.queue_mask_precache({**self.p, "mode": "mask"})
         self.assertEqual(self.settled()["status"], "ready")
-        self.assertTrue(U.mask_cache_status()["cached"])
+        self.assertTrue(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         # A completed job does not imply its result is still retained.
         U.STATE["full_mask_cache"] = None
-        self.assertFalse(U.mask_cache_status()["cached"])
+        self.assertFalse(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         U.full_skin_mask(self.p)
-        self.assertTrue(U.mask_cache_status()["cached"])
+        self.assertTrue(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         newest = {**self.p, "tone_strength": .2}
         U.STATE["mask_status_key"] = U.mask_request_key(newest)
-        self.assertFalse(U.mask_cache_status()["cached"])
+        self.assertFalse(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         U.full_skin_mask(newest)
-        self.assertTrue(U.mask_cache_status()["cached"])
+        self.assertTrue(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         with patch.object(D, "combined_mask", side_effect=AssertionError("reuse matching mask")):
             U.full_skin_mask({**newest, "mode": "dnb"})
-        self.assertTrue(U.mask_cache_status()["cached"])
+        self.assertTrue(U.CACHE_COORDINATOR.mask_cache_status()["cached"])
         U.STATE["img"] = U.STATE["img"].copy()
         U.STATE["mask_status_key"] = U.mask_request_key(newest)
-        self.assertFalse(U.mask_cache_status()["cached"])
+        self.assertFalse(U.CACHE_COORDINATOR.mask_cache_status()["cached"])

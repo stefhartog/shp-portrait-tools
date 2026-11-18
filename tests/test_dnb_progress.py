@@ -1454,7 +1454,7 @@ const api=async(path,body)=>{
                 self.assertTrue(any(step["label"] == "Loading image / preparing profile"
                                     for step in snapshot["steps"]))
                 self.assertFalse(snapshot["done"])
-                self.assertTrue(T.S.LOCK.locked())
+                self.assertTrue(T.S.CACHE_COORDINATOR.preview_lock.locked())
                 self.assertTrue(json.loads(self.get("/api/progress?token=other-operation")[0])["pending"])
             finally:
                 release.set()
