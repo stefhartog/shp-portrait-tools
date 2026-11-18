@@ -284,16 +284,22 @@ restarts; hide/reopen behavior; and real 24-40 MP memory/time.
 
 ## Packaging and non-developer installation
 
-The supplied ZIP is a **source bundle**, not an installer. Renaming a ZIP to CCX
-is not Adobe's supported workflow and was not done. Separately, the official Adobe
-CLI generated the current 0.1.11 auto-connect package in the development session:
+Download the [Photoshop connector 0.1.14 CCX](../plugins/photoshop/releases/0.1.14/shp.skin-tools.connector_PS.ccx)
+from the repository (use **Download raw file** on GitHub), or use the same file
+from a clone. Its SHA-256 is
+`9252b70b6088b84bdf4367c6dbd78fcada75c89a835233dfd8b758bdb185e89e`.
+The official Adobe CLI validated the package for Photoshop 28.0.
 
-```text
-files\ccx-preview-0.1.11-autoconnect\shp.skin-tools.connector_PS.ccx
-```
+On a system with Photoshop 28.0 or later, open the `.ccx` with **Creative Cloud
+Desktop** and approve the installation prompts. UXP Developer Tool is not
+required. Open the **Skin Tools Connector** panel in Photoshop, then follow the
+pairing instructions above with Tools running on the same machine.
 
-The CLI packaged 0.1.11 and reported validation against Photoshop 28.0. Its
-embedded manifest, Photoshop host target and network allowlist were inspected.
+For each connector release, commit the Adobe-generated
+`shp.skin-tools.connector_PS.ccx` under `plugins/photoshop/releases/<manifest-version>/`
+alongside the corresponding source, and update the link and SHA-256 here.
+The source ZIP is not an installer; do not rename a ZIP to CCX.
+
 The user confirmed capture and layer sending with
 0.1.3, and native Hue in 0.1.8; repeated Send, PNG copy and the folder shortcut remain unverified
 in Photoshop.
@@ -350,12 +356,9 @@ command to disable Developer Mode; it requests administrator approval:
 python -m uv tool run --from nodejs-wheel node "C:\Users\stefh\.copilot\session-state\38f4ba4b-e119-48c7-ac6d-65fb8b90c947\files\adobe-uxp-tooling\node_modules\@adobe\uxp-devtools-cli\src\uxp.js" devtools disable
 ```
 
-Adobe's supported alternative when its developer website is blank is Creative Cloud
-Desktop > **All apps** > **UXP Developer Tools**. UDT requires administrator
-privileges and prompts for Developer Mode on first launch. However, the CCX can be
-installed through Creative Cloud Desktop without UDT: open
-`shp.skin-tools.connector_PS.ccx` with Creative Cloud Desktop and approve the
-requested permissions. Installation was performed by the user for live validation.
+For developer loading, UXP Developer Tools is also available in Creative Cloud
+Desktop > **All apps**. It requires administrator privileges and prompts for
+Developer Mode on first launch.
 
 The stable ID `shp.skin-tools.connector` is an independent-development ID, not an
 Adobe Marketplace listing or entitlement.
