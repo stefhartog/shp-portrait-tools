@@ -339,7 +339,8 @@ pixel at admission. You can turn it off in Settings & Info. Previews no longer
 wait for the current full-resolution stage to finish, but background CPU and
 memory use can still slow rendering. Layer preparation defers new stages while
 foreground work is active; a full-resolution Send may wait for an in-flight
-stage rather than start another in parallel. Median Fast preparation uses multiple
+stage rather than start another in parallel. A new Load or Get prevents unfinished
+preparation for the previous source from being marked ready. Median Fast preparation uses multiple
 CPU cores; OpenCV controls parallelism for its other operations.
 
 Send Layers reuses matching Color, Detail, Blur and D&B pixels, whether prepared

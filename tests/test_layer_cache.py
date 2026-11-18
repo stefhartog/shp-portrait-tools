@@ -646,7 +646,12 @@ class LayerSendCacheTests(unittest.TestCase):
             try:
                 U.CACHE_COORDINATOR.queue_layer_precache(p, "old")
                 self.assertTrue(started.wait(5))
-                self.state["landmark_generation"] += 1
+                with U.foreground_lock():
+                    U.image_session.publish_source(
+                        self.state, {"img": self.state["img"].copy(),
+                                     "source_img": self.state["source_img"].copy(),
+                                     "masks": dict(self.state["masks"] or {})},
+                    )
                 release.set()
                 self.assertEqual(self.settle(scheduler)["status"], "superseded")
                 self.assertEqual(U.LAYER_CACHE.bytes, 0)

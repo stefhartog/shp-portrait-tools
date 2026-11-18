@@ -6,7 +6,7 @@ import json
 import threading
 import time
 
-from . import progress
+from . import image_session, progress
 from .mask_precache import MaskPrecache, Skipped, Superseded
 
 
@@ -89,9 +89,7 @@ class CacheCoordinator:
         @contextmanager
         def guard():
             with scheduler_guard() as current:
-                live = self._state()
-                yield (current and generation == live.get("landmark_generation")
-                       and all(live.get(key) is state[key] for key in ("source_img", "img", "masks")))
+                yield current and image_session.matches_source(self._state(), state)
 
         def check(message=None):
             with guard() as current:

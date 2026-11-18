@@ -50,7 +50,7 @@ from . import skintone as ST
 from . import directional_blur as DB
 from . import combine_scale as C
 from . import estimate_body_scale as B
-from . import preview_service, processing_service, progress
+from . import image_session, preview_service, processing_service, progress
 from .cache_coordinator import CacheCoordinator
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE
 from .mask_precache import Skipped, Superseded
@@ -67,10 +67,7 @@ IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 FULL_MASK_LOCK = threading.RLock()
 FULL_MASK_CACHE_LIMIT = 256 * 1024 * 1024
 PREVIEW_CACHE_LIMIT = 512 * 1024 * 1024
-STATE = {"img": None, "path": None, "S": None, "centre": None, "imgs": {}, "version": 0, "region_key": None, "region": None,
-         "masks": None, "icc": None, "source_img": None, "source_icc": None, "source_opaque": True, "skintone_error": None,
-         "seen": None, "pbox": None, "last": None, "struct": None, "avers": 0, "region_off": (0, 0), "region_box": None, "subject": None,
-         "source_kind": None}
+STATE = image_session.new_session()
 DIRS = []
 
 
@@ -474,13 +471,10 @@ def cached_dnb_bands(p, kind, *, mask=None, state=None, commit_guard=None, betwe
 
 
 def full_resolution_inputs():
-    # Called under the preview lock. Load/Get replaces these arrays and the mask
-    # mapping as a unit; neither preview rendering nor preparation edits them.
-    state = {key: STATE.get(key) for key in ("img", "source_img", "masks", "path",
-             "landmark_generation", "icc", "source_icc", "source_kind", "source_opaque", "skintone_error")}
-    state["depth"] = (BRIDGE.get("doc") or {}).get("depth")
-    state["colour_mode"] = D._colour_mode.get() or D.COLOUR["mode"]
-    return state
+    return image_session.full_resolution_snapshot(
+        STATE, depth=(BRIDGE.get("doc") or {}).get("depth"),
+        colour_mode=D._colour_mode.get() or D.COLOUR["mode"],
+    )
 
 
 def prepare_layer_components(modes, state, guard, check, cooperate, tab, record):
@@ -697,12 +691,9 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
     if masks is None:
         progress.call("Mask not generated: no usable detected scale", lambda: None)
     directory = path.parent.stat()
-    loaded = dict(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2), imgs={}, region_key=None, region=None, masks=masks, icc=icc_out,
-                 pose_backend=pose_config["backend"],
-                 seen=seen, pbox=pbox, last=None, struct=None, avers=0,
+    loaded = dict(img=img, path=str(path), S=S, centre=centre or (w / 2, h / 2), subject=centre or (w / 2, h / 2),
+                 masks=masks, icc=icc_out, pose_backend=pose_config["backend"], seen=seen, pbox=pbox,
                  source_img=source_img, source_icc=source_icc, source_opaque=opaque, skintone_error=skintone_error,
-                 landmark_generation=STATE.get("landmark_generation", 0) + 1, landmark_overrides={}, preview_cache={},
-                 full_mask_cache=None,
                  source_kind="local", source_directory=(directory.st_dev, directory.st_ino))
     loaded["pose"] = ({"kp": np.array(t["kp"], copy=True), "backend": pose_config["backend"],
                       **({"sc": np.array(t["sc"], copy=True)} if t.get("sc") is not None else {})}
@@ -716,11 +707,16 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
             "skintone_error": skintone_error, "source_kind": "local"}
     if not publish:
         return loaded, info
+    generation = publish_loaded_source(loaded, mode)
+    return {**info, "generation": generation, "directional_pose": directional_availability()}
+
+
+def publish_loaded_source(prepared, mode, *, kind="local", document=None):
     D.set_colour_mode(mode)
     CACHE_COORDINATOR.mask_jobs.reset()
-    STATE.update(loaded)
-    BRIDGE["doc"] = None
-    return {**info, "generation": STATE["landmark_generation"], "directional_pose": directional_availability()}
+    generation = image_session.publish_source(STATE, prepared, kind=kind)
+    BRIDGE["doc"] = document
+    return generation
 
 
 def batch_sources(req):
@@ -1772,12 +1768,8 @@ def load_watch_image(path, target):
         raise ValueError("export size does not match the confirmed PhotoCraft document")
     if watch_target() != target:
         raise ValueError("PhotoCraft document changed during image analysis; export again")
-    D.set_colour_mode(loaded[4])
-    CACHE_COORDINATOR.mask_jobs.reset()
-    state["source_kind"] = info["source_kind"] = "photocraft"
-    STATE.update(state)
-    BRIDGE["doc"] = target["document"]
-    return {**info, "generation": STATE["landmark_generation"], "pc_doc": BRIDGE["doc"],
+    generation = publish_loaded_source(state, loaded[4], kind="photocraft", document=target["document"])
+    return {**info, "source_kind": "photocraft", "generation": generation, "pc_doc": BRIDGE["doc"],
             "directional_pose": directional_availability()}
 
 
