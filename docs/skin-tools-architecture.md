@@ -74,10 +74,9 @@ stage and threshold and fails closed.
 ## Experimental CUDA D&B
 
 `processing_service.cached_dnb_band` selects the backend only on a full-resolution
-editable D&B cache miss (standalone D&B or Combine). CPU is the default.
-Choose **CUDA when supported (experimental)** under **Settings & Info →
-D&B layer backend**, then quit and reopen Tools. Choose **CPU** in the same
-menu and restart to disable CUDA.
+editable D&B cache miss (standalone D&B or Combine). The desktop service uses
+CUDA for D&B and final Skin Mask when available and falls back to CPU otherwise.
+Settings & Info reports the backend; it is no longer a configuration control.
 [`cuda_bands.py`](../src/shp_photocraft_tools/modules/dnb/cuda_bands.py) compiles
 the adjacent `.cu` resource using the existing Windows CUDA 13 NVRTC runtime.
 It uses device 0 with compute capability 8.0 or newer; validation so far is on
@@ -164,13 +163,11 @@ OS may retain freed memory in the process working set.
 
 **Torso + head** is the default for Open/Get, batch, and watch-folder.
 Interactive Analysis reports the Torso + head estimate and the face-led
-baseline for the same subject when Torso + head is selected. Choose
-**Settings & Info → S estimator → Baseline (face-led)** to use the previous
-estimator on the next interactive Open/Get. The selection lasts for the
-current Tools session. Typing a value in **px / 63 mm** overrides the
-automatic estimate for the current image. Batch and watch-folder estimate
-scale independently for each image; they do not inherit that override or the
-interactive estimator selection.
+baseline for the same subject when available. Typing a value in **px / 63 mm**
+overrides the automatic estimate for the current image. Batch and watch-folder
+estimate scale independently for each image; they do not inherit that override.
+The baseline estimator is retained for development but is no longer selectable
+in the desktop UI.
 
 The torso + head estimate weights shoulder-to-hip midpoint distance at 75%
 and YuNet face-box height (a head-size proxy, not a crown-to-chin measurement)

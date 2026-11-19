@@ -1,9 +1,9 @@
 # SHP Portrait Tools
 
-SHP Portrait Tools is a Linux desktop companion for portrait photography. It provides
-local skin retouching, AI-assisted canvas expansion and fill, and editable results
-that you can return to PhotoCraft. Skin analysis runs locally; image generation uses
-your own ComfyUI installation and models.
+SHP Portrait Tools is a desktop companion for portrait photography on Linux and
+Windows. It provides local skin retouching and editable results for PhotoCraft or
+Photoshop, plus AI-assisted canvas expansion and fill on Linux. Skin analysis runs
+locally; image generation uses your own ComfyUI installation and models.
 
 The tools estimate each subject's scale (S, in pixels per 63 mm), so size-based
 controls adapt to the subject instead of relying on fixed pixel dimensions—helping
@@ -26,7 +26,7 @@ needed, since automatic detection can miss or include areas.
 - **FS & Tone** — smooth skin texture and adjust skin tone while retaining detail.
 - **Dodge & Burn** — work with editable tonal bands and masks.
 - **Combine** — mix frequency-separation and dodge-and-burn results, including local batches.
-- **Settings & Info** — shared display, mask, analysis and layer-transfer options.
+- **Settings & Info** — source editor, theme, Photoshop pairing and diagnostics.
 
 The skin tools share a source image, analysis and mask settings.
 
@@ -68,39 +68,40 @@ See [MODELS.md](MODELS.md) for exact requirements.
 
 ### Using results
 
-Load a local image or connect to PhotoCraft to fetch the current document. Preview
-and compare generated or retouched results, then save locally or send editable layers
-back to PhotoCraft. PhotoCraft is optional; the main tools can work with local files.
+Load a local image or fetch the current document from a connected editor. Preview
+and compare results, then save locally or send editable layers back to PhotoCraft
+or Photoshop where supported. An editor is optional for local-file work.
 
-An experimental **Windows Photoshop 28.0 UXP connector** is available for Skin Tools.
-It adds local pairing, editable layer stacks and native Hue Color Lookup without
-replacing PhotoCraft. Capture, layer sending and native Hue were user-confirmed;
-full Photoshop fidelity and group masks still need validation. See
-[Photoshop setup and limitations](docs/photoshop.md) before loading it.
+The **Windows Photoshop 28.0 preview** is for Skin Tools. It pairs locally, reads
+opaque RGB 8/16-bit documents with the exact source ICC profile, and returns editable
+layer stacks, including native Hue Color Lookup. Full fidelity and group masks still
+need validation. See [Photoshop setup and limitations](docs/photoshop.md) and the
+[connector 0.1.14 CCX](plugins/photoshop/releases/0.1.14/shp.skin-tools.connector_PS.ccx).
 
 ## Dependencies
 
-**Required:** Linux, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/).
+**Required:** Linux or Windows, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/).
 
 **For Skin Tools:** a compatible NVIDIA driver/GPU, the CUDA-enabled Python
 dependencies, and three manually supplied ONNX models. The app does not download
 these models during installation. See [MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files).
 
-**For the native desktop window:** system GTK 3, WebKit2 4.1 and AppIndicator3
-bindings, plus a tray host. These are not installed by uv. Standalone web commands
-do not require the desktop bindings.
+**For the native desktop window:** Linux needs GTK 3, WebKit2 4.1, AppIndicator3
+bindings and a tray host; Windows needs the Edge WebView2 Runtime. Standalone web
+commands do not require these desktop components.
 
-**For AI Fill:** ComfyUI with its own supported GPU/PyTorch environment, the models
-for the selected method, and any required custom nodes. ComfyUI and its models are
-not installed by this project. A neural upscaler is optional; Lanczos resizing is
+**For AI Fill on Linux:** ComfyUI with its own supported GPU/PyTorch environment,
+the models for the selected method, and any required custom nodes. ComfyUI and its
+models are not installed by this project. A neural upscaler is optional; Lanczos resizing is
 available without one.
 
-**Optional:** PhotoCraft for editor integration; ExifTool and Perl for Sony
-autofocus-point subject selection.
+**Optional:** PhotoCraft or a licensed Photoshop installation for editor integration;
+ExifTool and Perl for Sony autofocus-point subject selection.
 
 ## Install
 
-Clone the repository into a new folder, then install its Python environment:
+On Linux, clone the repository into a new folder, then install its Python environment.
+For Windows Skin Tools, see the [Windows setup notes](docs/windows-handoff.md#windows-port-status-skin-tools-standalone).
 
 ```sh
 git clone https://github.com/stefhartog/shp-photocraft-tools.git "$HOME/shp-photocraft-tools"

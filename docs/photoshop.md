@@ -73,7 +73,7 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
 - Raw Get still receives bounded chunks into temporary request files. Tools uses
   the verified pixels and ICC directly for analysis and keeps no inbox PNG.
   Debug Save bundles identify the Photoshop document in `settings.json` without
-  linking to a source file. **PNG copy** capture still uses the inbox PNG path.
+  linking to a source file. The internal **PNG copy** diagnostic uses the inbox PNG path; it is not exposed in Settings & Info.
 - Photoshop Get checks the connector as part of the capture request rather than
   sending a separate status command first. Capture still checks the document and
   connector and reports any errors; PhotoCraft's connection check is unchanged.
@@ -96,11 +96,9 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
   require the existing native sRGB/Adobe RGB processing paths. No converted D&B
   correction is labelled as if it were native-source data.
 - Returned Color, Blur, Directional Blur, Detail and D&B are individually editable
-  pixel layers. Hue defaults to **Native Color Lookup**, a generated RGB device-link
-  ICC adjustment which updates when lower layers change. In **Settings & Info >
-  Source editor > Hue layers**, **Rendered pixels** remains available; it uses the
-  existing trilinear sampler and does not recompute when lower layers change.
-  The selected method is remembered in the UI. Native output may differ visibly
+  pixel layers. Hue uses **Native Color Lookup**, a generated RGB device-link
+  ICC adjustment which updates when lower layers change. The rendered-pixel
+  alternative is retained for development only. Native output may differ visibly
   from the preview due to interpolation or host handling and has no guaranteed
   speedup. It requires the updated connector and Tools backend.
   If Photoshop rejects the action or cannot return matching transform data, the
@@ -116,7 +114,7 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
   that can stack. Photoshop content edits may not be detected; Get again to use
   the current composite. A reconnect requires a new Get.
 - Native FS diagnostic and watch-folder editor handoff remain PhotoCraft-only.
-  PNG/TIFF/compression transfer options remain for PhotoCraft/files; Photoshop uses
+  Files and supported PhotoCraft transfers use lossless PNG; Photoshop uses
   raw lossless binary tiles for editable layers. Processing math is shared and unchanged.
 
 ## Development setup and pairing

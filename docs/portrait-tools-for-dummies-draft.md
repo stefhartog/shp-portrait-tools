@@ -39,7 +39,7 @@ Think of the app as two workspaces: **Skin Tools** for portrait adjustments, and
 | **Combine** | Combines the configured FS and D&B effects with separate mix sliders. Also contains local batch processing. | Balance the two effects and inspect **Combined**. |
 | **Crop & Expand** | AI Fill mode that repositions/resizes a frame and uses ComfyUI to generate areas outside the original picture. | Add a little space around a portrait. |
 | **Patch Fill** | AI Fill mode that replaces painted areas inside the existing picture using FLUX.1 Fill. | Paint a small area, generate alternatives, then inspect the selected result. |
-| **Settings & Info** | Global appearance, output/transfer options, mask precaching and calculation timings. | Keep defaults initially; choose output options before saving. |
+| **Settings & Info** | Editor choice, theme, Photoshop pairing, and read-only diagnostics. | Choose your editor and theme. |
 
 The four skin tabs share **one loaded image and one settings bundle**. Switching
 between them does not fetch another image or repeat its analysis. Settings hidden
@@ -84,9 +84,8 @@ models, GPU inference or offline use are ready. See [MODELS](../MODELS.md) for
 exact filenames, preparation and GPU limitations. No minimum VRAM or processing
 time is promised here.
 
-**Optional experiment:** Settings & Info now has a **Pose analysis backend** choice.
-Keep **rtmpose / rtmlib (default)** unless you deliberately want an experimental
-alternative. Google Full needs its [separate isolated runtime and model](../MODELS.md#optional-google-pose-landmarker-full-experimental),
+**Development only:** Pose defaults to **rtmpose / rtmlib**; Settings & Info
+reports the active backend but does not expose host/runtime configuration. Google Full needs its [separate isolated runtime and model](../MODELS.md#optional-google-pose-landmarker-full-experimental),
 has a two-person cap, and runs in a network-blocked worker. Its runtime NOTICE
 discloses metrics transmission; blocking egress does not disable telemetry
 generation. OpenCV Zoo instead needs its [verified local model pair](../MODELS.md#optional-opencv-zoo-mediapipe-onnx-pose-backend-experimental)
@@ -166,10 +165,9 @@ workflow, not a requirement to use every effect.
 ### If the scale estimate is wrong
 
 **Torso + head** is the automatic default for Open/Get, batch, and watch-folder.
-If the pose makes this estimate unreliable, compare it with **Baseline
-(face-led)** in Analysis. To use the baseline on the next interactive Open/Get,
-select it under **Settings & Info → S estimator**. Batch and watch-folder
-still estimate each image independently. See the [scale estimator guide](skin-tools-architecture.md#automatic-s-estimator)
+Analysis reports the face-led baseline when available for comparison. Manually
+correct the current image scale if needed. Batch and watch-folder estimate each
+image independently. See the [scale estimator guide](skin-tools-architecture.md#automatic-s-estimator)
 for the cue weights, test calibration, and fallback rules.
 
 Under **Skin Mask > Image analysis**, choose **Adjust scale landmarks**.
@@ -366,25 +364,13 @@ send repeatedly from the original Get; corrections may stack and content edits
 may not be detected. Get again to use the current composite.
 
 Editable Combine output can differ from its flattened photograph because of
-nonlinear hue adjustments, clipping and rounding. The default **Mask on
-Corrections folder** applies the shared skin mask to correction layers, leaving
-Color and Detail unmasked; the alternative per-layer setting applies masks to
-correction ingredients individually. Editable does not mean identical.
+nonlinear hue adjustments, clipping and rounding. The Corrections folder holds
+one shared skin mask, leaving Color and Detail unmasked.
 
-Under **Settings & Info > Result file / PhotoCraft layer-transfer options**:
-
-- **format** and **compression** select PNG/TIFF and lossless compressed/uncompressed
-  output for flattened skin results and supported layer transfers.
-- **exclude opaque alpha**, on for new settings, omits an all-opaque alpha channel.
-  This is not a switch for removing a meaningful mask.
-- **send layers mask** chooses **Mask on Corrections folder** (default) or
-  **Keep per-layer masks** (Color/Detail stay unmasked).
-- **parallel encoding (two encoders)** applies to supported multi-layer transfers,
-  not simultaneous batch images.
-
-These choices persist globally, independently of presets. They do not change
-AI Fill or standalone mask output. TIFF is not a proven real-world speedup and has
-a classic 4 GiB-per-file limit.
+Skin Tools uses lossless PNG for file output and supported PhotoCraft transfers,
+omits redundant fully opaque alpha, and overlaps encoding where supported
+without sending concurrent editor commands. Meaningful transparency is not
+removed by this policy. Photoshop editable layers use binary transport.
 
 ### The other Save button
 
@@ -512,7 +498,7 @@ An image without a usable detected scale fails rather than borrowing the editor'
 scale. One image's failure normally does not prevent later images being attempted.
 
 Output goes into a new numbered folder such as `shpcombine_batch_001` **inside
-the input folder**. Results are flattened RGB16 PNG/TIFF files, for example
+the input folder**. Results are flattened RGB16 PNG files, for example
 `portrait_001.png`. One `preset.json` records shared settings and per-image
 status/output information. Do not edit that file during the run. Same-stem
 inputs, such as `portrait.jpg` and `portrait.tiff`, can collide; the later output

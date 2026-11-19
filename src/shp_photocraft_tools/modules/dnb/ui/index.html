@@ -142,43 +142,14 @@
         <summary>Source editor</summary>
         <div class="row"><label for="editorSelect">editor</label><select id="editorSelect"><option value="photocraft">PhotoCraft / local files</option><option value="photoshop">Photoshop (UXP preview)</option></select></div>
         <div id="photoshopPairing" hidden>
-          <div class="row"><label for="photoshopCaptureMode">Get Image</label><select id="photoshopCaptureMode"><option value="raw">Raw pixels (default)</option><option value="png" disabled hidden>PNG copy (experimental)</option></select></div>
-          <p class="hint">PNG copy is not yet Photoshop-verified. Use only a disposable document; if rejected, choose Raw pixels and Get Image again.</p>
-          <div class="row"><label for="photoshopHueMode">Hue layers</label><select id="photoshopHueMode"><option value="native" disabled hidden>Native Color Lookup (default)</option><option value="rendered">Rendered pixels</option></select></div>
-          <p class="hint">Native Hue updates when lower layers change. Its interpolation can differ from the preview; requires the updated connector.</p>
           <button id="photoshopPair">Create pairing code</button>
           <button id="photoshopRevoke">Forget pairing</button>
           <p class="hint" id="photoshopPairCode" role="status"></p>
-          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit; raw capture requires the exact source ICC file. The updated connector can send repeatedly from the original Get, appending groups that can stack. Photoshop content edits may not be detected; Get again to use the current composite. PNG/TIFF transfer options below apply to PhotoCraft/files, not Photoshop's layer transport.</p>
+          <p class="hint">Open Skin Tools Connector in Photoshop 28.0 and enter the code. Keep its panel loaded. Preview: opaque RGB 8/16-bit; raw capture requires the exact source ICC file. The updated connector can send repeatedly from the original Get, appending groups that can stack. Photoshop content edits may not be detected; Get again to use the current composite. Hue corrections use editable Color Lookup layers and require a compatible connector.</p>
         </div>
       </details>
-      <div class="row"><label style="width:auto" title="After a settled Skin Mask/D&amp;B/FS preview, prepare the full-resolution mask in one background worker. Disable if editing feels less responsive. Send still reuses or calculates the correct mask."><input id="maskPrecache" type="checkbox" checked> precache skin mask</label></div>
-      <div class="row"><label style="width:auto" title="After a settled preview on any skin tab, prepare reusable full-resolution FS, standalone D&amp;B and Combine layers serially when enough RAM is available. Previews can run during preparation; Send may wait for the current stage."><input id="layerPrecache" type="checkbox" checked> precache full-resolution layers</label></div>
-      <div class="row"><label for="dnbLayerBackend">D&amp;B layer backend</label><select id="dnbLayerBackend"><option value="cpu">CPU (default)</option><option value="cuda">CUDA when supported (experimental)</option></select></div>
-      <p class="hint" id="dnbLayerBackendHint">Applies after quitting and reopening Tools. Experimental CUDA can produce different editable shadow and highlight values. Unsupported inputs or CUDA failures use CPU.</p>
-      <div class="row"><label for="skinMaskBackend">Skin Mask backend</label><select id="skinMaskBackend"><option value="cpu">CPU (default)</option><option value="cuda">CUDA when supported (experimental)</option></select></div>
-      <p class="hint" id="skinMaskBackendHint">Applies to Load/Get edge refinement and full-resolution mask filters after quitting and reopening Tools.</p>
-      <div class="row"><label for="scaleEstimator">S estimator</label><select id="scaleEstimator"><option value="body-priority">Torso + head (default)</option><option value="baseline">Baseline (face-led)</option></select></div>
-      <p class="hint">Applies on the next Open/Get. Torso + head uses image-calibrated test references. Batch and watch-folder use Torso + head.</p>
-      <details id="g-pose">
-        <summary>Pose analysis backend</summary>
-        <div class="row"><label for="poseBackend">backend</label><select id="poseBackend"><option value="rtmlib">rtmpose / rtmlib (default)</option><option value="google-full">google full (experimental, isolated)</option><option value="opencv-zoo">opencv zoo mediapipe (experimental, cpu)</option></select></div>
-        <div class="row"><label for="posePython">worker python</label><input id="posePython" type="text" placeholder="/absolute/path/to/pose-venv/bin/python"></div>
-        <div class="row"><label for="poseModel" id="poseModelLabel">full model</label><input id="poseModel" type="text" placeholder="/absolute/path/to/pose_landmarker_full.task"></div>
-        <button id="poseSave">Save pose backend</button>
-        <p class="hint">Applies on the next Get/load and at batch start, not to the current analysis. OpenCV Zoo uses the verified local ONNX pair with OpenCV DNN on CPU; Google requires a separate pinned runtime and networkless bubblewrap worker. Neither option replaces rtmlib automatically. MediaPipe's runtime NOTICE discloses metrics transmission; network isolation blocks egress, not telemetry generation. Both experimental backends lack whole-body eye-corner/hand cues; portrait quality is not validated. See MODELS.md for prerequisites.</p>
-        <p class="hint" id="poseHint"></p>
-      </details>
-      <details id="g-transfer" open>
-        <summary>Result file / PhotoCraft layer-transfer options</summary>
-        <div class="row"><label for="transferFormat">format</label><select id="transferFormat"><option value="png">png</option><option value="tiff">tiff</option></select></div>
-        <div class="row"><label for="transferCompression">compression</label><select id="transferCompression"><option value="compressed">lossless compressed</option><option value="none">uncompressed</option></select></div>
-        <div class="row"><label style="width:auto"><input type="checkbox" id="transferAlpha" checked> exclude opaque alpha</label></div>
-        <div class="row"><label for="maskPlacement">send layers mask</label><select id="maskPlacement"><option value="folder">Mask on Corrections folder</option><option value="layers">Keep per-layer masks</option></select></div>
-        <div class="row"><label style="width:auto"><input type="checkbox" id="transferParallel" checked> parallel encoding (two encoders)</label></div>
-        <p class="hint" id="transferHint"></p>
-        <p class="hint">Global options for flattened standalone/batch results and supported PhotoCraft layer transfers. RGB16 retains the captured ICC; masks remain grayscale PNG8. Previews, standalone ingredient layers and Crop are unchanged. Parallel encoding applies to multi-layer transfers, not a single flattened image. PhotoCraft calls stay serialized; source must remain opaque.</p>
-      </details>
+      <p class="hint" id="processingBackends"></p>
+      <p class="hint" id="poseHint"></p>
       <details id="calculationLog" open>
         <summary>Calculation timings</summary>
         <pre id="calculationLogText">No calculations yet.</pre>
@@ -342,12 +313,8 @@
 </div>
 
 <script>
-const generalSettingIds = new Set(['maskPrecache','layerPrecache','transferFormat','transferCompression','transferAlpha',
-  'transferParallel','transferHint','maskPlacement','calculationLogText','photoshopTransferLogText','dnbLayerBackend','dnbLayerBackendHint',
-  'photoshopPixelTiles','photoshopPixelTilesText',
-  'skinMaskBackend','skinMaskBackendHint','scaleEstimator',
-  'poseBackend','posePython','poseModel','poseModelLabel','poseSave','poseHint',
-  'editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode','photoshopHueMode','photoshopCaptureMode']);
+const generalSettingIds = new Set(['processingBackends','poseHint','calculationLogText','photoshopTransferLogText',
+  'photoshopPixelTiles','photoshopPixelTilesText','editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode']);
 const $ = (id) => document.getElementById(id) ||
   (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
@@ -365,13 +332,11 @@ function directionalSettings(raw={}) {
 function uiMode(mode) {
   return mode === 'skintone' ? 'frequency' : ['dnb','mask','frequency','combine'].includes(mode) ? mode : 'dnb';
 }
-const TRANSFER_DEFAULTS = {format:'png', compressed:true, opaque_alpha:false, parallel:true};
 const state = {
   combine:{fs_mix:100,dnb_mix:100},
   mode: parent === window ? 'dnb' : 'mask', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
   directional: directionalSettings(),
-  frequencyTransfer: {...TRANSFER_DEFAULTS},
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
   strength: 1.0, tau: 1.0, edge: 0.12, maxEv: 1.0, layerBlur: 0,
   tone: {mid:0.52, range:0.87, taper:0.16, strength:1}, maskFeather: 1.0, structure: {protect:0, mm:4, thr:0.1},
@@ -733,119 +698,10 @@ $('directionalOn').onclick=event=>event.stopPropagation();
     syncDirectionalControls();syncTabs();markDirty();
   };
 });
-let maskPlacement = 'folder';
-let dnbLayerBackend = 'cpu';
-function syncDnbLayerBackend(settings) {
-  dnbLayerBackend = settings.dnb_layer_backend || 'cpu';
-  $('dnbLayerBackend').value = dnbLayerBackend;
-  const active = settings.active_dnb_layer_backend || 'cpu';
-  $('dnbLayerBackendHint').textContent = `Current mode: ${active.toUpperCase()}. ` +
-    (active !== dnbLayerBackend ? 'Quit and reopen Tools to apply. ' : '') +
-    'Experimental CUDA can produce different editable shadow and highlight values. ' +
-    'Unsupported inputs or CUDA failures use CPU; Send timings show the fallback reason.';
-}
-$('dnbLayerBackend').onchange = async () => {
-  const control = $('dnbLayerBackend');
-  if (state.busy) { control.value = dnbLayerBackend; return; }
-  setBusy(true);
-  try {
-    const saved = await api('/api/global-settings', {dnb_layer_backend:control.value});
-    syncDnbLayerBackend(saved);
-  } catch(e) {
-    control.value = dnbLayerBackend;
-    setStatus('D&B layer backend could not be saved: '+e.message, true);
-  } finally { setBusy(false); }
-};
-let skinMaskBackend = 'cpu';
-function syncSkinMaskBackend(settings) {
-  skinMaskBackend = settings.skin_mask_backend || 'cpu';
-  $('skinMaskBackend').value = skinMaskBackend;
-  const active = settings.active_skin_mask_backend || 'cpu';
-  $('skinMaskBackendHint').textContent = `Current mode: ${active.toUpperCase()}. ` +
-    (active !== skinMaskBackend ? `Pending: ${skinMaskBackend.toUpperCase()}. Quit and reopen Tools to apply. ` : '') +
-    'CUDA accelerates Load/Get edge refinement and full-resolution cache feathering, selected colour range, luminance, tone and structure. ' +
-    'Stored skin-mask components are combined on CPU. Small mask differences are possible. ' +
-    'Calculation timings show the backend used and any CPU fallback reason.';
-}
-$('skinMaskBackend').onchange = async () => {
-  const control = $('skinMaskBackend');
-  if (state.busy) { control.value = skinMaskBackend; return; }
-  setBusy(true);
-  try {
-    syncSkinMaskBackend(await api('/api/global-settings', {skin_mask_backend:control.value}));
-  } catch(e) {
-    control.value = skinMaskBackend;
-    setStatus('Skin Mask backend could not be saved: '+e.message, true);
-  } finally { setBusy(false); }
-};
-let poseConfig = {backend:'rtmlib', python:'', model:''};
+let poseBackend = 'rtmlib';
 function syncPose() {
-  $('poseBackend').value=poseConfig.backend;
-  $('posePython').value=poseConfig.python;
-  $('poseModel').value=poseConfig.model;
-  const opencv=poseConfig.backend==='opencv-zoo';
-  $('posePython').parentElement.hidden=opencv || poseConfig.backend==='rtmlib';
-  $('poseModelLabel').textContent=opencv?'models folder':'full model';
-  $('poseModel').placeholder=opencv?'Uses the verified OpenCV pair in the D&B models folder':'/absolute/path/to/pose_landmarker_full.task';
-  const current=state.imageInfo?.pose_backend;
-  $('poseHint').textContent='Saved for next source: '+poseConfig.backend+
-    (current ? '. Current image: '+current+'. Get/load again to reanalyze.' : '. No image analyzed yet.');
+  $('poseHint').textContent = 'Pose backend: ' + (state.imageInfo?.pose_backend || poseBackend);
 }
-$('poseBackend').onchange=()=>{
-  const backend=$('poseBackend').value;
-  if(backend!==poseConfig.backend && $('poseModel').value.trim()===poseConfig.model) {
-    $('poseModel').value='';
-  }
-  if(backend==='rtmlib' || backend==='opencv-zoo') $('posePython').value='';
-  $('posePython').parentElement.hidden=backend==='rtmlib' || backend==='opencv-zoo';
-  $('poseModelLabel').textContent=backend==='opencv-zoo'?'models folder':'full model';
-  $('poseModel').placeholder=backend==='opencv-zoo'?'Uses the verified OpenCV pair in the D&B models folder':'/absolute/path/to/pose_landmarker_full.task';
-};
-$('poseSave').onclick=async()=>{
-  if(state.busy) return;
-  const next={backend:$('poseBackend').value,python:$('posePython').value.trim(),model:$('poseModel').value.trim()};
-  setBusy(true);
-  try {
-    const saved=await api('/api/global-settings',{layer_transfer:{...state.frequencyTransfer},mask_placement:maskPlacement,pose:next});
-    if(!saved.pose) throw new Error('Restart Portrait Tools normally to load the updated pose backend code.');
-    poseConfig=saved.pose;
-    syncPose();
-    setStatus('Pose backend saved for the next Get/load and batch. Current image is unchanged.',false,true);
-  } catch(e) { syncPose(); setStatus('Pose backend could not be saved: '+e.message,true); }
-  finally { setBusy(false); }
-};
-function syncTransfer() {
-  const t = state.frequencyTransfer;
-  $('transferFormat').value = t.format;
-  $('transferCompression').value = t.compressed ? 'compressed' : 'none';
-  $('transferAlpha').checked = !t.opaque_alpha;
-  $('transferParallel').checked = t.parallel;
-  $('maskPlacement').value = maskPlacement;
-  $('transferHint').textContent = t.format === 'tiff'
-    ? 'TIFF uses lossless ZIP/Deflate or no compression; explicitly tagged unassociated alpha when enabled. Classic TIFF limit: 4 GiB per file.'
-    : 'PNG uses lossless Deflate level 1 or level 0 (stored blocks, not raw pixels). Alpha off writes RGB, not RGBA.';
-}
-['transferFormat','transferCompression','transferAlpha','transferParallel','maskPlacement'].forEach(id => {
-  $(id).onchange = async () => {
-    if (state.busy) return;
-    const previous = state.frequencyTransfer;
-    const previousPlacement = maskPlacement;
-    maskPlacement = $('maskPlacement').value;
-    state.frequencyTransfer = {format:$('transferFormat').value,
-      compressed:$('transferCompression').value === 'compressed',
-      opaque_alpha:!$('transferAlpha').checked, parallel:$('transferParallel').checked};
-    syncTransfer();
-    setBusy(true);
-    try { await api('/api/global-settings', {layer_transfer:{...state.frequencyTransfer}, mask_placement:maskPlacement}); }
-    catch(e) {
-      state.frequencyTransfer = previous;
-      maskPlacement = previousPlacement;
-      syncTransfer();
-      setStatus('Global settings could not be saved: '+e.message, true);
-    } finally { setBusy(false); }
-    if (maskPlacement !== previousPlacement && state.mode === 'combine') markDirty(false, true);
-  };
-});
 const skintoneSliders = {};
 [
   ['hue_center','Center',10,50,'Centre of the allowed hue arc in degrees, 10–50° with 30° at the midpoint. HSV is measured in native document RGB. Legacy values outside the slider window remain in the readout until edited.'],
@@ -1308,7 +1164,7 @@ async function loadImage() {
   setBusy(true); setStatus('Loading image...');
   let loaded = false;
   try {
-    applyLoaded(await operationApi('/api/load', {path, scale_estimator:$('scaleEstimator')?.value || 'body-priority'}));
+    applyLoaded(await operationApi('/api/load', {path}));
     loaded = true;
     await initializeHueCenter();
   } catch (e) {
@@ -1353,11 +1209,10 @@ function setBusy(b, operation=true) {
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
   $('toolMode').disabled = panelOperationBusy;
-  ['transferFormat','transferCompression','transferAlpha','transferParallel','maskPrecache','layerPrecache','poseBackend','posePython','poseModel','poseSave'].forEach(id => { $(id).disabled = panelOperationBusy; });
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcConnect').disabled = b; $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
-  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b; $('photoshopHueMode').disabled=b; $('photoshopCaptureMode').disabled=b;
+  $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
     $(id).disabled = panelOperationBusy || !state.loaded;
     $(id).classList.toggle('disabled', $(id).disabled);
@@ -1397,7 +1252,7 @@ function analysisFlags() { return {detect: $('anDetect').getAttribute('aria-pres
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).setAttribute('aria-pressed', String(v === '1')); });
 function params() {
-  return { mode: uiMode(state.mode), photoshop_hue: $('photoshopHueMode').value, combine:{...state.combine}, band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, frequency_transfer:{...state.frequencyTransfer}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
+  return { mode: uiMode(state.mode), combine:{...state.combine}, band1_on:state.band1On,second_band:{...state.secondBand}, directional:JSON.parse(JSON.stringify(state.directional)), layer_blur_at_s181:state.layerBlur, frequency: {...state.frequency}, skintone: {...state.skintone}, S: parseFloat($('S').value), bands: bandsPayload(), strength: state.strength, edge: state.edge, tau: state.tau,
            max_ev: state.maxEv, tone: {on: $('toneOn').checked, mid: state.tone.mid, range: state.tone.range, taper: state.tone.taper, strength: state.tone.strength},
            mask: {on: $('maskOn').checked, features: true, colour: true, feather: state.maskFeather, inward: true},
            structure: {protect: $('structureOn').checked ? state.structure.protect : 0, mm: state.structure.mm, thr: state.structure.thr},
@@ -1436,7 +1291,7 @@ async function apply({quiet=false}={}) {
     maskPoll=setTimeout(pollMask,100);
     let r;
     try {
-      r=await api('/api/run', {...p, generation:state.imageGeneration, precache_mask:$('maskPrecache').checked,precache_layers:$('layerPrecache').checked,layer_cache_revision:layerCacheStamp(),mix_only:mixOnlyPending,_progress:token});
+      r=await api('/api/run', {...p, generation:state.imageGeneration, layer_cache_revision:layerCacheStamp(),mix_only:mixOnlyPending,_progress:token});
     } finally {
       maskPolling=false;clearTimeout(maskPoll);previewMaskBusy=false;syncPanelAvailability();
     }
@@ -1503,17 +1358,7 @@ function invalidateMaskCacheStatus() {
   renderMaskCacheStatus({status:'idle', cached:false});
   if (temporaryLog.cache.mask) updateCacheTimingRows('mask', {status:'idle'});
 }
-$('maskPrecache').checked = localStorage.getItem('shp-mask-precache') !== '0';
-$('maskPrecache').onchange = () => {
-  localStorage.setItem('shp-mask-precache', $('maskPrecache').checked ? '1' : '0');
-  markDirty();
-};
 let layerPrecacheWatch = 0, layerWorkActive = false, layerCancelPending = Promise.resolve();
-$('layerPrecache').checked = localStorage.getItem('shp-layer-precache') !== '0';
-$('layerPrecache').onchange = () => {
-  localStorage.setItem('shp-layer-precache', $('layerPrecache').checked ? '1' : '0');
-  markDirty();
-};
 function invalidateLayerPrecache() {
   lastLayerPrecacheInfo = null;
   ++layerPrecacheWatch;
@@ -1680,8 +1525,7 @@ async function pcGet() {
     const message = path ? 'Opening local image...' : 'Getting image from selected editor...';
     setStatus(message);
     const r = await operationApi(path ? '/api/load' : '/api/pc/fetch', {
-      ...(path ? {path} : photoshop ? {photoshop_capture:$('photoshopCaptureMode').value} : {}),
-      scale_estimator:$('scaleEstimator')?.value || 'body-priority'});
+      ...(path ? {path} : {})});
     applyLoaded(r);
     loaded = true;
     await initializeHueCenter();
@@ -1749,15 +1593,7 @@ $('editorSelect').onchange = async () => {
 function setEditorUi(r) {
   $('editorSelect').value = r.editor;
   $('photoshopPairing').hidden = r.editor !== 'photoshop';
-  const native = $('photoshopHueMode').querySelector('option[value="native"]');
-  native.hidden = native.disabled = r.photoshop_hue_native !== true;
-  const saved = localStorage.getItem('shp-photoshop-hue-mode');
-  $('photoshopHueMode').value = native.disabled ? 'rendered' : saved === 'rendered' ? 'rendered' : 'native';
-  const png = $('photoshopCaptureMode').querySelector('option[value="png"]');
-  png.hidden = png.disabled = r.photoshop_png_capture !== true;
-  if (png.disabled && $('photoshopCaptureMode').value === 'png') $('photoshopCaptureMode').value = 'raw';
 }
-$('photoshopHueMode').onchange = () => localStorage.setItem('shp-photoshop-hue-mode', $('photoshopHueMode').value);
 $('photoshopPair').onclick = async () => {
   try {
     const r = await api('/api/editor/pair', {});
@@ -1932,7 +1768,6 @@ function syncMode() {
   $('g-blur').hidden = !frequency;
   $('g-directional').hidden = !frequency;
   syncDirectionalControls();
-  syncTransfer();
   $('g-skintone').hidden = !frequency;
   $('g-file').hidden = state.mode !== 'mask';
   renderAnalysisSummary();
@@ -2488,13 +2323,12 @@ async function loadPresets() {
   try {
     const global = await api('/api/global-settings');
     $('pcConnect').hidden = !global.photocraft_launch_available;
-    state.frequencyTransfer = {...TRANSFER_DEFAULTS, ...global.layer_transfer};
-    maskPlacement = global.mask_placement || 'folder';
-    syncDnbLayerBackend(global);
-    syncSkinMaskBackend(global);
-    poseConfig = global.pose || {backend:'rtmlib',python:'',model:''};
+    const dnb = (global.active_dnb_layer_backend || 'cpu').toUpperCase();
+    const mask = (global.active_skin_mask_backend || 'cpu').toUpperCase();
+    $('processingBackends').textContent = `D&B: ${dnb}; Skin Mask: ${mask}. ` +
+      (global.cuda_unavailable_reason || 'Unsupported CUDA operations fall back to CPU; see Calculation timings.');
+    poseBackend = global.pose?.backend || 'rtmlib';
     syncPose();
-    syncTransfer();
   } catch (e) { presetErr(e); }
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
   fillPresetList('default');

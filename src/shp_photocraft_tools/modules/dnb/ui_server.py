@@ -63,6 +63,47 @@ GLOBAL_SETTINGS = global_config_dir() / "settings.json"
 GLOBAL_SETTINGS_LOCK = threading.RLock()
 DNB_LAYER_BACKEND = "cpu"
 SKIN_MASK_BACKEND = "cpu"
+FIXED_OPTIONS = False
+FIXED_TRANSFER = {"format": "png", "compressed": True, "opaque_alpha": False, "parallel": True}
+CUDA_UNAVAILABLE_REASON = None
+
+
+def effective_options(settings):
+    if not FIXED_OPTIONS:
+        return settings
+    return {**settings, "layer_transfer": dict(FIXED_TRANSFER), "mask_placement": "folder"}
+
+
+def apply_request_policy(path, request):
+    if not FIXED_OPTIONS:
+        return
+    if path == "/api/run":
+        request.update(precache_mask=True, precache_layers=True)
+    if path in ("/api/load", "/api/pc/fetch", "/api/watch-folder/load"):
+        request["scale_estimator"] = "body-priority"
+    if path == "/api/pc/fetch":
+        request["photoshop_capture"] = "raw"
+    if path in ("/api/pc/send_layers", "/api/pc/send", "/api/send-result", "/api/save"):
+        request.update(frequency_transfer=dict(FIXED_TRANSFER), photoshop_hue="native")
+
+
+def configure_processing_backends(settings):
+    from . import cuda_bands
+
+    global DNB_LAYER_BACKEND, SKIN_MASK_BACKEND, CUDA_UNAVAILABLE_REASON
+    CUDA_UNAVAILABLE_REASON = None
+    if FIXED_OPTIONS:
+        try:
+            cuda_bands.device()
+        except cuda_bands.CudaUnavailable as exc:
+            CUDA_UNAVAILABLE_REASON = str(exc)
+            print(f"Skin Tools CUDA unavailable; using CPU: {exc}", flush=True)
+            DNB_LAYER_BACKEND = SKIN_MASK_BACKEND = "cpu"
+        else:
+            DNB_LAYER_BACKEND = SKIN_MASK_BACKEND = "cuda"
+    else:
+        DNB_LAYER_BACKEND = processing_service.dnb_backend_settings(settings)
+        SKIN_MASK_BACKEND = K.backend_setting(settings)
 WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 FULL_MASK_LOCK = threading.RLock()
@@ -867,7 +908,7 @@ def api_batch(req):
     settings.pop("S", None)
     settings.pop("frequency_transfer", None)
     settings.pop("pose", None)
-    global_options = read_global_settings()
+    global_options = effective_options(read_global_settings())
     transfer = global_options["layer_transfer"]
     pose_config = POSE.settings(global_options.get("pose"))
     parse_params({**settings, "S": 181})
@@ -1312,7 +1353,7 @@ def preview_key(p, view):
                     shared["pose_scores"] = np.where(np.isfinite(scores), scores, None).tolist()
     if p["mode"] == "combine":
         shared["combine"]=p["combine"]
-        shared["mask_placement"] = read_global_settings()["mask_placement"]
+        shared["mask_placement"] = mask_placement_setting()
     return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
             json.dumps(shared, sort_keys=True, allow_nan=False))
 
@@ -1552,7 +1593,7 @@ def render_directional(layers, mask, p, scale, state, directional, native, mask_
 def combined_result(source, mask, p, scale=1, *, previews=None, state=None, preview_components=None):
     """Keep the original split and vary only the standard Blur opacity."""
     state = STATE if state is None else state
-    placement = read_global_settings()["mask_placement"]
+    placement = mask_placement_setting()
     effective = {**p, "frequency": processing_service.combine_frequency(p)}
     dnb_mix=p["combine"]["dnb_mix"]/100
     cached = preview_components is not None and "layers" in preview_components
@@ -1856,7 +1897,7 @@ def validate_editor_source(p):
 
 def send_combined_layers(p):
     validate_skintone_source()
-    placement = read_global_settings()["mask_placement"]
+    placement = mask_placement_setting()
     return processing_service.combine_layers(
         p, STATE["source_img"], full_mask=full_skin_mask, skintone_layers=skintone_layers,
         cached_bands=cached_dnb_bands, mask8=u8,
@@ -1872,7 +1913,7 @@ def photoshop_hue_options(p):
 def send_band_payload(bands, mask8, **options):
     return bridge().send_skin_bands(
         bands, mask8, BRIDGE["doc"], source_icc=STATE["source_icc"],
-        mask_placement=read_global_settings()["mask_placement"], **options,
+        mask_placement=mask_placement_setting(), **options,
     )
 
 
@@ -1880,7 +1921,7 @@ def send_fs_payload(p, layers, settings, mask8, *, mask_placement=None, **option
     return bridge().send_skintone(
         layers, settings, mask8, BRIDGE["doc"], STATE["source_icc"],
         transfer=p["frequency_transfer"],
-        mask_placement=mask_placement if mask_placement is not None else read_global_settings()["mask_placement"],
+        mask_placement=mask_placement if mask_placement is not None else mask_placement_setting(),
         **options, **photoshop_hue_options(p),
     )
 
@@ -1919,7 +1960,11 @@ def api_send_result(req):
 
 
 def layer_transfer_options():
-    return read_global_settings()["layer_transfer"]
+    return dict(FIXED_TRANSFER) if FIXED_OPTIONS else read_global_settings()["layer_transfer"]
+
+
+def mask_placement_setting():
+    return "folder" if FIXED_OPTIONS else read_global_settings()["mask_placement"]
 
 
 def read_presets():
@@ -2130,9 +2175,10 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, json.dumps(read_presets()).encode(), "application/json")
         if path == "/api/global-settings":
             try:
-                return self.send(200, json.dumps({**read_global_settings(), "photocraft_launch_available": sys.platform == "win32",
+                return self.send(200, json.dumps({**effective_options(read_global_settings()), "photocraft_launch_available": sys.platform == "win32",
                                                   "active_dnb_layer_backend": DNB_LAYER_BACKEND,
-                                                  "active_skin_mask_backend": SKIN_MASK_BACKEND}).encode(), "application/json")
+                                                  "active_skin_mask_backend": SKIN_MASK_BACKEND,
+                                                  "cuda_unavailable_reason": CUDA_UNAVAILABLE_REASON}).encode(), "application/json")
             except (OSError, ValueError) as error:
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
         if path == "/api/images":
@@ -2172,6 +2218,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             if not 0 <= n <= 1024 * 1024:
                 raise ValueError("API request exceeds the 1 MiB JSON limit")
             req = json.loads(self.rfile.read(n) or b"{}")
+            apply_request_policy(self.path, req)
             if self.path == "/api/layer-precache/cancel":
                 CACHE_COORDINATOR.layer_jobs.reset("Settings changed; waiting for the updated preview.")
                 return self.send(200, b'{"cancelled":true}', "application/json")
@@ -2201,7 +2248,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                     if not chart_request:
                         CACHE_COORDINATOR.reset_layers_if_scheduled(preview_service.STOPPED)
                     if self.path in ("/api/pc/send", "/api/pc/send_layers"):
-                        req["frequency_transfer"] = read_global_settings()["layer_transfer"]
+                        req["frequency_transfer"] = layer_transfer_options()
                     mask_request = (self.path in ("/api/pc/send", "/api/pc/send_layers", "/api/send-result", "/api/save")
                                     and STATE["img"] is not None)
                     if mask_request:
@@ -2223,16 +2270,17 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
 
 
 def main():
-    global DNB_LAYER_BACKEND, SKIN_MASK_BACKEND
+    global FIXED_OPTIONS
     ap = argparse.ArgumentParser(description="SHP Portrait Tools — Skin Tools web UI")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--close-with-ui", action="store_true", help="stop after the last UI tab closes (launcher use)")
     ap.add_argument("--dir", nargs="+", default=[])
+    ap.add_argument("--development-options", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     DIRS.extend(a.dir)
     settings = restore_editor_selection()
-    DNB_LAYER_BACKEND = processing_service.dnb_backend_settings(settings)
-    SKIN_MASK_BACKEND = K.backend_setting(settings)
+    FIXED_OPTIONS = not a.development_options
+    configure_processing_backends(settings)
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
     srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")

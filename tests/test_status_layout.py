@@ -232,7 +232,7 @@ class StatusLayoutTests(unittest.TestCase):
         page.write_text(markup.replace("</head>","<style>"+stylesheet().decode()+"</style></head>"))
         command("WebDriver:Navigate",url=page.as_uri())
         defaults="const DIRECTIONAL_DEFAULTS ="+html.split("const DIRECTIONAL_DEFAULTS =",1)[1].split("function uiMode(",1)[0]
-        helper="const directionalSegments ="+html.split("const directionalSegments =",1)[1].split("function syncTransfer()",1)[0]
+        helper="const directionalSegments ="+html.split("const directionalSegments =",1)[1].split("let poseBackend",1)[0]
         panel="let panelOperationBusy"+html.split("let panelOperationBusy",1)[1].split("function previewFeedback",1)[0]
         slider_helper="function slider("+html.split("function slider(",1)[1].split("let sliderDrag",1)[0]
         result=command("WebDriver:ExecuteScript",script="""
@@ -1430,20 +1430,9 @@ class StatusLayoutTests(unittest.TestCase):
         theme = (root / "shared/ui/theme.js").read_text()
         markup = '<details id="generalSettings">' + html.split('<details class="grp" id="generalSettings">', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
         lookup = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
-        # Use the real control handlers and lookup across two documents, without a Tools server.
-        transfer = "let maskPlacement =" + html.split("let maskPlacement =", 1)[1].split("const skintoneSliders", 1)[0]
-        precache = "$('maskPrecache').checked =" + html.split("$('maskPrecache').checked =", 1)[1].split("function watchMaskPrecache", 1)[0]
-        child = '<!doctype html>' + markup + '<div id="info">Source analysis retained</div><div id="temporaryLogText">Source status retained</div><span id="maskCacheStatus">Cached</span><script>' + """
+        child = '<!doctype html>' + markup + '<div id="info">Source analysis retained</div><div id="temporaryLogText">Source status retained</div><span id="maskCacheStatus">Cached</span><script>' + lookup + """
           window.addEventListener('error',event=>parent.fixtureErrors.push(event.message));
-          const state={frequencyTransfer:{format:'png',compressed:true,opaque_alpha:true,parallel:true}};
-          let stars=0,dirty=0;
-          const updateStar=()=>stars++,markDirty=()=>dirty++;
-          const api=async(path,body)=>{if(window.rejectSettings)throw Error('synthetic settings failure');return body;},
-            setBusy=value=>{state.busy=value;},setStatus=()=>{};
-        """ + lookup + transfer + precache + """
-          syncTransfer();
-          Object.defineProperty($('transferFormat'),'disabled',{configurable:true,get(){return false;},set(){}});
-          window.settingsTest={state,lookup:$,stars:()=>stars,dirty:()=>dirty,pose:()=>poseConfig};
+          window.settingsLookup=$;
           window.addEventListener('message',event=>{
             if(event.source===parent&&event.data.type==='shp-tools-probe')
               parent.postMessage({type:'shp-skin-ready'},location.origin);
@@ -1479,7 +1468,7 @@ class StatusLayoutTests(unittest.TestCase):
         command("WebDriver:Navigate", url=f"http://127.0.0.1:{server.server_port}/{page.name}")
         evaluate = lambda script: command("WebDriver:ExecuteScript", script=script, args=[], sandbox=None)
         deadline = time.monotonic() + 10
-        while not evaluate("return !!document.getElementById('generalSettingsHost').querySelector('#transferFormat');"):
+        while not evaluate("return !!document.getElementById('generalSettingsHost').querySelector('#editorSelect');"):
             if time.monotonic() >= deadline:
                 self.fail("General settings did not mount: " + str(evaluate(
                     "return {errors:window.fixtureErrors,status:document.getElementById('status').textContent,frames:document.querySelectorAll('iframe').length};")))
@@ -1491,22 +1480,17 @@ class StatusLayoutTests(unittest.TestCase):
         result = evaluate("""
           document.getElementById('tab-settings').click();
           const frame=document.querySelector('#panel-dnb iframe'),child=frame.contentWindow;
-          const control=document.getElementById('transferFormat');
-          const before=child.settingsTest.lookup('transferFormat')===control;
-          control.disabled=true;const blocked=control.disabled;control.disabled=false;
-          control.value='tiff';control.dispatchEvent(new Event('change'));
-          document.getElementById('maskPrecache').checked=false;
-          document.getElementById('maskPrecache').dispatchEvent(new Event('change'));
-          const descriptor=Object.getOwnPropertyDescriptor(control,'disabled');
+          const host=document.getElementById('generalSettingsHost');
+          const control=document.getElementById('editorSelect');
+          const before=child.settingsLookup('editorSelect')===control;
           return {selected:document.getElementById('tab-settings').getAttribute('aria-selected'),
             themeHost:document.getElementById('themeSelect').closest('#themeSettings')!==null,
             dnbHidden:document.getElementById('panel-dnb').inert,
             cropHidden:document.getElementById('panel-crop').inert,
             settingsVisible:!document.getElementById('panel-settings').inert,
-            sameControl:before,blocked,nativeSetter:!descriptor,
-            format:child.settingsTest.state.frequencyTransfer.format,
-            stars:child.settingsTest.stars(),dirty:child.settingsTest.dirty(),
-            precache:child.localStorage.getItem('shp-mask-precache'),
+            sameControl:before,
+            controls:[...host.querySelectorAll('select,input,button')].map(e=>e.id),
+            diagnostics:['poseHint','photoshopPixelTilesText'].every(id=>child.settingsLookup(id)===document.getElementById(id)&&host.contains(document.getElementById(id))),
             analysis:frame.contentDocument.getElementById('info').textContent,
             status:frame.contentDocument.getElementById('temporaryLogText').textContent,
             badge:frame.contentDocument.getElementById('maskCacheStatus').textContent,
@@ -1514,35 +1498,14 @@ class StatusLayoutTests(unittest.TestCase):
         """)
         self.assertEqual(result, {"selected":"true", "themeHost":True, "dnbHidden":True,
                                  "cropHidden":True, "settingsVisible":True, "sameControl":True,
-                                 "blocked":True, "nativeSetter":True, "format":"tiff", "stars":0,
-                                 "dirty":1, "precache":"0", "analysis":"Source analysis retained",
-                                 "status":"Source status retained", "badge":"Cached", "originalEmpty":0})
-        pose_result = command("WebDriver:ExecuteAsyncScript", script="""
-          const done=arguments[arguments.length-1];
-          (async()=>{
-            const child=document.querySelector('#panel-dnb iframe').contentWindow,test=child.settingsTest;
-            const get=id=>document.getElementById(id);
-            test.state.imageInfo={pose_backend:'rtmlib'};test.state.preview_cache={retained:true};
-            get('poseBackend').value='google-full';
-            get('posePython').value='/isolated/runtime/bin/python';get('poseModel').value='/verified/full.task';
-            await get('poseSave').onclick();
-            const routed=test.lookup('poseHint')===get('poseHint');
-            const saved=test.pose().backend==='google-full'&&get('poseHint').textContent.includes('Current image: rtmlib');
-            test.state.busy=true;get('poseBackend').value='rtmlib';await get('poseSave').onclick();
-            const blocked=test.pose().backend==='google-full';test.state.busy=false;
-            child.rejectSettings=true;await get('poseSave').onclick();
-            const failed=test.pose().backend==='google-full'&&get('poseBackend').value==='google-full';
-            child.rejectSettings=false;
-            done({routed,saved,blocked,failed,unchanged:test.state.imageInfo.pose_backend==='rtmlib'&&
-              test.state.preview_cache.retained,notPreset:test.stars()===0});
-          })().catch(e=>done({error:String(e)}));
-        """, args=[], sandbox=None)
-        self.assertEqual(pose_result, dict.fromkeys(("routed","saved","blocked","failed","unchanged","notPreset"), True))
+                                 "controls":["editorSelect","photoshopPair","photoshopRevoke"], "diagnostics":True,
+                                 "analysis":"Source analysis retained", "status":"Source status retained",
+                                 "badge":"Cached", "originalEmpty":0})
         result = evaluate("""
-          const frame=document.querySelector('#panel-dnb iframe'),before=document.getElementById('transferFormat');
+          const frame=document.querySelector('#panel-dnb iframe'),before=document.getElementById('editorSelect');
           window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,origin:location.origin,
             data:{type:'shp-skin-ready'}}));
-          const retained=document.getElementById('transferFormat')===before;
+          const retained=document.getElementById('editorSelect')===before;
           document.getElementById('tab-settings').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
           return {retained,wrapped:document.getElementById('tab-mask').getAttribute('aria-selected')};
         """)
@@ -1681,9 +1644,7 @@ class StatusLayoutTests(unittest.TestCase):
         """)
         for label in result["labels"]:
             self.assertEqual(label, label.lower())
-        self.assertEqual(result["maskPlacement"], [
-            {"value": "folder", "label": "Mask on top folder"},
-            {"value": "layers", "label": "Mask on every layer"}])
+        self.assertEqual(result["maskPlacement"], [])
         self.assertEqual(result["inputs"], 0)
         self.assertEqual([item["id"] for item in result["toggles"]], ["anDetect", "anSkin", "anStruct"])
         for item in result["toggles"]:

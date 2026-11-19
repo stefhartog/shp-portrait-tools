@@ -24,6 +24,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
         shell = (ROOT / "shell" / "index.html").read_text(encoding="utf-8")
         shell_js = (ROOT / "shell" / "shell.js").read_text(encoding="utf-8")
         shell_css = (ROOT / "shell" / "shell.css").read_text(encoding="utf-8")
+        common_css = (ROOT / "shared" / "ui" / "common.css").read_text(encoding="utf-8")
         lookup = "const generalSettingIds =" + skin.split("const generalSettingIds =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
         busy = "let panelOperationBusy =" + skin.split("let panelOperationBusy =", 1)[1].split("function previewFeedback", 1)[0]
         handlers = "$('editorSelect').onchange =" + skin.split("$('editorSelect').onchange =", 1)[1].split("let watchFolderErrors", 1)[0]
@@ -90,27 +91,31 @@ class PhotoshopShellUiTests(unittest.TestCase):
                  !tab.getAttribute('aria-label').includes(label) || !tab.title.includes(label))
                 throw Error('incorrect cache indicator for '+mode);
             }
+            const luminance=color=>color.match(/[0-9]+/g).slice(0,3).map(n=>n/255)
+              .map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
+              .reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+            for(const theme of ['', 'photocraft']) {
+              document.documentElement.dataset.theme=theme;
+              const symbols=new Set();
+              for(const indicator of document.querySelectorAll('.cache-indicator')) {
+                const tab=indicator.closest('[role=tab]'), style=getComputedStyle(indicator,'::before');
+                const color=style.color.match(/[0-9]+/g).slice(0,3);
+                const a=luminance(style.color), b=luminance(getComputedStyle(tab).backgroundColor);
+                if(new Set(color).size!==1 || (Math.max(a,b)+.05)/(Math.min(a,b)+.05)<3 ||
+                   parseFloat(style.fontSize)>=parseFloat(getComputedStyle(tab).fontSize))
+                  throw Error('cache indicator is not smaller, gray, and legible: '+theme);
+                symbols.add(style.content);
+              }
+              if(symbols.size!==4) throw Error('cache symbols are not distinct');
+            }
+            delete document.documentElement.dataset.theme;
             window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:window,
               data:{type:'shp-skin-cache',tabs:{mask:{state:'unavailable',label:'spoof'}}}}));
             if(get('tab-mask').querySelector('.cache-indicator').dataset.state!=='ready')
               throw Error('accepted cache status from wrong window');
-            const hue=get('photoshopHueMode'), native=hue.querySelector('option[value="native"]');
-            const capture=get('photoshopCaptureMode'), png=capture.querySelector('option[value="png"]');
-            if(capture.value!=='raw'||!png.disabled||!png.hidden)throw Error('PNG exposed to stale backend');
-            child.setEditorUi({editor:'photoshop',photoshop_hue_native:true,photoshop_png_capture:true});
-            if(png.disabled||png.hidden||capture.value!=='raw')throw Error('PNG should be opt-in on updated backend');
-            capture.value='png';child.setEditorUi({editor:'photoshop'});
-            if(capture.value!=='raw'||!png.disabled)throw Error('stale backend did not disable PNG');
-            if(!native.disabled || !native.hidden)throw Error('old backend exposes unsupported native option');
-            child.setEditorUi({editor:'photoshop',photoshop_hue_native:true});
-            if(native.disabled || native.hidden)throw Error('updated backend did not expose native option');
-            if(hue.value!=='native')throw Error('native not selected by default');
-            hue.value='rendered';hue.onchange();child.setEditorUi({editor:'photoshop',photoshop_hue_native:true});
-            if(hue.value!=='rendered')throw Error('explicit rendered selection not preserved');
-            hue.value='native';hue.onchange();child.setEditorUi({editor:'photoshop'});
-            if(!native.disabled || hue.value!=='rendered')throw Error('stale backend did not reset native option');
-            child.setEditorUi({editor:'photoshop',photoshop_hue_native:true});
-            if(hue.value!=='native')throw Error('temporary stale backend overwrote explicit selection');
+            child.setEditorUi({editor:'photoshop'});
+            if(get('photoshopHueMode') || get('photoshopCaptureMode')) throw Error('Retired selector present');
+            if(get('photoshopPairing').hidden) throw Error('Pairing options hidden');
             child.delayNext=true;select.value='photoshop';
             const change=select.onchange();
             let selectionError=null;
@@ -145,7 +150,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
             get('result').textContent='PASS';
           })().catch(error=>document.getElementById('result').textContent='FAIL: '+error.message);
         """
-        page = ('<!doctype html><meta charset="utf-8"><style>' + shell_css + '</style>' + body + '<pre id="result">PENDING</pre><script>'
+        page = ('<!doctype html><meta charset="utf-8"><style>' + common_css + shell_css + '</style>' + body + '<pre id="result">PENDING</pre><script>'
                 + fixture.replace("</script>", "<\\/script>") + shell_js + checks + "</script>")
         with tempfile.TemporaryDirectory(prefix="shp-editor-ui-") as directory:
             path = Path(directory)

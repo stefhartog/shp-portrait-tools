@@ -131,31 +131,6 @@ if (display.textContent.includes('Feather skin mask')) throw Error(display.textC
 """
         subprocess.run([node, "-"], input=harness, text=True, check=True)
 
-    def test_skin_mask_backend_selection_in_node(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js is unavailable")
-        html = T.S.HTML.read_text(encoding="utf-8")
-        code = "let skinMaskBackend = 'cpu';" + html.split(
-            "let skinMaskBackend = 'cpu';", 1)[1].split("let poseConfig", 1)[0]
-        harness = r"""
-const fields={skinMaskBackend:{},skinMaskBackendHint:{}}, $=id=>fields[id], state={};
-const setBusy=()=>{}, setStatus=msg=>{throw Error(msg);};
-const api=async (path, body)=>{
-  if (path!=='/api/global-settings' || body.skin_mask_backend!=='cuda') throw Error('Wrong settings request');
-  return {skin_mask_backend:'cuda', active_skin_mask_backend:'cpu'};
-};
-""" + code + r"""
-(async()=>{
-  syncSkinMaskBackend({});
-  if (fields.skinMaskBackend.value!=='cpu') throw Error('CPU is not the default');
-  fields.skinMaskBackend.value='cuda';
-  await fields.skinMaskBackend.onchange();
-  if (!fields.skinMaskBackendHint.textContent.includes('Current mode: CPU. Pending: CUDA.')) throw Error('Missing pending mode');
-})().catch(e=>{console.error(e);process.exitCode=1;});
-"""
-        subprocess.run([node, "-"], input=harness, text=True, check=True)
-
     def test_layer_preparation_status_in_node(self):
         node = shutil.which("node")
         if not node:
@@ -346,7 +321,7 @@ const performance={now:()=>clock}; const crypto={randomUUID:()=>'token'};
 const temporaryLog={load:'',send:null,photoshop:{}};
 const controls={editorSelect:{value:'photocraft'},photoshopCaptureMode:{value:'raw'}};
 const document={getElementById:id=>controls[id]||null};
-const shellControls={photoshopTransferLogText:{textContent:''},scaleEstimator:{value:'baseline'}};
+const shellControls={photoshopTransferLogText:{textContent:''}};
 const parent={document:{getElementById:id=>shellControls[id]||null}};
 const setBusy=b=>state.busy=b, syncTransferTitles=()=>{}, setStatus=()=>{};
 const invalidateMaskCacheStatus=()=>{}, invalidateLayerPrecache=()=>{}, resetCacheTabs=()=>{}, recordCalculation=()=>{}, renderTemporaryLog=()=>{};
@@ -364,7 +339,7 @@ const api=async(path,body)=>{
   if(path==='/api/pc/status'){clock+=500;if(failure)throw Error(failure);return {connected,message:'disconnected'};}
   if(failure)throw Error(failure);
   if(path.startsWith('/api/progress?token='))return progressFor('token',false);
-  if(body.scale_estimator !== (controls.editorSelect.value==='photoshop' ? 'body-priority' : 'baseline'))
+  if ('scale_estimator' in body || 'photoshop_capture' in body)
     throw Error('Wrong estimator in Get request');
   if(controls.editorSelect.value==='photoshop')await timer();
   clock+=1000;
@@ -379,7 +354,7 @@ const api=async(path,body)=>{
      !loadProgress.steps.includes('Load/Get source skin mask (total) in 0.40s')||
      !loadProgress.steps.includes('  Initial crop: edge refinement: 0.015 s'))
     throw Error('timing prefix or get failed');
-  controls.editorSelect.value='photoshop'; shellControls.scaleEstimator.value='body-priority'; calls=[]; await pcGet();
+  controls.editorSelect.value='photoshop'; calls=[]; await pcGet();
   if(state.busy||applied!==2||calls.includes('/api/pc/status')||!calls.includes('/api/pc/fetch'))
     throw Error('Photoshop did not capture directly');
   if(!shellControls.photoshopTransferLogText.textContent.includes('480 bytes'))
@@ -553,16 +528,14 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         """
         settings_helpers = html.split("const FACTORY =", 1)[1].split("const presets =", 1)[0]
         params_helper = html.split("function params() {", 1)[1].split("async function apply(", 1)[0]
-        transfer_defaults = html.split("const TRANSFER_DEFAULTS =", 1)[1].split("const state =", 1)[0]
-        transfer_helpers = "function syncTransfer() {" + html.split("function syncTransfer() {", 1)[1].split("const skintoneSliders =", 1)[0]
-        ui_mode_helper = "function uiMode(mode) {" + html.split("function uiMode(mode) {", 1)[1].split("const TRANSFER_DEFAULTS", 1)[0]
+        ui_mode_helper = "function uiMode(mode) {" + html.split("function uiMode(mode) {", 1)[1].split("const state =", 1)[0]
         switch_mode_helper = "function switchMode(mode, request=null) {" + html.split(
             "function switchMode(mode, request=null) {", 1)[1].split("$('toolMode').onchange", 1)[0]
         frequency_controls = "function syncFrequencyControls() {" + html.split(
-            "function syncFrequencyControls() {", 1)[1].split("function syncTransfer()", 1)[0]
+            "function syncFrequencyControls() {", 1)[1].split("let poseBackend", 1)[0]
         skintone_switch = "$('skintoneOn').onclick" + html.split("$('skintoneOn').onclick", 1)[1].split("$('structureOn').onchange", 1)[0]
         mask_status_helper = "function renderMaskCacheStatus(value) {" + html.split(
-            "function renderMaskCacheStatus(value) {", 1)[1].split("$('maskPrecache').checked =", 1)[0]
+            "function renderMaskCacheStatus(value) {", 1)[1].split("let layerPrecacheWatch", 1)[0]
         mask_watch_helper = "function watchMaskPrecache(info, epoch) {" + html.split(
             "function watchMaskPrecache(info, epoch) {", 1)[1].split("async function save()", 1)[0]
         mask_status_harness = """
@@ -617,14 +590,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
               }})();
             """
         self.assertEqual(html.count('id="maskCacheStatus"'), 1)
-        self.assertEqual(html.count('id="maskPrecache"'), 1)
+        self.assertNotIn('id="maskPrecache"', html)
         operations = html.split('<div id="maskOperations">', 1)[1].split('<div id="info">', 1)[0]
         self.assertIn('id="maskCacheStatus"', operations)
         self.assertNotIn('id="transferFormat"', operations)
         self.assertNotIn('id="maskPrecache"', operations)
         general = html.split('id="generalSettingsContent"', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
-        self.assertIn('id="transferFormat"', general)
-        self.assertIn('id="maskPrecache"', general)
         self.assertIn('id="calculationLogText"', general)
         self.assertIn("$('maskOperations').hidden = state.mode !== 'mask'", html)
         self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
@@ -660,7 +631,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             const syncTabs=noop;
             const bandsPayload=()=>state.bands, analysisFlags=()=>({});
             function check(ok){if(!ok)throw Error('Independent settings / controls');}
-        """ + ui_mode_helper + switch_mode_helper + frequency_controls + "const TRANSFER_DEFAULTS =" + transfer_defaults + transfer_helpers + skintone_switch + \
+        """ + ui_mode_helper + switch_mode_helper + frequency_controls + skintone_switch + \
             "const SECOND_BAND_DEFAULTS="+html.split("const SECOND_BAND_DEFAULTS=",1)[1].split("function renderBands()",1)[0]+ \
             "const FACTORY =" + settings_helpers + "function params() {" + params_helper + """
             applySettings(null);
@@ -778,24 +749,9 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
               frequency_transfer:{format:'tiff',compressed:false,opaque_alpha:false,parallel:false}});
             check(state.frequency.method==='median_fast');
             check(!('frequency_transfer' in getSettings()));
-            state.frequencyTransfer={format:'tiff',compressed:false,opaque_alpha:false,parallel:false};
-            syncTransfer();
-            check($('transferFormat').value==='tiff' && $('transferCompression').value==='none');
-            check($('transferAlpha').checked && !$('transferParallel').checked);
-            check($('transferHint').textContent.includes('4 GiB'));
-            $('transferFormat').value='png';$('transferFormat').onchange();
-            check(state.frequencyTransfer.format==='png' && transferStars===0);
-            check(globalWrites.at(-1).path==='/api/global-settings' && globalWrites.at(-1).body.layer_transfer.format==='png');
-            $('transferAlpha').checked=false;$('transferAlpha').onchange();
-            check(state.frequencyTransfer.opaque_alpha && globalWrites.at(-1).body.layer_transfer.opaque_alpha);
-            $('transferAlpha').checked=true;$('transferAlpha').onchange();
-            check(!state.frequencyTransfer.opaque_alpha && !globalWrites.at(-1).body.layer_transfer.opaque_alpha);
-            check($('transferHint').textContent.includes('stored blocks'));
-            const transferred=params();transferred.frequency_transfer.parallel=true;
-            check(!state.frequencyTransfer.parallel);
+            check(!('frequency_transfer' in params()));
             state.loaded=true;state.sourceKind='photocraft';state.pcConnected=true;state.busy=false;
             applySettings(original);
-            check(state.frequencyTransfer.format==='png' && !state.frequencyTransfer.parallel);
             syncFrequencyControls();check(state.frequency.on && $('blurOn').checked);
             $('blurOn').checked=false;$('blurOn').onchange();
             check(!state.frequency.on && !params().frequency.on && !getSettings().frequency.on);
@@ -1548,8 +1504,8 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             "async function loadPresets() {", 1)[1].split("$('presetSel').onchange", 1)[0]
         startup_harness = """
           (async()=>{
-            const window={},events=[],state={},TRANSFER_DEFAULTS={},presets={};
-            let parent={postMessage:message=>events.push(message.type)},maskPlacement,poseConfig,shellUiReady=false;
+            const window={},events=[],state={},presets={}, $=()=>({});
+            let parent={postMessage:message=>events.push(message.type)},poseBackend,shellUiReady=false;
             const location={origin:'http://local'},syncTransfer=()=>{},syncPose=()=>{},presetErr=e=>{throw e;},
               fillPresetList=()=>{},snapNow=()=>events.push('snapshot'),
               presetSettings=()=>presets.default,applySettings=settings=>{state.mode=settings.mode;events.push(state.mode);},
