@@ -7,6 +7,7 @@ import runpy
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from shp_photocraft_tools import launcher as L
 class LauncherTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(self.cleanup_temp)
         self.root = Path(self.temp.name)
         self.models = self.root / "external-models"
         self.models.mkdir()
@@ -43,9 +44,13 @@ class LauncherTests(unittest.TestCase):
             sock.bind(("127.0.0.1", 0))
             self.shell_port = sock.getsockname()[1]
         self.write_config()
-        env = patch.dict(os.environ, {"HOME": str(self.root), "XDG_STATE_HOME": str(self.root / "state")})
+        env = patch.dict(os.environ, {"HOME": str(self.root), "XDG_STATE_HOME": str(self.root / "state"),
+                                      # Windows data/config roots; never the user's real Tools folders.
+                                      "LOCALAPPDATA": str(self.root / "AppData/Local"),
+                                      "APPDATA": str(self.root / "AppData/Roaming")})
         env.start()
         self.addCleanup(env.stop)
+        self.data_root = self.root / ("AppData/Local" if sys.platform == "win32" else ".local/share") / "shp-photocraft-tools"
         self.pids = set()
         self.addCleanup(self.stop_servers)
 
@@ -64,7 +69,26 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(L.LaunchError, "Invalid saved PhotoCraft"):
                 L.read_config(self.config)
 
+    def cleanup_temp(self):
+        # On Windows the venv's pythonw redirector keeps the log handle until it notices
+        # its killed child has exited, so allow a short grace period.
+        deadline = time.monotonic() + (15 if sys.platform == "win32" else 0)
+        while True:
+            try:
+                return self.temp.cleanup()
+            except PermissionError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.2)
+
     def stop_servers(self):
+        if sys.platform == "win32":
+            # Only pids this test launched. Kill the whole tree so module children release
+            # their log files before the temporary root is removed.
+            for pid in self.pids:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            return
         for pid in self.pids:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -98,7 +122,7 @@ class LauncherTests(unittest.TestCase):
             with urlopen(f"http://127.0.0.1:{port}/api/health") as response:
                 health = json.load(response)
             self.assertEqual(health["module"], module)
-            self.assertEqual(health["data"], str(self.root / ".local/share/shp-photocraft-tools" / module))
+            self.assertEqual(health["data"], str(self.data_root / module))
             self.assertEqual(health["instance"], status[module]["instance"])
             self.assertEqual(health["owner_protocol"], 1)
             self.assertEqual(health["ui_lifecycle"], 0)
@@ -107,7 +131,8 @@ class LauncherTests(unittest.TestCase):
                 with urlopen(f"http://127.0.0.1:{port}/api/presets") as response:
                     self.assertEqual(json.load(response), {"default": None, "presets": {}})
         self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.models.iterdir()})
-        self.assertEqual(list((self.root / ".local/share/shp-photocraft-tools").iterdir()), [])
+        # On Windows launcher logs live in <data root>\state; Linux keeps them under XDG_STATE_HOME.
+        self.assertEqual([p.name for p in self.data_root.iterdir() if p.name != "state"], [])
 
     def test_concurrent_clicks_start_only_one_pair(self):
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -156,6 +181,7 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(L.LaunchError, "different ports"):
             L.read_config(self.config)
 
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
     def test_chromium_command_has_one_shell_app_window(self):
         with patch.object(L.shutil, "which", return_value="/usr/bin/ungoogled-chromium"):
             command = L.chromium_command({}, ["http://127.0.0.1:18760/"])
@@ -168,6 +194,7 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(L.LaunchError, "not found"):
                 L.chromium_command({}, ["http://127.0.0.1:18760/"])
 
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
     def test_flatpak_ungoogled_chromium_and_invalid_configuration(self):
         with patch.object(L.shutil, "which", side_effect=lambda name: "/usr/bin/flatpak" if name == "flatpak" else None):
             with patch.object(L.subprocess, "run", return_value=unittest.mock.Mock(returncode=0)):
@@ -197,6 +224,7 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(L.LaunchError, "shell.log"):
                 L.ensure_shell(self.config, data, L.read_config(self.config), logs)
 
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
     def test_desktop_install_is_distinct_idempotent_and_collision_safe(self):
         repository = Path(__file__).resolve().parent.parent
         desktop = self.root / "Desktop"
@@ -227,6 +255,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("Refusing to overwrite", third.stderr)
         self.assertEqual(Path(paths["launcher"]).read_text(), "user-edited wrapper")
 
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
     def test_display_refresh_retains_launch_identity_and_custom_fields(self):
         repository = Path(__file__).resolve().parent.parent
         refresh = runpy.run_path(str(repository / "scripts/install_desktop.py"))["refresh_display_metadata"]
@@ -266,6 +295,7 @@ class LauncherTests(unittest.TestCase):
             refresh(paths)
         self.assertEqual(paths[0].read_text(), old)
 
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
     def test_desktop_trust_failure_reports_manual_action(self):
         script = Path(__file__).resolve().parent.parent / "scripts/install_desktop.py"
         installer = runpy.run_path(str(script))

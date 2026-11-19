@@ -119,7 +119,7 @@ Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
 
 ## Development setup and pairing
 
-This checkout has connector 0.1.10 source. Adobe UXP Developer Tool
+This checkout has connector 0.1.14 source (matching the packaged CCX below). Adobe UXP Developer Tool
 (UDT) was not discovered in the checked Adobe installation locations. The official
 CLI service can package without loading into Photoshop. Package or manifest
 validation alone does not establish rendering fidelity.
@@ -166,8 +166,8 @@ validation alone does not establish rendering fidelity.
    **Send Result**. Nothing saves the Photoshop document.
 
 Pairing persists across launches using Windows user-bound DPAPI in Tools and UXP
-secureStorage in the plugin. After Photoshop restart, open the panel and click
-the panel automatically resumes the saved pairing and retries while Tools is
+secureStorage in the plugin. After a Photoshop restart, open the panel: it
+automatically resumes the saved pairing and keeps retrying while Tools is
 offline; no Connect / resume click is needed. The manual button remains available
 after **Disconnect locally**. Automatic connection starts only once the panel code
 is running; it does not launch Tools or create a pairing. Saved ICC files are
@@ -250,10 +250,8 @@ Automated checks run without desktop Photoshop or user photographs:
   Mocks are **not host rendering evidence**.
 - Editor selection tests use temporary settings, including an isolated Windows
   service restart, and do not alter the user's configured editor.
-- Focused existing suite: 69 tests, 9 skips, **2 existing failures** in
-  `test_skin_tools.SkinApiTests` whose fake bridges do not accept `mask_placement`.
-  The same failures were reproduced with the unchanged HEAD fetch/send functions.
-  No unrelated processing/test-double fix was included.
+- The `test_skin_tools.SkinApiTests` fake bridges now accept `mask_placement`, so
+  the two send-with-ICC tests that used to fail on that argument run again.
 - Synthetic 6000x4000 RGB16 two-band + mask serialization: **312,000,000 bytes**,
   **0.374 s**, process working set before **203.7 MiB**, peak **208.2 MiB** on this
   Windows host. Two bands reused the same input array. This measures serialization,
@@ -347,12 +345,16 @@ add them together. Older connectors still show the Tools-side timings and bytes.
 
 Adobe CLI's `devtools disable` command overwrites the settings file with
 `{"developer": false}`. If the file has since acquired other settings, back up and
-preserve them before using it. When it still contains only `developer`, run this
-command to disable Developer Mode; it requests administrator approval:
+preserve them before using it. Developer Mode is not needed to install or use the
+CCX. When the file still contains only `developer`, disable it with any of:
 
-```powershell
-python -m uv tool run --from nodejs-wheel node "C:\Users\stefh\.copilot\session-state\38f4ba4b-e119-48c7-ac6d-65fb8b90c947\files\adobe-uxp-tooling\node_modules\@adobe\uxp-devtools-cli\src\uxp.js" devtools disable
-```
+- **UXP Developer Tool** (Creative Cloud Desktop > All apps): turn Developer Mode off.
+- Edit `%CommonProgramFiles%\Adobe\UXP\Developer\settings.json` as administrator so
+  it reads `{"developer": false}`.
+- The Adobe CLI used for packaging, if a copy is still available:
+  `node <uxp-devtools-cli>\src\uxp.js devtools disable` (requests administrator approval).
+  It was run from a temporary tool-session folder outside this repository, so that copy
+  may no longer exist.
 
 For developer loading, UXP Developer Tools is also available in Creative Cloud
 Desktop > **All apps**. It requires administrator privileges and prompts for

@@ -140,7 +140,7 @@ class SkinApiTests(unittest.TestCase):
             def fetch(inner, dest):
                 return self.image, {"index": 1, "name": self.image.name}
 
-            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None):
+            def send_skin_bands(inner, layers, mask, doc, *, source_icc=None, mask_placement="folder"):
                 received.append(("dnb", source_icc))
                 return {"layer": 1}
 
@@ -148,7 +148,7 @@ class SkinApiTests(unittest.TestCase):
                 received.append(("mask", source_icc))
                 return {"layer": 2}
 
-            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True, mask_placement="folder"):
                 if blur_future is not None:
                     layers = {**layers, "blur": blur_future.result()}
                 received.append(("frequency", source_icc))
@@ -172,7 +172,7 @@ class SkinApiTests(unittest.TestCase):
                 sent.append(("mask", mask.copy()))
                 return {"layer": 10, "document": doc["name"]}
 
-            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+            def send_skintone(inner, layers, settings, mask, doc, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True, mask_placement="folder"):
                 if blur_future is not None:
                     layers = {**layers, "blur": blur_future.result()}
                 sent.append(("frequency", layers, mask.copy(), source_icc))

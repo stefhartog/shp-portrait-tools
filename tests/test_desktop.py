@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import os
 import re
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -51,9 +52,10 @@ class DesktopCommandTests(unittest.TestCase):
         app.wake_watch_folder({"ready":True,"token":"incoming-version-2","service":"crop"},1)
         self.assertEqual(app.show.call_count,3)
 
+    @unittest.skipIf(sys.platform == "win32", "Linux GTK desktop helper")
     def test_system_python_helper_and_runtime_check(self):
         with patch.object(L.subprocess, "run", return_value=Mock(returncode=0)) as run:
-            command = L.desktop_command("http://127.0.0.1:18760/")
+            command = L.desktop_command("http://127.0.0.1:18760/", Path("/unused"))
         self.assertEqual(command[0], "/usr/bin/python3")
         self.assertTrue(command[1].endswith("desktop/controller.py"))
         self.assertIn("--data-dir", command)
@@ -61,10 +63,24 @@ class DesktopCommandTests(unittest.TestCase):
         self.assertEqual(command[command.index("--url") + 1], "http://127.0.0.1:18760/")
         self.assertEqual(run.call_args.args[0], [*command, "--check"])
 
+    @unittest.skipIf(sys.platform == "win32", "Linux GTK desktop helper")
     def test_missing_runtime_explains_manual_fallback(self):
         with patch.object(L.subprocess, "run", return_value=Mock(returncode=1, stderr="no WebKit2 typelib")):
             with self.assertRaisesRegex(L.LaunchError, "no WebKit2 typelib.*--browser"):
-                L.desktop_command("http://127.0.0.1:18760/")
+                L.desktop_command("http://127.0.0.1:18760/", Path("/unused"))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows WebView2 desktop host")
+    def test_windows_host_command_and_runtime_check(self):
+        data = Path("C:/unused-data")
+        with patch.object(L.subprocess, "run", return_value=Mock(returncode=0)) as run:
+            command = L.desktop_command("http://127.0.0.1:18760/", data)
+        self.assertEqual(command[1:3], ["-m", "shp_photocraft_tools.desktop.windows_controller"])
+        self.assertEqual(command[command.index("--url") + 1], "http://127.0.0.1:18760/")
+        self.assertEqual(command[command.index("--data-dir") + 1], str(data / "webview"))
+        self.assertEqual(run.call_args.args[0], [*command, "--check"])
+        with patch.object(L.subprocess, "run", return_value=Mock(returncode=1, stderr="no WebView2", stdout="")):
+            with self.assertRaisesRegex(L.LaunchError, "no WebView2.*--no-browser"):
+                L.desktop_command("http://127.0.0.1:18760/", data)
 
     @unittest.skipUnless(os.environ.get("SHP_DESKTOP_SMOKE") == "1", "opt-in real Wayland window smoke")
     def test_real_webkit_single_instance_hide_quit_and_independent_browser_lease(self):

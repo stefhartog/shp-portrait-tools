@@ -39,7 +39,7 @@ def main():
             assert all(a.shape == (600, 800, 3) and a.dtype == np.uint16 for a in layers.values())
             return {"layer": 11, "document": document["name"]}
 
-        def send_skintone(self, layers, settings, mask, document, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True):
+        def send_skintone(self, layers, settings, mask, document, source_icc, *, blur_future=None, transfer=None, blur_strength=100, blur_masked=True, mask_placement="folder"):
             if blur_future is not None:
                 layers = {**layers, "blur": blur_future.result()}
             assert mask.shape == (600, 800) and mask.dtype == np.uint8
@@ -81,7 +81,7 @@ def main():
                                           "centre": (400, 300), "face_info": None, "seen": None}
         module.M.person_box = lambda *a: (0, 0, 800, 600)
 
-        def fake_mask(img, *args):
+        def fake_mask(img, *args, **options):
             mask = np.ones(img.shape[:2], np.float32)
             return {"A": mask, "skin": mask, "features": np.zeros_like(mask), "colour": mask}
 

@@ -5,8 +5,10 @@ completed Tools code in this revision, not incidental experiments or planned fea
 Use [README.md](README.md) for operation/setup, [MODELS.md](MODELS.md) for external weights
 and nodes, and [PROVENANCE.md](PROVENANCE.md) for the migration sources.
 `docs/source/` is deliberately frozen historical context, not current installation guidance.
-The [Windows port handoff](docs/windows-handoff.md) records actual platform blockers
-and a browser-first validation plan; Windows support is not implemented or verified.
+The [Windows port handoff](docs/windows-handoff.md) records Windows status: Skin Tools,
+the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are implemented;
+AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
+[docs/photoshop.md](docs/photoshop.md).
 
 ## Scope, ownership and activation
 
@@ -24,7 +26,7 @@ Existing installed launchers/resources are not modified by a commit.
 Unrelated Blemish/ClearFrame prototypes, local research/data and desktop-tooltip edits
 are excluded from this publication. They may remain dirty in the development checkout;
 the committed application neither imports nor requires an excluded prototype module.
-There is no Blemish tab/API or Windows support in this state.
+There is no Blemish tab/API in this state. (Windows support was added later; see the Windows port handoff.)
 
 Public branding is **SHP Portrait Tools**, with **Skin Tools** (`dnb`) and **AI Fill**
 (`crop`) module display names. All internal IDs, GTK application identity, routes,
