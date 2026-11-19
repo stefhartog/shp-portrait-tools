@@ -107,31 +107,48 @@ def skin_result(p, source, *, full_mask, skintone_layers, combined_result, repor
     return mask, layers, result
 
 
-def combine_layers(p, source, *, full_mask, skintone_layers, cached_bands, mask8, send_fs, send_bands):
+def combine_frequency(p):
+    f = p["frequency"]
+    return {**f, "blur_strength": f["blur_strength"] * p["combine"]["fs_mix"] / 100}
+
+
+def combine_composite(layers, mask, p, bands, mask_placement):
+    """Render the editor stack from Color through Corrections to Linear Light Detail."""
+    f = combine_frequency(p)
+    if mask_placement == "folder":
+        f = {**f, "blur_mask": False}
+        correction_mask = np.ones_like(mask)
+        corrections = {**layers, "directional_mask": correction_mask} if "directional" in layers else layers
+    else:
+        corrections = layers
+        correction_mask = mask
+    color = ST.process(ST.base(corrections, correction_mask, f), correction_mask, p["skintone"])
+    band_alpha = correction_mask[..., None] * (p["combine"]["dnb_mix"] / 100)
+    if p["combine"]["dnb_mix"] > 0:
+        for _, gray in bands:
+            color = np.clip(color + (D.softlight(color, gray[..., None]) - color) * band_alpha, 0, 1)
+    if mask_placement == "folder":
+        color = layers["color"] + (color - layers["color"]) * mask[..., None]
+    return np.clip(color + 2 * layers["detail"] - 1, 0, 1)
+
+
+def combine_layers(p, source, *, full_mask, skintone_layers, cached_bands, mask8, send_fs, mask_placement):
     mask = full_mask(p)
-    fs_layers = skintone_layers(source, mask, p, cache_full=True) if p["combine"]["fs_mix"] > 0 else {}
+    f = combine_frequency(p)
+    fs_layers = skintone_layers(source, mask, {**p, "frequency": f}, cache_full=True, native=True,
+                                directional_mask_placement=mask_placement)
     bands = []
     if p["combine"]["dnb_mix"] > 0 and (p["band1_on"] or p["second_band"]["on"]):
         bands, _, _ = cached_bands(p, "unmasked", mask=mask)
     payload = _rgb_bands(bands)
-    if not fs_layers:
-        if not payload:
-            raise ValueError("enable an FS or D&B contribution before Send Layers")
-        return send_bands(payload, mask8(mask), band_mix=p["combine"]["dnb_mix"])
-    mix = p["combine"]["fs_mix"] / 100
-    for key in ("color", "blur", "directional"):
-        if key in fs_layers:
-            fs_layers[key] = source + (fs_layers[key] - source) * mix
-    fs_layers["detail"] = .5 + (fs_layers["detail"] - .5) * mix
     directional = None
     if "directional" in fs_layers:
-        directional = (FS.rgb16(fs_layers.pop("directional")), mask8(fs_layers.pop("directional_mask")),
+        directional = (fs_layers.pop("directional"), mask8(fs_layers.pop("directional_mask")),
                        fs_layers.pop("directional_strength"))
-    rgb = {key: FS.rgb16(value) for key, value in fs_layers.items()}
-    settings = {**p["skintone"], "hue_amount": p["skintone"]["hue_amount"] * mix}
-    return send_fs(rgb, settings, mask8(mask), include_blur=p["frequency"]["on"],
-                   blur_strength=p["frequency"]["blur_strength"], blur_masked=p["frequency"]["blur_mask"],
-                   directional=directional, bands=payload, band_mask8=mask8(mask) if payload else None,
+    shared = mask8(mask)
+    return send_fs(fs_layers, p["skintone"], shared, include_blur=f["on"],
+                   blur_strength=f["blur_strength"], blur_masked=f["blur_mask"],
+                   directional=directional, bands=payload, band_mask8=shared if payload else None,
                    band_mix=p["combine"]["dnb_mix"])
 
 

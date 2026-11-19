@@ -51,7 +51,7 @@ from . import combine_scale as C
 from . import estimate_body_scale as B
 from . import image_session, preview_service, processing_service, progress, transfer_service
 from .cache_coordinator import CacheCoordinator
-from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE
+from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE, memory_rejection
 from .mask_precache import Skipped, Superseded
 from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
 from .paths import DATA, MODELS
@@ -390,10 +390,15 @@ def retain_layers(key, arrays, reserve, commit_guard=None):
     with guard() as current:
         if not current:
             raise Superseded()
-        if not LAYER_CACHE.put(key, arrays, reserve):
+        stored, reason = LAYER_CACHE.put_with_reason(key, arrays, reserve)
+        if not stored:
+            if key[0] == "dnb-band-v2":
+                stage = f"{'standalone' if key[1] == 'masked' else 'Combine'} D&B band {key[2]}"
+            else:
+                stage = {"fs-split-v1": "FS Color/Detail", "fs-blur-v1": "FS Blur"}.get(key[0], "layer")
             if commit_guard is not None:
-                raise Skipped("Layer preparation skipped: cache budget, available RAM or array layout.")
-            progress.call("Layer cache skipped (memory budget, available RAM, or array layout)", lambda: None)
+                raise Skipped(f"Layer preparation skipped ({stage} cache): {reason}.")
+            progress.call(f"Layer cache skipped ({stage}): {reason}.", lambda: None)
 
 
 def cached_fs_split(source, frequency, commit_guard=None, workers=None, *, state=None):
@@ -498,22 +503,20 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
                              split_slot, start_blur, finish_overlap):
     source = state["source_img"]
 
-    def admit(array, output_bytes):
+    def admit(array, output_bytes, stage):
         available = LAYER_CACHE.memory()
         reserve = LAYER_MEMORY_RESERVE + array.shape[0] * array.shape[1] * 128
         if output_bytes > LAYER_CACHE.limit:
-            raise Skipped(f"Layer preparation skipped: component exceeds the "
+            raise Skipped(f"Layer preparation skipped ({stage}): component exceeds the "
                           f"{LAYER_CACHE.limit / 1024**3:.1f} GiB cache budget.")
-        if available is None:
-            raise Skipped("Layer preparation skipped: available RAM could not be measured.")
-        if available < reserve:
-            raise Skipped(f"Layer preparation skipped: {available / 1024**3:.1f} GiB RAM free; "
-                          f"{reserve / 1024**3:.1f} GiB required.")
+        reason = memory_rejection(available, reserve)
+        if reason is not None:
+            raise Skipped(f"Layer preparation skipped ({stage}): {reason}.")
 
     fs = modes.get("frequency")
     combine = modes.get("combine")
     dnb = modes.get("dnb")
-    if fs is None and combine and combine["combine"]["fs_mix"] > 0:
+    if fs is None and combine:
         fs = combine
     fs_keys, band_keys = [], []
     blur_future = None
@@ -524,7 +527,7 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
         if fs["directional"]["on"]:
             raise Skipped("Directional Blur is not precached.")
         validate_skintone_source(state)
-        admit(source, source.nbytes * 2)
+        admit(source, source.nbytes * 2, "FS Color/Detail")
         workers = min(32, os.cpu_count() or 1, max(1, source.shape[0] * source.shape[1] // 1_000_000))
         with split_slot():
             started = time.perf_counter()
@@ -535,7 +538,7 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
         keys = [key]
         check()
         if fs["frequency"]["on"]:
-            admit(source, source.nbytes)
+            admit(source, source.nbytes, "FS Blur")
             check("Preparing mask for Blur")
             mask = full_skin_mask(fs, state=state, commit_guard=guard)
             cooperate()
@@ -580,7 +583,7 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
             if not (dnb["band1_on"] or dnb["second_band"]["on"]):
                 raise Skipped("Enable a D&B band to prepare layers.")
             img = state["img"]
-            admit(img, img.shape[0] * img.shape[1] * 4)
+            admit(img, img.shape[0] * img.shape[1] * 4, "standalone D&B")
             check("Checking or preparing standalone D&B bands")
             def before_fallback():
                 finish_overlap()
@@ -603,7 +606,7 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
             timing = progress.cache_timing()
             need_bands = combine["band1_on"] or combine["second_band"]["on"]
             if need_bands and (len(modes) > 1 or combine["combine"]["dnb_mix"] > 0):
-                admit(source, source.shape[0] * source.shape[1] * 4)
+                admit(source, source.shape[0] * source.shape[1] * 4, "Combine D&B")
                 check("Checking or preparing Combine D&B bands")
                 mask = full_skin_mask(combine, state=state, commit_guard=guard)
                 cooperate()
@@ -611,14 +614,11 @@ def prepare_layer_components(modes, state, guard, check, cooperate, tab, record,
                                                    commit_guard=guard, between_bands=cooperate)
                 cooperate()
                 record("combine_bands", band_keys)
-            keys = (fs_keys if combine["combine"]["fs_mix"] > 0 else []) + (
-                band_keys if combine["combine"]["dnb_mix"] > 0 else [])
-            if combine["combine"]["fs_mix"] > 0 and not fs_keys:
+            keys = fs_keys + (band_keys if combine["combine"]["dnb_mix"] > 0 else [])
+            if not fs_keys:
                 raise Skipped("Combine FS components are not precached.")
-            if not keys:
-                raise Skipped("No enabled Combine components to prepare.")
             tab("combine", "ready", "Matching Combine components are cached", keys,
-                timing=timing(shared=bool(fs_keys and combine["combine"]["fs_mix"] > 0)))
+                timing=timing(shared=True))
         except (Skipped, ValueError) as error:
             tab("combine", "unavailable", str(error))
 
@@ -665,8 +665,25 @@ def get_region(view, S):
     return STATE["region"]
 
 
+def begin_image_replacement():
+    """Discard reusable old-image work while keeping the source usable on failure."""
+    CACHE_COORDINATOR.mask_jobs.reset()
+    CACHE_COORDINATOR.layer_jobs.reset()
+    with CACHE_COORDINATOR.layer_jobs.condition:
+        CACHE_COORDINATOR.layer_records.clear()
+        CACHE_COORDINATOR.layer_timings = None
+        CACHE_COORDINATOR.layer_active = {"mode": None, "stamp": None, "generation": None, "tabs": {}, "budget_note": None}
+    CACHE_COORDINATOR.mask_timing = None
+    LAYER_CACHE.clear()
+    STATE["preview_cache"] = {}
+    STATE["full_mask_cache"] = None
+    STATE["full_mask_status_entry"] = None
+    STATE["mask_status_key"] = None
+
+
 def api_load(req, *, photoshop_size=None):
     started = time.perf_counter()
+    begin_image_replacement()
     path, img, source_img, raw8, mode, icc_out, source_icc, opaque, skintone_error, colour_note = \
         progress.call("Loading image / preparing profile", prepare_loaded_image, req, set_colour=False,
                       photoshop_size=photoshop_size)
@@ -1295,6 +1312,7 @@ def preview_key(p, view):
                     shared["pose_scores"] = np.where(np.isfinite(scores), scores, None).tolist()
     if p["mode"] == "combine":
         shared["combine"]=p["combine"]
+        shared["mask_placement"] = read_global_settings()["mask_placement"]
     return (STATE.get("landmark_generation"), id(STATE["masks"]), view, tuple(STATE["centre"]), tuple(STATE["region_box"]),
             json.dumps(shared, sort_keys=True, allow_nan=False))
 
@@ -1368,6 +1386,7 @@ def cached_preview_fs(source, mask, p, k, view, mask_key):
                       (("on", "method", "radius", "blur_radius", "blur_mask")
                        if frequency["on"] else ("on", "method", "radius"))},
         "directional": directional if directional["on"] else {"on": False},
+        "directional_base_opacity": frequency["blur_strength"] if directional["on"] and frequency["on"] else None,
         "S": p["S"] if directional["on"] else None,
         "pose": (None if pose is None else {
             "backend": pose.get("backend"), "kp": preview_array_key(pose.get("kp")),
@@ -1467,7 +1486,8 @@ def validate_skintone_source(state=None):
         raise ValueError("Skintone currently needs an opaque merged image; flatten transparency before Get")
 
 
-def skintone_layers(img, mask, p, scale=1, *, native=False, state=None, cache_full=False):
+def skintone_layers(img, mask, p, scale=1, *, native=False, state=None, cache_full=False,
+                    directional_mask_placement="layers"):
     state = STATE if state is None else state
     validate_skintone_source(state)
     directional = p.get("directional", DB.DEFAULTS)
@@ -1500,42 +1520,59 @@ def skintone_layers(img, mask, p, scale=1, *, native=False, state=None, cache_fu
         layers = ST.separate(img, blur_mask, f["method"], f["radius"] * scale, f["blur_radius"] * scale,
                              native=native)
     if directional["on"]:
-        if native:
-            base = np.empty_like(img, dtype=np.float32)
-            for y in range(0, img.shape[0], 128):
-                part = {key: layers[key][y:y + 128].astype(np.float32) / 65535
-                        for key in ("color", "blur") if key in layers}
-                base[y:y + 128] = ST.base(part, mask[y:y + 128], f)
-        else:
-            base = ST.base(layers, mask, f)
-        origin = state["region_box"][:2] if img.shape[:2] != state["img"].shape[:2] else (0, 0)
-        raster, region_mask = progress.call("Calculating Directional Blur", DB.apply,
-                                            base, mask, directional, state.get("pose"), p["S"],
-                                            source_shape=state["img"].shape, origin=origin, scale=scale)
-        del base
-        pixels = FS.rgb16(raster)
-        layers["directional"] = pixels if native else pixels.astype(np.float32) / 65535
-        layers["directional_mask"] = u8(region_mask).astype(np.float32) / 255
-        layers["directional_strength"] = DB.output_strength(directional)
+        layers.update(render_directional(layers, mask, p, scale, state, directional, native,
+                                         directional_mask_placement))
     return layers
 
 
+def render_directional(layers, mask, p, scale, state, directional, native, mask_placement):
+    standard = {key: layers[key] for key in ("color", "blur") if key in layers}
+    f = p["frequency"]
+    if mask_placement == "folder":
+        f = {**f, "blur_mask": False}
+    if native:
+        base = np.empty_like(layers["color"], dtype=np.float32)
+        for y in range(0, base.shape[0], 128):
+            part = {key: a[y:y + 128].astype(np.float32) / 65535 for key, a in standard.items()}
+            base[y:y + 128] = ST.base(part, mask[y:y + 128], f)
+    else:
+        base = ST.base(standard, mask, f)
+    shape = state["img"].shape
+    origin = state["region_box"][:2] if base.shape[:2] != shape[:2] else (0, 0)
+    raster, region_mask = progress.call("Calculating Directional Blur", DB.apply,
+                                        base, mask, directional, state.get("pose"), p["S"],
+                                        source_shape=shape, origin=origin, scale=scale)
+    del base
+    pixels = FS.rgb16(raster)
+    return {"directional": pixels if native else pixels.astype(np.float32) / 65535,
+            "directional_mask": u8(region_mask).astype(np.float32) / 255,
+            "directional_strength": DB.output_strength(directional)}
+
+
 def combined_result(source, mask, p, scale=1, *, previews=None, state=None, preview_components=None):
-    """FS mix against original, followed by original-derived masked Soft Light bands."""
-    fs_mix=p["combine"]["fs_mix"]/100
+    """Keep the original split and vary only the standard Blur opacity."""
+    state = STATE if state is None else state
+    placement = read_global_settings()["mask_placement"]
+    effective = {**p, "frequency": processing_service.combine_frequency(p)}
     dnb_mix=p["combine"]["dnb_mix"]/100
-    fs_layers={}
-    base=source.copy()
     cached = preview_components is not None and "layers" in preview_components
-    if fs_mix>0 or previews is not None:
+    if previews is not None:
         if cached:
             fs_layers, fs_result = preview_components["layers"], preview_components["fs_result"]
         else:
             fs_layers=skintone_layers(source,mask,p,scale,state=state)
             _,fs_result=ST.composite(fs_layers,mask,p["skintone"],p["frequency"])
-        if previews is not None:
-            previews["fs_result"]=fs_result
-        base=np.clip(source+(fs_result-source)*fs_mix,0,1).astype(np.float32)
+        previews["fs_result"] = fs_result
+        render_layers = fs_layers
+        if ("directional" in fs_layers and "blur" in fs_layers and (
+                effective["frequency"]["blur_strength"] != p["frequency"]["blur_strength"]
+                or placement == "folder" and p["frequency"]["blur_mask"])):
+            directional, _ = DB.effective_settings(p["directional"], state.get("pose"), state["img"].shape)
+            render_layers = {**fs_layers, **render_directional(
+                fs_layers, mask, effective, scale, state, directional, False, placement)}
+    else:
+        fs_layers = render_layers = skintone_layers(source, mask, effective, scale, state=state,
+                                                    directional_mask_placement=placement)
     bands=[]
     if (dnb_mix>0 or previews is not None) and (p["band1_on"] or p["second_band"]["on"]):
         if cached:
@@ -1550,10 +1587,9 @@ def combined_result(source, mask, p, scale=1, *, previews=None, state=None, prev
         previews["dnb_result"]=dnb_result
         if preview_components is not None and not cached:
             preview_components.update(layers=fs_layers, fs_result=fs_result, bands=bands, dnb_result=dnb_result)
-    for _,gray in bands:
-        blended=D.softlight(base,gray[...,None])
-        base=np.clip(base+(blended-base)*mask[...,None]*dnb_mix,0,1).astype(np.float32)
-    return fs_layers,bands,base
+    result = processing_service.combine_composite(render_layers, u8(mask).astype(np.float32) / 255,
+                                                   p, bands, placement)
+    return fs_layers,bands,result
 
 
 def run_skin_preview(p, reg, k, mreg, view):
@@ -1717,6 +1753,7 @@ def api_pc_fetch(req):
     capture_format = req.get("photoshop_capture", "raw")
     if capture_format not in ("raw", "png"):
         raise ValueError("Photoshop capture must be raw or png")
+    begin_image_replacement()
     options = {"capture_format": capture_format} if editor == "photoshop" else {}
     source, doc = progress.call("Getting merged image from " + ("Photoshop" if editor == "photoshop" else "PhotoCraft"),
                               bridge().fetch, ROOT / "inbox", **options)
@@ -1754,6 +1791,7 @@ def load_watch_image(path, target):
         if (target["identity"]["width"], target["identity"]["height"]) != image.size:
             raise ValueError("export size does not match the active PhotoCraft document")
     started = time.perf_counter()
+    begin_image_replacement()
     loaded = progress.call("Loading image / preparing profile", prepare_loaded_image,
                            {"path": str(path)}, set_colour=False)
     state, info = finish_loaded_image(*loaded, *loaded[1].shape[:2], started, publish=False)
@@ -1818,11 +1856,12 @@ def validate_editor_source(p):
 
 def send_combined_layers(p):
     validate_skintone_source()
+    placement = read_global_settings()["mask_placement"]
     return processing_service.combine_layers(
         p, STATE["source_img"], full_mask=full_skin_mask, skintone_layers=skintone_layers,
         cached_bands=cached_dnb_bands, mask8=u8,
-        send_fs=lambda *args, **kwargs: send_fs_payload(p, *args, **kwargs),
-        send_bands=send_band_payload,
+        send_fs=lambda *args, **kwargs: send_fs_payload(p, *args, mask_placement=placement, **kwargs),
+        mask_placement=placement,
     )
 
 
@@ -1837,10 +1876,11 @@ def send_band_payload(bands, mask8, **options):
     )
 
 
-def send_fs_payload(p, layers, settings, mask8, **options):
+def send_fs_payload(p, layers, settings, mask8, *, mask_placement=None, **options):
     return bridge().send_skintone(
         layers, settings, mask8, BRIDGE["doc"], STATE["source_icc"],
-        transfer=p["frequency_transfer"], mask_placement=read_global_settings()["mask_placement"],
+        transfer=p["frequency_transfer"],
+        mask_placement=mask_placement if mask_placement is not None else read_global_settings()["mask_placement"],
         **options, **photoshop_hue_options(p),
     )
 
@@ -2154,6 +2194,8 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             else:
                 if not chart_request:
                     CACHE_COORDINATOR.layer_jobs.reset(preview_service.STOPPED)
+                    if self.path in ("/api/load", "/api/pc/fetch", "/api/watch-folder/load"):
+                        CACHE_COORDINATOR.mask_jobs.reset()
                 token = req.pop("_progress", None)
                 with progress.operation(token), (nullcontext() if chart_request else foreground_lock(full_resolution=True)):
                     if not chart_request:

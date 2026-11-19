@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import numpy as np
+import cv2
 
 from shp_photocraft_tools.modules.dnb import ui_server as U, frequency_separation as FS, dodge_burn as D, progress
 from shp_photocraft_tools.modules.dnb.layer_cache import LayerCache
@@ -42,6 +43,25 @@ class LayerCacheTests(unittest.TestCase):
         self.assertFalse(cache.put("c", (c,), 100))
         cache.memory = lambda: None
         self.assertFalse(cache.put("c", (c,), 0))
+
+    def test_write_rejection_reason_uses_admission_read_and_distinguishes_capacity_and_layout(self):
+        readings = iter([99, 100])
+        cache = LayerCache(limit=32, memory=lambda: next(readings))
+        stored, reason = cache.put_with_reason("a", (np.zeros(4, np.float32),), 100)
+        self.assertFalse(stored)
+        self.assertIn("99 bytes", reason)
+        self.assertIn("100 bytes", reason)
+        self.assertTrue(cache.put("a", (np.zeros(4, np.float32),), 100))
+        cache.memory = lambda: None
+        _, reason = cache.put_with_reason("b", (np.zeros(4, np.float32),), 100)
+        self.assertIn("could not be measured", reason)
+        self.assertIn("100 bytes", reason)
+        _, reason = cache.put_with_reason("large", (np.zeros(9, np.float32),), 100)
+        self.assertIn("cache limit", reason)
+        self.assertNotIn("RAM", reason)
+        _, reason = cache.put_with_reason("view", (np.zeros(4, np.float32)[:2],), 100)
+        self.assertIn("layout", reason)
+        self.assertNotIn("RAM", reason)
 
 
 class LayerSendCacheTests(unittest.TestCase):
@@ -240,7 +260,7 @@ class LayerSendCacheTests(unittest.TestCase):
         self.assertTrue(any("Layer cache skipped" in step["label"] for step in steps))
         self.assertEqual(U.LAYER_CACHE.bytes, 0)
 
-    def test_photoshop_get_reuses_identical_content_but_not_changed_pixels_or_depth(self):
+    def test_photoshop_get_clears_even_identical_content(self):
         req = {**PARAMS, "mode": "frequency", "S": 181, "photoshop_hue": "native",
                "frequency": {"radius": 2, "blur_radius": 3}}
         pixels = np.random.default_rng(42).integers(0, 65536, (20, 24, 3), dtype=np.uint16)
@@ -256,19 +276,146 @@ class LayerSendCacheTests(unittest.TestCase):
                 generation = self.state["landmark_generation"]
                 U.api_pc_fetch({})
                 self.assertGreater(self.state["landmark_generation"], generation)
+                self.assertEqual(U.LAYER_CACHE.bytes, 0)
                 U.api_pc_send_layers(req)
-                self.assertEqual(split.call_count, 1)
+                self.assertEqual(split.call_count, 2)
                 for name in ("color", "detail", "blur"):
                     np.testing.assert_array_equal(first[name], self.calls[-1][1][name])
                 pixels[0, 0, 0] ^= 1
                 self.capture = U.PSB.RawCapture("capture", pixels.copy(), U.SRGB_ICC)
                 U.api_pc_fetch({})
                 U.api_pc_send_layers(req)
-                self.assertEqual(split.call_count, 2)
+                self.assertEqual(split.call_count, 3)
                 self.document = {**self.document, "depth": 8}
                 U.api_pc_fetch({})
                 U.api_pc_send_layers(req)
-                self.assertEqual(split.call_count, 3)
+                self.assertEqual(split.call_count, 4)
+
+    def test_open_clears_cached_arrays_before_analysis_and_preserves_source_on_failure(self):
+        import weakref
+
+        old_image = self.state["img"]
+        old_generation = self.state["landmark_generation"]
+        self.state["imgs"] = {"orig": b"old preview"}
+        self.state["preview_cache"] = {"entry": np.ones((100, 100), np.float32)}
+        self.state["full_mask_cache"] = ("old", np.ones((100, 100), np.float32))
+        refs = [weakref.ref(self.state["preview_cache"]["entry"]),
+                weakref.ref(self.state["full_mask_cache"][1])]
+        layer = np.ones((100, 100), np.float32)
+        refs.append(weakref.ref(layer))
+        self.assertTrue(U.LAYER_CACHE.put("old", (layer,), 0))
+        del layer
+
+        def fail(*args, **kwargs):
+            self.assertEqual(U.LAYER_CACHE.bytes, 0)
+            self.assertEqual(self.state["preview_cache"], {})
+            self.assertIsNone(self.state["full_mask_cache"])
+            self.assertTrue(all(ref() is None for ref in refs))
+            self.assertIs(self.state["img"], old_image)
+            raise ValueError("decode failed")
+
+        with patch.object(U, "prepare_loaded_image", side_effect=fail):
+            with self.assertRaisesRegex(ValueError, "decode failed"):
+                U.api_load({"path": "bad.png"})
+        self.assertIs(self.state["img"], old_image)
+        self.assertEqual(self.state["landmark_generation"], old_generation)
+        self.assertEqual(self.state["imgs"], {"orig": b"old preview"})
+        self.assertEqual(U.BRIDGE["doc"], {"index": 1})
+
+    def test_open_new_image_discards_old_layers_before_analysis_and_releases_source(self):
+        import weakref
+
+        old_image = weakref.ref(self.state["img"])
+        self.assertTrue(U.LAYER_CACHE.put("old", (np.ones((100, 100), np.float32),), 0))
+        prepare = U.prepare_loaded_image
+        def verify_before_decode(*args, **kwargs):
+            self.assertEqual(U.LAYER_CACHE.bytes, 0)
+            self.assertIsNotNone(old_image())
+            return prepare(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "new.png"
+            self.assertTrue(cv2.imwrite(str(path), np.full((20, 24, 3), 127, np.uint8)))
+            with patch.object(U, "prepare_loaded_image", side_effect=verify_before_decode), \
+                    patch.object(U.M, "pick_target", return_value=None):
+                result = U.api_load({"path": str(path)})
+        self.assertGreater(result["generation"], 1)
+        self.assertIsNone(old_image())
+        self.assertEqual(U.LAYER_CACHE.bytes, 0)
+
+    def test_failed_get_clears_caches_but_keeps_existing_source_and_document(self):
+        old_image, old_doc = self.state["img"], U.BRIDGE["doc"]
+        self.assertTrue(U.LAYER_CACHE.put("old", (np.ones((10, 10), np.float32),), 0))
+        class FailedBridge:
+            def fetch(self, *args, **kwargs):
+                self.assert_cache_cleared()
+                raise ValueError("editor unavailable")
+            def assert_cache_cleared(self):
+                if U.LAYER_CACHE.bytes:
+                    raise AssertionError("cache was not cleared before capture")
+        with patch.object(U, "bridge", return_value=FailedBridge()):
+            with self.assertRaisesRegex(ValueError, "editor unavailable"):
+                U.api_pc_fetch({})
+        self.assertIs(self.state["img"], old_image)
+        self.assertIs(U.BRIDGE["doc"], old_doc)
+        self.assertEqual(self.state["landmark_generation"], 1)
+
+    def test_replacement_supersedes_running_and_queued_workers(self):
+        coordinator = U.CACHE_COORDINATOR
+        entered, release = threading.Event(), threading.Event()
+        p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181,
+                            "frequency": {"on": False, "radius": 2}})
+        original = FS.split
+        def slow(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("test release timed out")
+            return original(*args, **kwargs)
+
+        layer_job = MaskPrecache(coordinator.precache_layers, delay=.01)
+        mask_job = MaskPrecache(coordinator.precache_mask, delay=10)
+        with patch.object(coordinator, "layer_jobs", layer_job), patch.object(coordinator, "mask_jobs", mask_job), \
+                patch.object(FS, "split", side_effect=slow):
+            try:
+                coordinator.queue_layer_precache(p, "old")
+                self.assertTrue(entered.wait(5))
+                coordinator.queue_mask_precache(U.parse_params({**PARAMS, "mode": "mask", "S": 181}))
+                self.assertEqual(mask_job.status()["status"], "queued")
+                U.begin_image_replacement()
+                release.set()
+                layer_job.close()
+                self.assertEqual(U.LAYER_CACHE.bytes, 0)
+                self.assertIsNone(self.state["full_mask_cache"])
+                self.assertEqual(mask_job.status()["status"], "idle")
+                self.assertEqual(coordinator.layer_cache_status()["tabs"], {})
+            finally:
+                release.set()
+                layer_job.close()
+                mask_job.close()
+
+    def test_replacement_prevents_running_mask_from_repopulating(self):
+        coordinator = U.CACHE_COORDINATOR
+        started, release = threading.Event(), threading.Event()
+        original = coordinator._compute_mask
+        def slow(*args, **kwargs):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("test release timed out")
+            return original(*args, **kwargs)
+
+        job = MaskPrecache(coordinator.precache_mask, delay=.01)
+        with patch.object(coordinator, "mask_jobs", job), patch.object(coordinator, "_compute_mask", slow):
+            try:
+                coordinator.queue_mask_precache(U.parse_params({**PARAMS, "mode": "mask", "S": 181}))
+                self.assertTrue(started.wait(5))
+                U.begin_image_replacement()
+                release.set()
+                job.close()
+                self.assertIsNone(self.state["full_mask_cache"])
+                self.assertEqual(job.status()["status"], "idle")
+            finally:
+                release.set()
+                job.close()
 
     def test_masked_dnb_reuses_equal_reacquired_masks_and_rejects_profile_changes(self):
         shape = self.state["img"].shape[:2]
@@ -749,16 +896,16 @@ class LayerSendCacheTests(unittest.TestCase):
                 release.set()
                 scheduler.close()
 
-    def test_combine_does_not_claim_unprepared_directional_or_disabled_fs(self):
+    def test_combine_caches_split_at_zero_mix_but_not_unprepared_directional(self):
         scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
         base = {**PARAMS, "mode": "combine", "S": 181,
                 "frequency": {"on": False, "radius": 2}, "skintone": {"on": False}}
         with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler):
             try:
-                p = U.parse_params({**base, "combine": {"fs_mix": 0, "dnb_mix": 100}})
-                U.CACHE_COORDINATOR.queue_layer_precache(p, "no-fs")
+                p = U.parse_params({**base, "combine": {"fs_mix": 0, "dnb_mix": 0}})
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "zero-mix")
                 self.assertEqual(self.settle(scheduler)["status"], "ready")
-                self.assertNotIn("frequency", U.CACHE_COORDINATOR.layer_cache_status()["records"])
+                self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["frequency"]["cached"])
                 self.assertTrue(U.CACHE_COORDINATOR.layer_cache_status()["records"]["combine"]["cached"])
                 p = {**p, "combine": {"fs_mix": 100, "dnb_mix": 100},
                      "directional": {**U.DB.DEFAULTS, "on": True}}
@@ -766,7 +913,7 @@ class LayerSendCacheTests(unittest.TestCase):
                 self.assertEqual(self.settle(scheduler)["status"], "skipped")
                 records = U.CACHE_COORDINATOR.layer_cache_status()["records"]
                 self.assertNotEqual(records["combine"]["stamp"], "directional")
-                self.assertNotIn("frequency", records)
+                self.assertNotEqual(records.get("frequency", {}).get("stamp"), "directional")
             finally:
                 scheduler.close()
 
@@ -812,10 +959,105 @@ class LayerSendCacheTests(unittest.TestCase):
                     status = self.settle(scheduler)
                     self.assertEqual(status["status"], "skipped")
                     self.assertIn("RAM", status["message"])
+                    self.assertIn("FS Color/Detail", status["message"])
+                    self.assertIn(f"{2 * 1024**3 + 20 * 24 * 128:,} bytes", status["message"])
+                    if free is None:
+                        self.assertIn("could not be measured", status["message"])
                 self.assertEqual(split.call_count, 0)
                 self.assertEqual(U.LAYER_CACHE.bytes, 0)
             finally:
                 scheduler.close()
+
+    def test_cache_write_reports_later_memory_read_and_threshold(self):
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
+        p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
+        threshold = U.layer_reserve(self.state["img"])
+        free = [100 * 1024**3]
+        U.LAYER_CACHE.memory = lambda: free[0]
+        original_split = FS.split
+
+        def split(*args, **kwargs):
+            result = original_split(*args, **kwargs)
+            free[0] = threshold - 1
+            return result
+
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), patch.object(FS, "split", split):
+            try:
+                U.CACHE_COORDINATOR.queue_layer_precache(p)
+                status = self.settle(scheduler)
+                self.assertEqual(status["status"], "skipped")
+                self.assertIn("FS Color/Detail cache", status["message"])
+                self.assertIn(f"{threshold - 1:,} bytes", status["message"])
+                self.assertIn(f"{threshold:,} bytes", status["message"])
+                self.assertEqual(U.LAYER_CACHE.bytes, 0)
+            finally:
+                scheduler.close()
+
+    def test_background_admission_uses_two_gib_plus_per_pixel_allowance(self):
+        scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)
+        p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
+        pixels = self.state["img"].shape[0] * self.state["img"].shape[1]
+        threshold = 2 * 1024**3 + pixels * 128
+        self.assertEqual(U.layer_reserve(self.state["img"]), 2 * 1024**3 + pixels * 64)
+        free = [threshold - 1]
+        U.LAYER_CACHE.memory = lambda: free[0]
+        with patch.object(U.CACHE_COORDINATOR, "layer_jobs", scheduler), \
+                patch.object(FS, "split", wraps=FS.split) as split:
+            try:
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "below")
+                status = self.settle(scheduler)
+                self.assertEqual(status["status"], "skipped")
+                self.assertIn("FS Color/Detail", status["message"])
+                self.assertIn(f"{threshold - 1:,} bytes", status["message"])
+                self.assertIn(f"{threshold:,} bytes", status["message"])
+                self.assertEqual(split.call_count, 0)
+                self.assertEqual(U.LAYER_CACHE.bytes, 0)
+                free[0] = threshold
+                scheduler.reset()
+                U.CACHE_COORDINATOR.queue_layer_precache(p, "at")
+                self.assertEqual(self.settle(scheduler)["status"], "ready")
+                self.assertEqual(split.call_count, 1)
+                self.assertGreater(U.LAYER_CACHE.bytes, 0)
+            finally:
+                scheduler.close()
+
+    def test_overlap_requires_two_gib_plus_256_bytes_per_pixel(self):
+        coordinator = U.CACHE_COORDINATOR
+        pixels = self.state["img"].shape[0] * self.state["img"].shape[1]
+        threshold = 2 * 1024**3 + pixels * 256
+        p = U.parse_params({**PARAMS, "mode": "frequency", "S": 181, "frequency": {"on": False}})
+        original_mask, original_split = coordinator._compute_mask, FS.split
+        for free, overlaps in ((threshold - 1, False), (threshold, True)):
+            with self.subTest(free=free):
+                U.LAYER_CACHE.clear()
+                U.LAYER_CACHE.memory = lambda: free
+                entered, release, split_done = (threading.Event() for _ in range(3))
+                def held_mask(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("mask was not released")
+                    return original_mask(*args, **kwargs)
+                def split(*args, **kwargs):
+                    result = original_split(*args, **kwargs)
+                    split_done.set()
+                    return result
+                mask_job = MaskPrecache(coordinator.precache_mask, delay=.01)
+                layer_job = MaskPrecache(coordinator.precache_layers, delay=.01)
+                with patch.object(coordinator, "mask_jobs", mask_job), \
+                     patch.object(coordinator, "layer_jobs", layer_job), \
+                     patch.object(coordinator, "_compute_mask", held_mask), patch.object(FS, "split", split):
+                    try:
+                        coordinator.queue_mask_precache(U.parse_params({**PARAMS, "mode": "mask", "S": 181}))
+                        self.assertTrue(entered.wait(5))
+                        coordinator.queue_layer_precache(p, "threshold")
+                        self.assertEqual(split_done.wait(.5), overlaps)
+                        release.set()
+                        self.assertEqual(self.settle(layer_job)["status"], "ready")
+                        self.assertTrue(split_done.is_set())
+                    finally:
+                        release.set()
+                        layer_job.close()
+                        mask_job.close()
 
     def test_mask_and_foreground_locks_exclude_preparation(self):
         scheduler = MaskPrecache(U.CACHE_COORDINATOR.precache_layers, delay=.01)

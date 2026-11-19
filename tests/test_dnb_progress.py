@@ -198,7 +198,13 @@ if(cacheTabs.frequency.state!=='idle' || cacheTabs.combine.state!=='idle' || cac
   throw Error('eviction or combine mapping failed');
 state.combine.fs_mix=0;
 watchLayerPrecache(lastLayerPrecacheInfo,1);
-if(cacheTabs.combine.state!=='ready') throw Error('unused FS eviction should not hide cached D&B');
+if(cacheTabs.combine.state!=='idle') throw Error('Combine requires the full split even at zero Blur mix');
+watchLayerPrecache({status:'ready',generation:2,stamp:'rev1',
+  tabs:{frequency:{state:'ready'},dnb:{state:'unavailable',
+    message:'Layer preparation skipped (standalone D&B): 1.50 GiB system RAM available; 2.50 GiB required.'}},
+  records:{}},1);
+if(!display.textContent.includes('standalone D&B') || !display.textContent.includes('1.50 GiB') ||
+   !display.textContent.includes('2.50 GiB')) throw Error('partial preparation hid the RAM warning');
 state.combine.fs_mix=100;
 watchLayerPrecache({status:'running',mode:'mask',generation:2,stamp:'rev1',
   tabs:{frequency:{state:'ready',message:'FS ready'},dnb:{state:'ready',message:'D&B ready'},
@@ -344,6 +350,7 @@ const shellControls={photoshopTransferLogText:{textContent:''},scaleEstimator:{v
 const parent={document:{getElementById:id=>shellControls[id]||null}};
 const setBusy=b=>state.busy=b, syncTransferTitles=()=>{}, setStatus=()=>{};
 const invalidateMaskCacheStatus=()=>{}, invalidateLayerPrecache=()=>{}, resetCacheTabs=()=>{}, recordCalculation=()=>{}, renderTemporaryLog=()=>{};
+const markDirty=()=>{},endPreviewCompare=()=>{},closeLandmarks=()=>{},clearPanels=()=>{},showImages=()=>{};
 const window={__shpNativeFileDialog:true,prompt:()=>selected};
 let timer;
 const setTimeout=fn=>(timer=fn,1),clearTimeout=()=>{timer=null;};
@@ -391,6 +398,48 @@ const api=async(path,body)=>{
   failure='connection failed'; await pcGet();
   if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connection failed'))
     throw Error('connection error failed');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+"""
+        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_loading_clears_panes_and_ignores_late_preview_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        html = T.S.HTML.read_text(encoding="utf-8")
+        begin = "function beginLoadTimings(" + html.split(
+            "function beginLoadTimings(", 1)[1].split("function recordLoadStage(", 1)[0]
+        panes = "function clearPanels() {" + html.split(
+            "function clearPanels() {", 1)[1].split("function layout()", 1)[0]
+        harness = r"""
+const state={loaded:true,version:1,avers:0,loadEpoch:1,loadingImage:false};
+const temporaryLog={load:''},performance={now:()=>0},markDirty=()=>{};
+const clearTimeout=()=>{},endPreviewCompare=()=>{},closeLandmarks=()=>{};
+const invalidateMaskCacheStatus=()=>{},invalidateLayerPrecache=()=>{},resetCacheTabs=()=>{};
+const recordCalculation=()=>{},renderTemporaryLog=()=>{},renderLoadTimings=()=>{},layout=()=>{},paneKinds=()=>['orig','mask'];
+let loadProgress=null, landmarkEdit=null;
+function pane() {
+  return {previewCache:new Map([['old',{}]]), previewRevision:'old', child:{old:true},
+    set innerHTML(value){this.child=null;this.empty=true;},
+    querySelector(selector){return selector==='img'?this.child:selector==='.empty'&&this.empty?{remove:()=>{this.empty=false;}}:null;},
+    append(img){this.child=img;}};
+}
+const pans=[pane(),pane()],pending=[];
+const document={createElement:()=>{const img={decode:async()=>{}};pending.push(img);return img;}};
+""" + begin + panes + r"""
+(async()=>{
+  const old=showImages(), oldImages=pending.slice();
+  beginLoadTimings('Loading');
+  if(state.loadEpoch!==2||!state.loadingImage||pans.some(p=>p.child||p.previewCache!==null))
+    throw Error('old previews not cleared immediately');
+  for(const image of oldImages)await image.onload();
+  if(await old || pans.some(p=>p.child))throw Error('late old preview reappeared');
+  if(await showImages() || pending.length!==2)throw Error('preview displayed during loading');
+  restoreAfterFailedLoad();
+  if(state.loadingImage || pending.length!==4)throw Error('previous preview not restored after failure');
+  for(const image of pending.slice(2))await image.onload();
+  if(pans.some(p=>!p.child))throw Error('previous image did not return after failure');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
         result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
@@ -920,7 +969,7 @@ const api=async(path,body)=>{
             const window={__shpNativeFileDialog:true,prompt:()=>{calls.push('chooser');return selected;}};
             const performance={now:()=>1},temporaryLog={send:null};
             const syncTransferTitles=()=>{},setBusy=b=>state.busy=b,setStatus=t=>statuses.push(t);
-            const beginLoadTimings=t=>loadProgress={finished:false},recordLoadStage=()=>{};
+            const beginLoadTimings=t=>loadProgress={finished:false},recordLoadStage=()=>{},restoreAfterFailedLoad=()=>{};
             const applyLoaded=r=>{state.sourceKind=r.source_kind;calls.push('loaded');};
             const initializeHueCenter=async()=>{},apply=()=>applied++;
             const params=()=>({S:181}),logNote=t=>notes.push(t),finishProcessing=()=>{};
@@ -963,7 +1012,7 @@ const api=async(path,body)=>{
             const setBusy=value=>state.busy=value,logNote=text=>notes.push(text),setStatus=text=>statuses.push(text);
             const modes=[],messages=[],shellConnected=true,location={origin:'http://local'};
             const switchMode=mode=>modes.push(mode),parent={postMessage:message=>messages.push(message)};
-            const setTimeout=()=>0,beginLoadTimings=()=>{};
+            const setTimeout=()=>0,beginLoadTimings=()=>{},restoreAfterFailedLoad=()=>{},recordLoadStage=()=>{};
             const window={confirm:()=>{throw Error('Watch imports must not prompt');}};
             const applyLoaded=result=>{state.imageInfo=result;loaded++;};
             const initializeHueCenter=async()=>hues++,apply=async()=>applied++;

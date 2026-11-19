@@ -9,7 +9,16 @@ import numpy as np
 
 
 LIMIT = 2 * 1024**3
-RESERVE = 4 * 1024**3
+RESERVE = 2 * 1024**3
+
+
+def memory_rejection(available, required):
+    threshold = f"{required / 1024**3:.2f} GiB ({required:,} bytes) required"
+    if available is None:
+        return f"available system RAM could not be measured; {threshold}"
+    if available < required:
+        return f"{available / 1024**3:.2f} GiB ({available:,} bytes) system RAM available; {threshold}"
+    return None
 
 
 def available_memory():
@@ -45,15 +54,15 @@ class LayerCache:
 
     def _room(self, reserve):
         available = self.memory()
-        if available is None or available < reserve:
+        reason = memory_rejection(available, reserve)
+        if reason is not None:
             self.entries.clear()
             self.bytes = 0
-            return False
-        return True
+        return reason
 
     def get(self, key, reserve):
         with self.lock:
-            if not self._room(reserve):
+            if self._room(reserve) is not None:
                 return None
             entry = self.entries.get(key)
             if entry is None:
@@ -66,13 +75,19 @@ class LayerCache:
             return bool(keys) and all(key in self.entries for key in keys)
 
     def put(self, key, arrays, reserve):
+        return self.put_with_reason(key, arrays, reserve)[0]
+
+    def put_with_reason(self, key, arrays, reserve):
         if (not arrays or any(not isinstance(a, np.ndarray) or not a.flags.owndata for a in arrays)
                 or len({id(a) for a in arrays}) != len(arrays)):
-            return False
+            return False, "invalid or non-owned array layout"
         size = sum(a.nbytes for a in arrays)
         with self.lock:
-            if size > self.limit or not self._room(reserve):
-                return False
+            if size > self.limit:
+                return False, f"component is {size:,} bytes; cache limit is {self.limit:,} bytes"
+            reason = self._room(reserve)
+            if reason is not None:
+                return False, reason
             old = self.entries.pop(key, None)
             if old:
                 self.bytes -= old[1]
@@ -83,4 +98,4 @@ class LayerCache:
                 array.flags.writeable = False
             self.entries[key] = (tuple(arrays), size)
             self.bytes += size
-            return True
+            return True, None

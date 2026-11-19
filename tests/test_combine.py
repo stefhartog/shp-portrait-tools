@@ -15,7 +15,72 @@ from shp_photocraft_tools.modules.dnb import ui_server as U, dodge_burn as D, sk
 
 
 class CombineMathTests(unittest.TestCase):
-    def test_mix_order_original_derived_bands_and_disabled_work(self):
+    def test_editable_and_flattened_directional_hue_and_bands(self):
+        source = np.random.default_rng(42).uniform(.25, .75, (24, 28, 3)).astype(np.float32)
+        mask = np.broadcast_to(np.linspace(0, 1, 28, dtype=np.float32), source.shape[:2]).copy()
+        region = np.flip(mask, axis=1).copy()
+        state = dict(U.STATE, img=source, source_img=source, masks={}, source_opaque=True,
+                     skintone_error=None)
+        request = {**T.T.PARAMS, "mode": "combine", "S": 181, "directional": {"on": True},
+                   "frequency": {"on": True, "radius": 2, "blur_radius": 4, "blur_strength": 80},
+                   "skintone": {"on": True, "hue_amount": 65}, "band1_on": True}
+        inputs = []
+
+        def directional(base, *_args, **_kwargs):
+            inputs.append(base.copy())
+            return base * .9 + .04, region
+
+        with patch.object(U, "STATE", state), \
+             patch.object(U.DB, "apply", side_effect=directional), \
+             patch.object(U.DB, "effective_settings", side_effect=lambda config, *_: (config, None)), \
+             patch.object(U.DB, "segments"), patch.object(U.DB, "output_strength", return_value=43):
+            for placement in ("folder", "layers"):
+                reference = None
+                with patch.object(U, "read_global_settings", return_value={"mask_placement": placement}):
+                    for mix in (0, 50, 100):
+                        with self.subTest(placement=placement, mix=mix):
+                            p = U.parse_params({**request, "combine": {"fs_mix": mix, "dnb_mix": 35}})
+                            _, bands, flat = U.combined_result(source, mask, p)
+                            previews = {}
+                            _, _, preview = U.combined_result(source, mask, p, previews=previews)
+                            np.testing.assert_array_equal(preview, flat)
+                            _, _, cached_preview = U.combined_result(
+                                source, mask, p, previews={}, preview_components={
+                                    "layers": U.skintone_layers(source, mask, p), "bands": bands,
+                                    "fs_result": previews["fs_result"], "dnb_result": source})
+                            np.testing.assert_array_equal(cached_preview, flat)
+                            call = U.processing_service.combine_layers(
+                                p, source, full_mask=lambda _: mask, skintone_layers=U.skintone_layers,
+                                cached_bands=lambda *args, **kwargs: (bands, None, None),
+                                mask8=U.u8, send_fs=lambda *args, **kwargs: (*args, kwargs),
+                                mask_placement=placement)
+                            native, hue, mask8, options = call
+                            if reference is None:
+                                reference = native
+                            for name in ("color", "detail", "blur"):
+                                np.testing.assert_array_equal(reference[name], native[name])
+                            self.assertEqual(options["blur_strength"], mix * .8)
+                            self.assertEqual(hue["hue_amount"], 65)
+                            self.assertEqual(options["band_mix"], 35)
+                            self.assertEqual(options["directional"][2], 43)
+                            color, blur, detail = (native[name].astype(np.float32) / 65535
+                                                   for name in ("color", "blur", "detail"))
+                            shared = mask8.astype(np.float32) / 255
+                            inside = np.ones_like(shared) if placement == "folder" else shared
+                            base = color + (blur - color) * inside[..., None] * (mix * .008)
+                            np.testing.assert_allclose(inputs[-1], base, atol=1e-7)
+                            direction_pixels, direction_mask, strength = options["directional"]
+                            direction_alpha = inside if placement == "folder" else direction_mask / 255
+                            base += (direction_pixels / 65535 - base) * direction_alpha[..., None] * strength / 100
+                            base = ST.process(base, inside, hue)
+                            for _, gray in options["bands"]:
+                                base += (D.softlight(base, gray / 65535) - base) * inside[..., None] * .35
+                            if placement == "folder":
+                                base = color + (base - color) * shared[..., None]
+                            np.testing.assert_allclose(flat, np.clip(base + 2 * detail - 1, 0, 1), atol=3/65535)
+
+    @patch.object(U, "read_global_settings", return_value={"mask_placement": "layers"})
+    def test_mix_order_original_derived_bands_and_disabled_work(self, _settings):
         source=np.random.default_rng(91).uniform(.2,.8,(32,40,3)).astype(np.float32)
         original=source.copy()
         mask=np.tile(np.linspace(0,1,40,dtype=np.float32),(32,1))
@@ -25,11 +90,14 @@ class CombineMathTests(unittest.TestCase):
         p=U.parse_params(req)
         layers=U.skintone_layers(source,mask,p)
         _,fs=ST.composite(layers,mask,p["skintone"],p["frequency"])
-        base=source+(fs-source)*.35
+        f={**p["frequency"], "blur_strength":p["frequency"]["blur_strength"]*.35}
+        base=ST.base(layers,mask,f)
+        quantized_mask=U.u8(mask).astype(np.float32)/255
         bands,_,_,_=D.band_stack(source,p["S"],p["bands"],p["strength"],p["second_band"],
              first_on=p["band1_on"],edge=p["edge"],tau=p["tau"],max_ev=p["max_ev"],mask_result=(mask,None))
         for _,gray in bands:
-            base=np.clip(base+(D.softlight(base,gray[...,None])-base)*mask[...,None]*.65,0,1).astype(np.float32)
+            base=np.clip(base+(D.softlight(base,gray[...,None])-base)*quantized_mask[...,None]*.65,0,1)
+        base=np.clip(base+2*layers["detail"]-1,0,1)
         with patch.object(D,"combined_mask",side_effect=AssertionError("mask regenerated")), \
              patch.object(D,"band_stack",wraps=D.band_stack) as stack:
             _,actual_bands,result=U.combined_result(source,mask,p)
@@ -42,10 +110,10 @@ class CombineMathTests(unittest.TestCase):
             with patch.object(U,"skintone_layers",wraps=U.skintone_layers) as splitter, \
                  patch.object(D,"band_stack",wraps=D.band_stack) as stack:
                 _,_,result=U.combined_result(source,mask,q)
-            self.assertEqual(splitter.call_count,int(fs_mix>0))
+            self.assertEqual(splitter.call_count,1)
             self.assertEqual(stack.call_count,int(dnb_mix>0))
             if fs_mix==dnb_mix==0:
-                np.testing.assert_array_equal(result,source)
+                np.testing.assert_allclose(result,source,atol=2/65535)
             if dnb_mix==0 and fs_mix==100:
                 np.testing.assert_array_equal(result,fs)
         for raw in ({"fs_mix":-1},{"dnb_mix":101},{"fs_mix":True},{"fs_mix":float("nan")},[]):
@@ -334,19 +402,27 @@ class CombineApiTests(unittest.TestCase):
         self.assertEqual(calls[-1][0],"fs")
         self.assertEqual([index for index,_ in calls[-1][4]["bands"]],[1,2])
         self.assertEqual(calls[-1][4]["band_mix"],35)
-        self.assertAlmostEqual(calls[-1][4]["blur_strength"],100)
+        self.assertAlmostEqual(calls[-1][4]["blur_strength"],55)
         p=U.parse_params(req)
         mask=U.full_skin_mask(p)
         unmixed=U.skintone_layers(U.STATE["source_img"],mask,p)
-        for key in ("color","blur"):
-            expected=U.STATE["source_img"]+(unmixed[key]-U.STATE["source_img"])*.55
-            np.testing.assert_array_equal(calls[-1][1][key],FS.rgb16(expected))
+        for key in ("color","detail","blur"):
+            np.testing.assert_array_equal(calls[-1][1][key],FS.rgb16(unmixed[key]))
         self.post("/api/pc/send_layers",{**req,"combine":{"fs_mix":0,"dnb_mix":70}})
-        self.assertEqual(calls[-1][0],"bands")
-        self.assertEqual(calls[-1][3]["band_mix"],70)
+        self.assertEqual(calls[-1][0],"fs")
+        self.assertEqual(calls[-1][4]["band_mix"],70)
+        self.assertEqual(calls[-1][4]["blur_strength"],0)
+        for key in ("color","detail","blur"):
+            np.testing.assert_array_equal(calls[-1][1][key],FS.rgb16(unmixed[key]))
+        self.post("/api/pc/send_layers",{**req,"combine":{"fs_mix":0,"dnb_mix":0}})
+        self.assertEqual(calls[-1][0],"fs")
+        self.assertFalse(calls[-1][4]["bands"])
         self.post("/api/pc/send_layers",{**req,"combine":{"fs_mix":100,"dnb_mix":0}})
         self.assertEqual(calls[-1][0],"fs")
         self.assertIsNone(calls[-1][4]["band_mask8"])
+        self.assertEqual(calls[-1][4]["blur_strength"],100)
+        for key in ("color","detail","blur"):
+            np.testing.assert_array_equal(calls[-1][1][key],FS.rgb16(unmixed[key]))
         self.post("/api/pc/send_layers",{**req,"mode":"dnb"})
         self.assertEqual(calls[-1][0],"bands")
         self.post("/api/pc/send_layers",{**req,"mode":"frequency"})

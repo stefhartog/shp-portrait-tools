@@ -64,6 +64,12 @@ shared mask is pending. After the mask is ready, skin-aware Blur can overlap
 standalone D&B when CUDA is selected. CPU D&B stays serial, including CUDA
 fallback, and Combine waits for the cached FS components. Tab elapsed times
 can overlap; do not add them together to estimate total preparation time.
+The current test reserve is 2 GiB free system RAM plus 128 bytes per source
+pixel for background admission; parallel overlap requires 2 GiB plus 256
+bytes per pixel. Layer cache reads and writes require 2 GiB plus 64 bytes per
+pixel. The separate layer-cache capacity remains 2 GiB. If available system
+RAM is insufficient or cannot be measured, cache preparation reports the
+stage and threshold and fails closed.
 
 ## Experimental CUDA D&B
 
@@ -145,6 +151,14 @@ mask and 300 ms for layers, temporarily replacing 600 ms and 1,500 ms.
 Foreground or explicit preparation does not wait for these timers, but can
 still wait for work in progress. To end the trial, restore the previous
 coordinator delays; the worker's general default is unchanged.
+
+Open/Get, including re-Get of the same document, supersedes background jobs
+and clears the previous full-resolution layer, mask, and preview caches before
+new image analysis. The old source remains available until replacement succeeds,
+so a failed load or cancelled file selection can restore the old preview; its
+cleared caches are recomputed when needed. Preview panes are blank during the
+attempt. Active work may retain temporary references until it finishes, and the
+OS may retain freed memory in the process working set.
 
 ## Automatic S estimator
 

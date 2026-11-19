@@ -155,7 +155,7 @@ workflow, not a requirement to use every effect.
    to understand its contribution. Leave Directional Blur off for this first pass.
 6. **Try Dodge & Burn.** Keep Band 2 off initially. Adjust Band 1 **Strength** modestly and
    compare Original/Result. Judge the photograph, not the gray diagnostic layers.
-7. **Balance in Combine.** Adjust **FS mix** and **D&B mix** between 0 and 100%.
+7. **Balance in Combine.** Adjust **FS Blur mix** and **D&B mix** between 0 and 100%.
    Inspect **Combined**. To change an ingredient itself, return to its own tab.
    You do not need to Get Image again.
 8. **Choose the output deliberately.** Use **Send Result** for the flattened
@@ -202,8 +202,10 @@ but only do that if you have a defensible scale value.
   to restore the prior selection. Comparison is unavailable while processing,
   picking colors, editing landmarks or using Skin Mask.
 - The preset selector has **Save**, **Save New** and **Delete**. Save overwrites
-  the selected preset; Save New asks for a name. A star means settings differ
-  from that preset. This **Save saves settings, not a finished photograph**.
+  the selected preset; Save New opens a name dialog. Cancel leaves presets
+  unchanged, and an existing name requires confirmation before overwrite.
+  A star means settings differ from that preset. This **Save saves settings,
+  not a finished photograph**.
 
 Skin presets include the whole shared mask/FS/D&B/Combine bundle, including
 settings hidden in another tab. Switching tabs alone does not mark a preset
@@ -278,9 +280,10 @@ its contribution is off.
 
 ### Combine: judge the final mix
 
-**FS mix** blends the configured FS effect with Original. **D&B mix** then
-controls the D&B contribution on that base. Both start at 100%; these are mixes,
-not replacements for the ingredient controls.
+**FS Blur mix** scales only the standard Blur layer's opacity. For example, a
+50% mix with Blur strength set to 80% gives 40% opacity. Color and Detail stay
+fully separated even at 0%. Hue and Directional Blur keep their own strengths;
+**D&B mix** controls the D&B layers. Both mixes start at 100%.
 
 The right-hand **FS result** and **D&B result** show each configured ingredient
 **before** these mixes, even when its mix is zero. Judge the mixed photograph in
@@ -341,7 +344,7 @@ full-resolution data is retained where applicable, and only changed dependencies
 need to be recalculated. Each D&B band is cached separately. Image analysis
 also shows preparation details and Send Layers reports components actually
 reused. Preparation can use substantial CPU and temporary
-RAM; it is skipped unless free RAM exceeds 4 GiB plus 128 bytes per source
+RAM; it is skipped unless free RAM is at least 2 GiB plus 128 bytes per source
 pixel at admission. You can turn it off in Settings & Info. Previews no longer
 wait for the current full-resolution stage to finish, but background CPU and
 memory use can still slow rendering. Layer preparation defers new stages while

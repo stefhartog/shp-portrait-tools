@@ -105,3 +105,10 @@ details.grp > summary:hover { color:var(--text); }
 .theme-picker select { font-size:12px; }
 :root[data-theme="photocraft"] :is(button, select, input, textarea):focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
 :root[data-theme="photocraft"] :is(.ratios button.on, .seg button.on) { color:var(--primary-text); }
+#presetNameDialog {
+  color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:8px;
+  max-width:calc(100% - 32px);
+}
+#presetNameDialog::backdrop { background:rgba(0,0,0,.45); }
+#presetNameDialog form { display:grid; gap:10px; }
+.preset-dialog-actions { display:flex; justify-content:flex-end; gap:6px; }

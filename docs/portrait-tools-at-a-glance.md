@@ -27,7 +27,7 @@ Tune the scale of the work and its strength rather than treating every tonal var
 
 ### Combine
 
-Bring your configured FS & Tone and Dodge & Burn treatments together with independent **FS mix** and **D&B mix** controls.
+Bring your configured FS & Tone and Dodge & Burn treatments together with independent **FS Blur mix** and **D&B mix** controls. Color and Detail remain fully separated at every mix.
 For a series, local batch processing analyzes each image's scale and mask while applying your chosen settings.
 
 ## AI Fill

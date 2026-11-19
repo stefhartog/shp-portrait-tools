@@ -302,7 +302,8 @@ class WatchApiTests(unittest.TestCase):
                     "token":ready["token"]})
             self.assertIn("changed during image analysis", error.exception.read().decode())
         self.assertTrue(source.exists())
-        self.assertTrue(all(U.STATE[key] is value for key, value in previous.items()))
+        self.assertTrue(all(U.STATE[key] is value for key, value in previous.items()
+                            if key not in ("preview_cache", "full_mask_cache", "full_mask_status_entry", "mask_status_key")))
         self.assertEqual(list((self.root / "retained").iterdir()), [])
         self.assertTrue(json.loads(self.get("/api/watch-folder")[0])["ready"])
         with patch.object(U, "watch_target", return_value=target), patch.object(U, "load_watch_image") as load:
@@ -312,10 +313,28 @@ class WatchApiTests(unittest.TestCase):
                 **target["identity"], "width":999}}):
             with self.assertRaisesRegex(ValueError, "export size"):
                 U.load_watch_image(self.image, U.watch_target())
-        self.assertTrue(all(U.STATE[key] is value for key, value in previous.items()))
+        self.assertTrue(all(U.STATE[key] is value for key, value in previous.items()
+                            if key not in ("preview_cache", "full_mask_cache", "full_mask_status_entry", "mask_status_key")))
         with patch.object(U, "watch_target", return_value=changed):
             loaded = self.request("/api/watch-folder/load", {"token":ready["token"]})
         self.assertTrue(loaded["watch_cleanup"])
+        self.assertFalse(source.exists())
+
+    def test_watch_load_replaces_previous_image_and_clears_old_layers(self):
+        source, ready = self.prepare()
+        self.post("/api/load", {"path": str(self.image)})
+        previous_generation = U.STATE["landmark_generation"]
+        target = {"document":{"index":2, "name":"Source.psd"}, "identity":{
+            "id":"captured-doc", "revision":7, "width":128, "height":96}}
+        import numpy as np
+        from shp_photocraft_tools.modules.dnb.layer_cache import LayerCache
+        cache = LayerCache(limit=1024, memory=lambda: 100 * 1024**3)
+        self.assertTrue(cache.put("old", (np.ones(100, np.float32),), 0))
+        with patch.object(U, "LAYER_CACHE", cache), patch.object(U, "watch_target", return_value=target):
+            loaded = self.request("/api/watch-folder/load", {"token":ready["token"]})
+        self.assertEqual(cache.bytes, 0)
+        self.assertGreater(loaded["generation"], previous_generation)
+        self.assertEqual(U.STATE["source_kind"], "photocraft")
         self.assertFalse(source.exists())
 
     def test_missing_active_target_retains_file_then_retries_on_connection(self):

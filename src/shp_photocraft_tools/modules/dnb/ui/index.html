@@ -106,6 +106,13 @@
 </style>
 </head>
 <body>
+<dialog id="presetNameDialog" aria-labelledby="presetNameTitle">
+  <form method="dialog">
+    <label id="presetNameTitle" for="presetNameInput">Name for the new preset:</label>
+    <input id="presetNameInput" type="text" autofocus>
+    <div class="preset-dialog-actions"><button type="submit" value="save">Save</button><button type="submit" value="cancel" formnovalidate>Cancel</button></div>
+  </form>
+</dialog>
 <div id="app">
 <div id="bar"><div id="barActions"><button class="workflow" id="pcConnect" hidden title="Connect to a controlled PhotoCraft window or launch a separate one.">PhotoCraft</button><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Send the corrected photograph to PhotoCraft." disabled>Send Result</button><button class="workflow" id="pcSendLayers" disabled hidden>Send Layers</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
@@ -592,7 +599,7 @@ $('blurOn').onchange = () => {
 };
 $('blurMask').onchange = () => { state.frequency.blur_mask = $('blurMask').checked; markDirty(); };
 const combineSliders={};
-for(const [key,label] of [['fs_mix','FS mix'],['dnb_mix','D&B mix']]){
+for(const [key,label] of [['fs_mix','FS Blur mix'],['dnb_mix','D&B mix']]){
   combineSliders[key]=slider($('combineSliders'),label,0,100,1,state.combine[key],
     value=>{state.combine[key]=value;markDirty(false,true);});
 }
@@ -836,6 +843,7 @@ function syncTransfer() {
       syncTransfer();
       setStatus('Global settings could not be saved: '+e.message, true);
     } finally { setBusy(false); }
+    if (maskPlacement !== previousPlacement && state.mode === 'combine') markDirty(false, true);
   };
 });
 const skintoneSliders = {};
@@ -1189,12 +1197,22 @@ function renderLoadTimings() {
   renderTemporaryLog();
 }
 function beginLoadTimings(message) {
+  state.loadingImage = true;
+  state.loadEpoch = (state.loadEpoch || 0) + 1;
+  clearTimeout(markDirty.t);
+  endPreviewCompare();
+  closeLandmarks(false);
+  clearPanels();
   invalidateMaskCacheStatus();
   invalidateLayerPrecache();
   resetCacheTabs();
   if (temporaryLog.load) recordCalculation(temporaryLog.load);
   loadProgress = {started:performance.now(), steps:[message]};
   renderLoadTimings();
+}
+function restoreAfterFailedLoad() {
+  state.loadingImage = false;
+  if (state.loaded && state.version) showImages();
 }
 function recordLoadStage(label, seconds) {
   if (!loadProgress) return;
@@ -1207,6 +1225,7 @@ async function loadList() {
   list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
 }
 function applyLoaded(r) {
+    state.loadingImage = false;
     endPreviewCompare();
     state.imageInfo = r;
     syncPose();
@@ -1293,6 +1312,7 @@ async function loadImage() {
     loaded = true;
     await initializeHueCenter();
   } catch (e) {
+    restoreAfterFailedLoad();
     recordLoadStage('Image load/analysis failed: '+e.message);
     loadProgress.finished = true; setStatus(e.message, true);
   }
@@ -1372,7 +1392,8 @@ function analysisFlags() { return {detect: $('anDetect').getAttribute('aria-pres
   $(id).setAttribute('aria-pressed', String(pressed));
   localStorage.setItem('dnb-' + id, pressed ? '1' : '0');
   if (!state.version || state.busy) return;
-  try { const r = await api('/api/analysis', {analysis: analysisFlags()}); state.avers = r.avers; showImages(); } catch (e) { setStatus(e.message, true); }
+  const epoch = state.loadEpoch;
+  try { const r = await api('/api/analysis', {analysis: analysisFlags()}); if (epoch === state.loadEpoch) { state.avers = r.avers; showImages(); } } catch (e) { if (epoch === state.loadEpoch) setStatus(e.message, true); }
 });
 ['anDetect', 'anSkin', 'anStruct'].forEach(id => { const v = localStorage.getItem('dnb-' + id); if (v !== null) $(id).setAttribute('aria-pressed', String(v === '1')); });
 function params() {
@@ -1529,15 +1550,12 @@ function watchLayerPrecache(info, epoch) {
         const record = value.records?.[mode], tab = value.tabs?.[mode];
         const matching = record?.stamp === layerCacheStamp() && record.generation === state.imageGeneration;
         if (mode === 'combine') {
-          const needsFs = state.combine.fs_mix > 0;
           const needsBands = state.combine.dnb_mix > 0 && (state.band1On || state.secondBand.on);
-          const required = [...(needsFs ? [value.records?.frequency] : []),
-                            ...(needsBands ? [value.records?.combine_bands] : [])];
+          const required = [value.records?.frequency, ...(needsBands ? [value.records?.combine_bands] : [])];
           const cached = required.every(item => item?.stamp === layerCacheStamp()
             && item.generation === state.imageGeneration && item.cached);
-          if (!required.length) cacheTabs[mode] = {state:'unavailable',label:'No enabled Combine components'};
-          else if (cached) cacheTabs[mode] = {state:'ready',label:'Matching Combine components are cached'};
-          else if (needsFs && value.tabs?.frequency?.state === 'unavailable')
+          if (cached) cacheTabs[mode] = {state:'ready',label:'Matching Combine components are cached'};
+          else if (value.tabs?.frequency?.state === 'unavailable')
             cacheTabs[mode] = {state:'unavailable',label:value.tabs.frequency.message};
           else if (layerWorkActive) cacheTabs[mode] = {state:'warming',label:'Preparing Combine components'};
           else if (value.status === 'skipped' || value.status === 'error')
@@ -1555,6 +1573,11 @@ function watchLayerPrecache(info, epoch) {
       }
     }
     if (value.budget_note) $('layerCacheStatus').textContent += ' '+value.budget_note;
+    if (value.stamp === layerCacheStamp() && value.generation === state.imageGeneration) {
+      const warnings = [...new Set(Object.values(value.tabs || {}).filter(tab => tab.state === 'unavailable')
+        .map(tab => tab.message).filter(text => text?.includes('system RAM') && !message.includes(text)))];
+      if (warnings.length) $('layerCacheStatus').textContent += ' ' + warnings.join(' ');
+    }
     announceCacheTabs();
     if (layerWorkActive || Object.values(value.records || {}).some(record =>
         record.stamp === layerCacheStamp() && record.generation === state.imageGeneration))
@@ -1651,7 +1674,7 @@ async function pcGet() {
         if (connection.code === 'authentication') throw new Error(connection.message);
         if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
         path = window.prompt('SHP_OPEN_IMAGE_V1');
-        if (!path) { recordLoadStage('Image selection cancelled'); loadProgress.finished = true; return; }
+        if (!path) { restoreAfterFailedLoad(); recordLoadStage('Image selection cancelled'); loadProgress.finished = true; setStatus('Image selection cancelled.'); return; }
       }
     }
     const message = path ? 'Opening local image...' : 'Getting image from selected editor...';
@@ -1663,6 +1686,7 @@ async function pcGet() {
     loaded = true;
     await initializeHueCenter();
   } catch (e) {
+    restoreAfterFailedLoad();
     if (loadProgress) { recordLoadStage('Image Get/analysis failed: '+e.message); loadProgress.finished = true; }
     setStatus(e.message, true);
   } finally {
@@ -1770,7 +1794,10 @@ async function pollWatchFolder() {
       const message = 'Loading watch-folder image...';
       beginLoadTimings(message); setStatus(message);
       const result = await operationApi('/api/watch-folder/load', {token:inbox.token});
-      if (result.skipped) return;
+      if (result.skipped) {
+        restoreAfterFailedLoad(); recordLoadStage('Watch-folder image was no longer ready.');
+        loadProgress.finished = true; setStatus('Watch-folder image was no longer ready.'); return;
+      }
       applyLoaded(result);
       loaded = true;
       switchMode('mask');
@@ -1780,6 +1807,7 @@ async function pollWatchFolder() {
       await initializeHueCenter();
       if (result.watch_error) setStatus(result.watch_error, true);
     } catch (e) {
+      restoreAfterFailedLoad();
       if (watchFolderLoadError !== e.message) logNote('Watch-folder load failed; input retained: '+e.message);
       watchFolderLoadError = e.message;
       setStatus('Watch-folder load failed. See Log.', true);
@@ -1912,7 +1940,7 @@ function syncMode() {
   ['g-mask', 'g-structure', 'g-range', 'g-color'].forEach(id => { $(id).hidden = state.mode !== 'mask'; });
   const result = $('tabsA').querySelector('[data-k="result"]');
   result.textContent = state.mode === 'combine' ? 'Combined' : state.mode === 'mask' ? 'Skin mask' : 'Result';
-  result.title = state.mode==='combine' ? 'FS mix against Original, followed by masked D&B effects at D&B mix.' : dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skintone correction between Color and Detail, with optional added skin-aware Blur.' : 'The reusable combined grayscale skin mask.';
+  result.title = state.mode==='combine' ? 'Full Color and Detail separation. FS Blur mix scales only standard Blur opacity; D&B mix controls the D&B layers.' : dnb ? 'D&B correction through the combined mask.' : frequency ? 'Skintone correction between Color and Detail, with optional added skin-aware Blur.' : 'The reusable combined grayscale skin mask.';
   $('pcSend').textContent = 'Send Result';
   $('tabsA').querySelector('[data-k="orig"]').title = 'Original image.';
   syncTransferTitles();
@@ -2121,6 +2149,7 @@ function clearPanels() {
   });
 }
 function showImages() {
+  if (state.loadingImage) return Promise.resolve(false);
   const kinds = paneKinds();
   return Promise.all(pans.map((p, i) => new Promise(resolve => {
     p.finishDisplay?.(false);
@@ -2486,9 +2515,24 @@ $('presetSave').onclick = async () => {
   const v = $('presetSel').value; if (v === 'builtin') return;
   try { await storePreset(v, v.slice(2)); } catch (e) { presetErr(e); }
 };
-$('presetNew').onclick = async () => {
-  const name = (prompt('Name for the new preset:') || '').trim(); if (!name) return;
-  if (name in presets.presets && !confirm(`A preset named "${name}" exists. Overwrite it?`)) return;
+$('presetNew').onclick = () => {
+  const input = $('presetNameInput');
+  input.value = '';
+  input.setCustomValidity('');
+  $('presetNameDialog').showModal();
+};
+$('presetNameInput').oninput = event => event.target.setCustomValidity('');
+$('presetNameDialog').querySelector('form').onsubmit = async event => {
+  if (event.submitter?.value === 'cancel') return;
+  event.preventDefault();
+  const input = $('presetNameInput'), name = input.value.trim();
+  if (!name || [...name].length > 60) {
+    input.setCustomValidity('Give the preset a name (1-60 characters).');
+    input.reportValidity();
+    return;
+  }
+  if (Object.hasOwn(presets.presets, name) && !confirm(`A preset named "${name}" exists. Overwrite it?`)) return;
+  $('presetNameDialog').close();
   try { await storePreset('p:' + name, name); } catch (e) { presetErr(e); }
 };
 $('presetRemove').onclick = async () => {
