@@ -181,37 +181,6 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(L.LaunchError, "shell_port"):
             L.read_config(self.config)
 
-    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
-    def test_chromium_command_has_one_shell_app_window(self):
-        with patch.object(L.shutil, "which", return_value="/usr/bin/ungoogled-chromium"):
-            command = L.chromium_command({}, ["http://127.0.0.1:18760/"])
-            self.assertEqual(command[0], "/usr/bin/ungoogled-chromium")
-            self.assertIn("--app=http://127.0.0.1:18760/", command)
-            self.assertIn("--class=shp-photocraft-tools", command)
-            self.assertTrue(any("shp-portrait-tools/ungoogled-chromium-profile" in arg for arg in command))
-            self.assertNotIn("--new-tab", command)
-        with patch.object(L.shutil, "which", return_value=None):
-            with self.assertRaisesRegex(L.LaunchError, "not found"):
-                L.chromium_command({}, ["http://127.0.0.1:18760/"])
-
-    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
-    def test_flatpak_ungoogled_chromium_and_invalid_configuration(self):
-        with patch.object(L.shutil, "which", side_effect=lambda name: "/usr/bin/flatpak" if name == "flatpak" else None):
-            with patch.object(L.subprocess, "run", return_value=unittest.mock.Mock(returncode=0)):
-                command = L.chromium_command({}, ["http://127.0.0.1:18760/"])
-                self.assertEqual(command[:3], ["/usr/bin/flatpak", "run", L.CHROMIUM_FLATPAK])
-                self.assertTrue(any(f".var/app/{L.CHROMIUM_FLATPAK}/shp-photocraft-tools-profile" in arg for arg in command))
-                L.subprocess.run.assert_called_once_with(["/usr/bin/flatpak", "info", L.CHROMIUM_FLATPAK],
-                                                         capture_output=True, timeout=10)
-            with patch.object(L.subprocess, "run", return_value=unittest.mock.Mock(returncode=1)):
-                with self.assertRaisesRegex(L.LaunchError, "not installed"):
-                    L.chromium_command({}, ["http://127.0.0.1:18760/"])
-        with self.assertRaisesRegex(L.LaunchError, "'ungoogled_chromium'"):
-            L.chromium_command({"ungoogled_chromium": []}, ["http://127.0.0.1:18760/"])
-        with patch.object(L.shutil, "which", return_value=None):
-            with self.assertRaisesRegex(L.LaunchError, "not found"):
-                L.chromium_command({"ungoogled_chromium": "/missing/browser"}, ["http://127.0.0.1:18760/"])
-
     def test_child_startup_failure_points_to_log(self):
         fake = unittest.mock.Mock()
         fake.poll.return_value = 1
@@ -224,7 +193,7 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(L.LaunchError, "shell.log"):
                 L.ensure_shell(self.config, data, L.read_config(self.config), logs)
 
-    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (XDG desktop install)")
     def test_desktop_install_is_distinct_idempotent_and_collision_safe(self):
         repository = Path(__file__).resolve().parent.parent
         desktop = self.root / "Desktop"
@@ -255,7 +224,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("Refusing to overwrite", third.stderr)
         self.assertEqual(Path(paths["launcher"]).read_text(), "user-edited wrapper")
 
-    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (XDG desktop install)")
     def test_display_refresh_retains_launch_identity_and_custom_fields(self):
         repository = Path(__file__).resolve().parent.parent
         refresh = runpy.run_path(str(repository / "scripts/install_desktop.py"))["refresh_display_metadata"]
@@ -295,7 +264,7 @@ class LauncherTests(unittest.TestCase):
             refresh(paths)
         self.assertEqual(paths[0].read_text(), old)
 
-    @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")
+    @unittest.skipIf(sys.platform == "win32", "Linux-only (XDG desktop install)")
     def test_desktop_trust_failure_reports_manual_action(self):
         script = Path(__file__).resolve().parent.parent / "scripts/install_desktop.py"
         installer = runpy.run_path(str(script))

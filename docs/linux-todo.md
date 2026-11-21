@@ -7,6 +7,12 @@ tests are gone. This page keeps the fresh-install steps and lists what is still 
 
 ## Fresh install on a Linux machine
 
+Since v0.2.0 the normal way is the one-command installer (README → Install):
+`curl -LsSf https://github.com/stefhartog/shp-portrait-tools/releases/latest/download/install.sh | sh`.
+It is untested on Linux so far: run it once on the Linux machine (or `sh install.sh --source-dir <checkout>
+--install-dir <scratch> --no-launch` from a checkout) and fix what breaks. The manual steps below remain for a
+development checkout.
+
 For people and AI sessions alike. `CLAUDE.md` uses `python -m uv` (the Windows machine); on Linux use plain
 `uv`. Ask the user before stopping a running Tools instance, before moving or replacing any existing file, and
 before anything that needs `sudo`; `sudo` needs a real terminal, not the `!` prefix of an AI session.
@@ -72,8 +78,8 @@ before anything that needs `sudo`; `sudo` needs a real terminal, not the `!` pre
    with a fake platform). **Restart** was verified live on 2026-11-21: drain, launcher relaunch from the
    installed wrapper, and a fresh window back on Skin Tools.
 2. **Real-window smoke test** for the Qt host, replacing the removed GTK one (opt-in, needs a session).
-3. **`--browser` mode** (Ungoogled Chromium app window): check it still works now that the status page
-   redirects to the worker origin, or drop it.
+3. ~~`--browser` mode~~ (Ungoogled Chromium app window): dropped on 2026-11-21. An old `ungoogled_chromium`
+   key in `launcher.json` is ignored; use the Qt window or `--no-browser` and a normal browser.
 4. **Plain-browser pickers.** Without the pywebview bridge the page falls back to `prompt('SHP_OPEN_*')`,
    which no host answers any more, so a plain browser shows a raw prompt. Decide whether to replace it with
    a path box or a hint.

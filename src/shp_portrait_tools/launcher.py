@@ -29,7 +29,6 @@ SHELL_PORT = 18760
 # Keys in older launcher.json files: `dnb` was Skin Tools' ID; `crop` (AI Fill) moved to shp-ai-fill.
 LEGACY_KEYS = {"dnb": MODULE, "crop": None}
 MODEL_FILES = ("yunet.onnx", "face_landmarks.onnx", "selfie_multiclass_256x256.onnx")
-CHROMIUM_FLATPAK = "io.github.ungoogled_software.ungoogled_chromium"
 
 
 class LaunchError(RuntimeError):
@@ -247,30 +246,6 @@ def detached_options():
     return {"start_new_session": True}
 
 
-def chromium_command(config, urls):
-    if sys.platform == "win32":
-        raise LaunchError("--browser (Ungoogled Chromium app mode) is Linux-only. Use the default desktop window, "
-                          "or --no-browser and open the loopback URL.")
-    binary = config.get("ungoogled_chromium")
-    if binary is not None and (not isinstance(binary, str) or not binary):
-        raise LaunchError("'ungoogled_chromium' must be an executable name or path")
-    executable = next((found for name in ([binary] if binary else ["ungoogled-chromium", "ungoogled-chromium-browser"])
-                       if (found := shutil.which(name))), None)
-    if executable:
-        command = [executable]
-        profile = global_config_dir() / "ungoogled-chromium-profile"
-    elif binary is None and (flatpak := shutil.which("flatpak")):
-        result = subprocess.run([flatpak, "info", CHROMIUM_FLATPAK], capture_output=True, timeout=10)
-        if result.returncode:
-            raise LaunchError("Ungoogled Chromium is not installed. Configure 'ungoogled_chromium' in launcher.json.")
-        command = [flatpak, "run", CHROMIUM_FLATPAK]
-        profile = Path.home() / ".var/app" / CHROMIUM_FLATPAK / "shp-photocraft-tools-profile"
-    else:
-        raise LaunchError(f"Ungoogled Chromium executable not found: {binary or 'ungoogled-chromium'}")
-    return [*command, f"--user-data-dir={profile}", "--class=shp-photocraft-tools",
-            f"--app={urls[0]}", "--window-size=1347,994", "--no-first-run", "--no-default-browser-check"]
-
-
 def tools_dirs():
     """(data, state) roots. Windows honours SHP_TOOLS_DATA so tests can use a disposable tree."""
     if sys.platform == "win32":
@@ -354,16 +329,16 @@ def wait_for_exit(pid, start_ticks, timeout=90):
         time.sleep(.1)
 
 
-def launch(config_path, no_browser=False, browser=False):
+def launch(config_path, no_browser=False):
     config = read_config(config_path)
     data, state = tools_dirs()
     state.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
     urls = [f"http://127.0.0.1:{config['shell_port']}/"]
-    command = None if no_browser else (chromium_command(config, urls) if browser else desktop_command(urls[0], data))
-    if command and not browser:
+    command = None if no_browser else desktop_command(urls[0], data)
+    if command:
         command.extend(["--launcher-python", background_python(), "--launcher-config", str(config_path.resolve())])
-    log_name = "chromium.log" if browser else "desktop.log"
+    log_name = "desktop.log"
     with file_lock(state / "launcher.lock"):
         shell = ensure_shell(config_path, data, config, state)
     if command:
@@ -373,7 +348,7 @@ def launch(config_path, no_browser=False, browser=False):
         try:
             code = process.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            code = None  # The owning desktop/browser process remains attached while running.
+            code = None  # The owning desktop process remains attached while running.
             threading.Thread(target=process.wait, daemon=True).start()
         if code not in (0, None):
             raise LaunchError(f"Tools window exited with status {code}. Servers remain available; see {state / log_name}")
@@ -407,9 +382,7 @@ def main():
     parser.add_argument("--init-config", action="store_true",
                         help="Windows: write a Skin Tools-first launcher.json (never overwrites) and exit")
     parser.add_argument("--wait-for-exit", nargs=2, type=int, action="append", default=[], metavar=("PID", "START_TICKS"))
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--no-browser", action="store_true", help="start/reuse the shell without opening a window")
-    mode.add_argument("--browser", action="store_true", help="open Ungoogled Chromium app instead of the owned desktop")
+    parser.add_argument("--no-browser", action="store_true", help="start/reuse the services without opening a window")
     args = parser.parse_args()
     try:
         args.config = prepare_folders(args.config)
@@ -424,7 +397,7 @@ def main():
                               "and place the Skin Tools models in the 'models' directory it names.")
         for pid, ticks in args.wait_for_exit:
             wait_for_exit(pid, ticks)
-        result = launch(args.config, args.no_browser, args.browser)
+        result = launch(args.config, args.no_browser)
     except (LaunchError, OSError) as error:
         message = f"{APP}: {error}"
         if sys.platform == "win32":

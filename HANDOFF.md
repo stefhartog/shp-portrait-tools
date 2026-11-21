@@ -12,6 +12,25 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## One-command installers and v0.2.0 (2026-11-21)
+
+`install.ps1` (Windows) and `install.sh` (Linux) at the repository root are attached to each GitHub Release and
+install that release for the current user: NVIDIA GPU check (at least 8 GB, i.e. >= 7800 MiB reported, and driver
+>= 580 for CUDA 13), WebView2 check on Windows, uv if missing, the tagged source archive into
+`%LOCALAPPDATA%\Programs\shp-portrait-tools` / `~/.local/share/shp-portrait-tools-app` (a marker file guards
+the folder; an update keeps `.venv` and refuses while Tools runs from it), `uv python install 3.13 --no-bin`,
+`uv sync --locked --extra gpu`, then `python -m shp_portrait_tools.fetch_models` (the three ONNX files from
+their pinned upstream URLs with SHA-256 checks, plus the rtmlib pose weights; nothing is redistributed), then
+`launcher.json` (`--init-config`) and the Start Menu shortcut on Windows or `scripts/install_desktop.py` on
+Linux, and starts Tools. Existing shortcuts/launcher files are never replaced. `-SourceDir`/`--source-dir`
+install from a local checkout for testing. Not yet: the first-launch check page, an uninstall script, an
+in-app Update button. The Windows installer was tested end to end and as an update into an isolated folder;
+`install.sh` is syntax-checked only until it runs on the Linux machine.
+
+`--browser` (Ungoogled Chromium app mode) was removed; an old `ungoogled_chromium` launcher.json key is ignored.
+Version 0.2.0 is the first tagged release; the old command aliases (`shp-photocraft-tools`,
+`shp-photocraft-dnb`, `shpdnb`) are still in it and can go after it.
+
 ## Linux Qt desktop host (2026-11-21)
 
 `desktop/qt_controller.py` `Host(DesktopHost)` is the Linux window and tray; the GTK3/WebKit2

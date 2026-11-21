@@ -74,7 +74,13 @@ python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %AP
 python -m uv run --no-sync shp-portrait-tools                 # supervisor + Skin Tools + desktop window
 python -m uv run --no-sync shp-portrait-tools --no-browser    # services only; http://127.0.0.1:18760/ (status page)
 python -m uv run --no-sync shp-skin-tools --dir <folder>      # standalone Skin Tools web UI (port 8765)
+python -m uv run --no-sync python -m shp_portrait_tools.fetch_models  # download + verify models (installers run it)
 ```
+
+Releases: `install.ps1` / `install.sh` (repo root) are the one-command installers, attached to each GitHub
+Release (tags `vX.Y.Z`, version in `pyproject.toml`, then `uv lock`). Test `install.ps1` only with
+`-SourceDir <checkout> -InstallDir <scratch> -NoLaunch` and `APPDATA`/`LOCALAPPDATA` pointed at scratch
+(keep `UV_CACHE_DIR` on the real cache); never against the user's real install.
 
 Do not restart, kill, or reinstall a running Tools instance without the user's explicit OK: running
 backends keep their loaded Python, and a restart can discard loaded/unsent work. A browser refresh does

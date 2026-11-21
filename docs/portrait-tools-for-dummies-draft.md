@@ -72,7 +72,7 @@ installation checklist.
 | Needed for | Requirements |
 | --- | --- |
 | Current application | Linux, Python 3.13, uv and the repository's locked dependencies. Windows support is not implemented or verified. |
-| Any of the four skin tabs | The three manually supplied ONNX models listed in [MODELS](../MODELS.md), plus pose-model weights downloaded on first analysis or prepared ahead of time. Full CPU-only skin analysis is **not guaranteed**; the pose helper explicitly requests CUDA. |
+| Any of the four skin tabs | The three ONNX models (downloaded by the installer) listed in [MODELS](../MODELS.md), plus pose-model weights downloaded on first analysis or prepared ahead of time. Full CPU-only skin analysis is **not guaranteed**; the pose helper explicitly requests CUDA. |
 | Native desktop window, tray and native file pickers | A graphical session and suitable tray support (GNOME: the AppIndicator extension). The window itself (pywebview on Qt WebEngine) is installed with Tools' Python environment. See README for the installer. |
 | AI Fill generation | A separate, working ComfyUI installation with its own environment and models. Crop & Expand supports FLUX.2 dev, FLUX.1 Fill or FLUX.2 Klein; Patch Fill requires FLUX.1 Fill. Tools does not install these for you. |
 | PhotoCraft integration only | A compatible PhotoCraft build, authenticated control/automation enabled at launch, matching token and permitted file-exchange directories, and an open document. Tools does not install or start PhotoCraft for you. |

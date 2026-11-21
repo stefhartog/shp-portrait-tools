@@ -14,9 +14,13 @@ Combine reuses existing FS/D&B engines. No Blemish/ClearFrame research model is 
 dependency. Use the root [README](README.md) and [handoff](HANDOFF.md) for current behavior,
 not the frozen `docs/source/` installation notes.
 
-## D&B: three manually supplied ONNX files
+## D&B: three ONNX files
 
-Create `~/.local/share/shp-portrait-tools/skin/models/` and download the following files there.
+The installers (`install.ps1`, `install.sh`) download these three files from the pinned links below and check
+their SHA-256; so does `uv run --no-sync python -m shp_portrait_tools.fetch_models [--dest DIR]` in a checkout
+(the pins live in `src/shp_portrait_tools/fetch_models.py`; a test keeps them equal to this page). This project
+does not redistribute them. To do it by hand, create `~/.local/share/shp-portrait-tools/skin/models/`
+(Windows: `%LOCALAPPDATA%\shp-portrait-tools\skin\models`) and download the following files there.
 Use actual binary downloads, not Git LFS pointer text or a hosting site's HTML page.
 Links below pin the ONNX conversions inspected on 2026-11-05.
 
@@ -49,6 +53,9 @@ installer `--models /absolute/path/to/models` writes that value and requires all
 No old project folder, symlink, environment or dataset is needed.
 
 ## D&B: automatically downloaded pose weights and offline use
+
+The installers prefetch these two weights too (`fetch_models` without `--skip-pose`), so the first analysis does
+not need the network.
 
 `estimate_body_scale.py` lazily creates `rtmlib.Wholebody(mode="balanced",
 backend="onnxruntime", device="cuda")`. The installed rtmlib selects:

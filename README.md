@@ -99,71 +99,65 @@ other integrations that drive it must share these settings. `SHP_PC_PORT`, `SHP_
 after changing them; the tray's PhotoCraft line shows whether the port is reachable (not whether the
 token is accepted).
 
-## Dependencies
+## Requirements
 
-**Required:** Linux or Windows, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/).
-
-**For Skin Tools:** a compatible NVIDIA driver/GPU, the CUDA-enabled Python
-dependencies, and three manually supplied ONNX models. The app does not download
-these models during installation. See [MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files).
-
-**For the native desktop window:** on Linux, the window (pywebview on Qt WebEngine) and its tray
-icon come from the Python environment, so no system GUI packages are needed; GNOME needs the
-AppIndicator extension to show the tray icon. Windows needs the Edge WebView2 Runtime. Standalone
-web commands do not require these desktop components.
-
-**Optional:** PhotoCraft or a licensed Photoshop installation for editor integration;
-ExifTool and Perl for Sony autofocus-point subject selection.
+- **Windows 10/11 or Linux** (64-bit).
+- **An NVIDIA GPU with at least 8 GB of memory** and a current driver (**580 or newer**, for CUDA 13).
+  The installer checks both. It does not install the graphics driver.
+- **Windows:** the Edge WebView2 Runtime (built into Windows 11). **Linux:** nothing else; the window and
+  tray come from the Python environment. GNOME needs the AppIndicator extension to show the tray icon.
+- **Optional:** PhotoCraft or a licensed Photoshop for editor integration; ExifTool and Perl for Sony
+  autofocus-point subject selection.
 
 ## Install
 
-On Linux, clone the repository into a new folder, then install its Python environment.
-For Windows Skin Tools, see the [Windows setup notes](docs/windows-handoff.md#windows-port-status-skin-tools-standalone).
+One command installs the latest release for the current user (no administrator/root rights). It checks the
+GPU, installs [uv](https://docs.astral.sh/uv/) if needed, downloads the release, installs Python 3.13 and the
+locked dependencies, downloads and verifies the models from their original sources (see
+[MODELS.md](MODELS.md)), adds a Start Menu / app-menu launcher and starts Tools.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://github.com/stefhartog/shp-portrait-tools/releases/latest/download/install.ps1 | iex
+```
+
+**Linux:**
 
 ```sh
-git clone https://github.com/stefhartog/shp-portrait-tools.git "$HOME/shp-portrait-tools"
-cd "$HOME/shp-portrait-tools"
+curl -LsSf https://github.com/stefhartog/shp-portrait-tools/releases/latest/download/install.sh | sh
+```
+
+Run the same command again to **update**; settings, presets and models are kept. The app is installed in
+`%LOCALAPPDATA%\Programs\shp-portrait-tools` (Windows) or `~/.local/share/shp-portrait-tools-app` (Linux).
+Options (a specific release, another folder, no launch at the end, and on Windows a Desktop shortcut) are listed
+at the top of [install.ps1](install.ps1) and [install.sh](install.sh). The installer never replaces an existing
+shortcut or launcher file it did not write; it says so and leaves it.
+
+Still manual: the NVIDIA driver, and for Photoshop the connector `.ccx` plus pairing
+([Photoshop setup](docs/photoshop.md)).
+
+Earlier installs kept their settings, models and logs in folders named `shp-photocraft-tools`. The first start
+of this version moves them to `shp-portrait-tools` (close every Tools window first); SHP AI Fill data and the
+PhotoCraft control folders stay where they are, and a note in the old folder lists what moved.
+
+### From a checkout (development)
+
+```sh
+git clone https://github.com/stefhartog/shp-portrait-tools.git
+cd shp-portrait-tools
 uv python install 3.13
 uv sync --locked --extra gpu
+uv run --no-sync python -m shp_portrait_tools.fetch_models     # models into the default models folder
 ```
 
-The `gpu` extra supplies CUDA/cuDNN user-space libraries; it does not install a
-graphics driver. For package details
-and other dependency options, see [pyproject.toml](pyproject.toml).
-
-If updating an existing environment that had both OpenCV wheels, repair their
-shared `cv2` files once with `uv sync --locked --extra gpu --reinstall-package
-opencv-contrib-python` (omit `--extra gpu` if not using it). The uv lock excludes
-`rtmlib`'s redundant `opencv-python` dependency in favor of the contrib wheel.
-Plain pip does not apply uv overrides, and dependency checks may report rtmlib's
-`opencv-python` and `onnxruntime` requirements as missing despite the contrib
-and GPU variants being installed.
-
-Get the three Skin Tools ONNX models and their documented hashes from
-[MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files), then place them in
-the model folder:
-
-```sh
-mkdir -p "$HOME/.local/share/shp-portrait-tools/skin/models"
-```
-
-The required filenames are `yunet.onnx`, `face_landmarks.onnx` and
-`selfie_multiclass_256x256.onnx`. Once they are in place, install the per-user
-desktop launcher and start the app:
-
-```sh
-uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-portrait-tools/skin/models"
-"$HOME/.local/bin/shp-photocraft-tools"
-```
-
-Earlier installs kept their settings, models and logs in folders named
-`shp-photocraft-tools`. The first start of this version moves them to `shp-portrait-tools`
-(close every Tools window first); SHP AI Fill data and the PhotoCraft control folders stay where
-they are, and a note in the old folder lists what moved.
-
-Skin analysis also fetches pose-estimation weights on first use; internet access is
-needed then unless you prepare the cache in advance.
+Then on Linux `uv run --no-sync python scripts/install_desktop.py --models
+"$HOME/.local/share/shp-portrait-tools/skin/models"` and start `~/.local/bin/shp-photocraft-tools`; on Windows
+`uv run --no-sync shp-portrait-tools --init-config`, then `uv run --no-sync shp-portrait-tools` (see the
+[Windows notes](docs/windows-handoff.md)). The `gpu` extra supplies CUDA/cuDNN user-space libraries, not the
+driver. If an older environment had both OpenCV wheels, repair `cv2` once with
+`uv sync --locked --extra gpu --reinstall-package opencv-contrib-python`; the lock deliberately replaces
+rtmlib's `opencv-python` with the contrib wheel.
 
 ### Optional standalone commands
 
@@ -173,8 +167,7 @@ Run Skin Tools as a local web app without the native desktop window:
 uv run --no-sync shp-skin-tools --dir "$HOME/Pictures"
 ```
 
-Open the local address printed at startup. It requires the NVIDIA GPU dependencies
-and model files above.
+Open the local address printed at startup. It needs the same GPU, dependencies and models.
 
 ## Guides
 

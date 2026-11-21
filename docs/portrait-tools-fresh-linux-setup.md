@@ -6,7 +6,9 @@ We build this in small pieces: first get **Skin Tools** working on its own (Stan
 **PhotoCraft** if you want to edit in it. Think of Tools as the workbench, the model files as its instruction
 books, and the graphics card as the heavy-lifting machine.
 
-This is a source-based setup, not a one-click installer. It was last walked through on Fedora with GNOME
+**Quicker:** since v0.2.0 one command does all of this (README → Install):
+`curl -LsSf https://github.com/stefhartog/shp-portrait-tools/releases/latest/download/install.sh | sh`.
+This guide is the step-by-step, source-based way. It was last walked through on Fedora with GNOME
 (Wayland) and an NVIDIA GPU; other distributions should work the same way but are not tested, and no
 minimum graphics card is published.
 
@@ -118,7 +120,7 @@ The models are **not bundled** and nothing downloads them for you. Create the fo
 mkdir -p "$HOME/.local/share/shp-portrait-tools/skin/models"
 ```
 
-Download the files from the pinned links in [MODELS](../MODELS.md#db-three-manually-supplied-onnx-files)
+Download the files from the pinned links in [MODELS](../MODELS.md#db-three-onnx-files)
 and save them there under exactly these names (the binary files, not a web page or Git LFS pointer):
 
 | Saved name | What it is |

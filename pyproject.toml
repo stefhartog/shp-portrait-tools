@@ -1,6 +1,6 @@
 [project]
 name = "shp-portrait-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "SHP Portrait Tools: local Skin Tools retouching with PhotoCraft and Photoshop transfer"
 readme = "README.md"
 requires-python = ">=3.13"
