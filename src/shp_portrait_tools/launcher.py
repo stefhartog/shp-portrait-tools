@@ -12,7 +12,6 @@ import threading
 import tempfile
 import time
 import uuid
-from importlib.resources import files
 from pathlib import Path
 from urllib.error import URLError, HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -330,16 +329,13 @@ def desktop_command(url, data):
                               "Run `python -m uv sync --locked` (installs pywebview/pystray) and install the "
                               "Microsoft Edge WebView2 Runtime, or use --no-browser and the loopback URL.")
         return command
-    helper = files("shp_portrait_tools.desktop").joinpath("controller.py")
-    data = data_root() / "webview"
-    icon = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "icons/hicolor/scalable/apps/shp-photocraft-tools.svg"
-    command = ["/usr/bin/python3", str(helper), "--url", url, "--data-dir", str(data), "--icon", str(icon)]
-    tray_icon = icon.with_name("shp-photocraft-tools-tray.svg")
-    command.extend(["--tray-icon", str(tray_icon)])
-    checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=15)
+    command = [background_python(), "-m", "shp_portrait_tools.desktop.qt_controller",
+               "--url", url, "--data-dir", str(data_root() / "webview")]
+    checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30)
     if checked.returncode:
-        raise LaunchError(f"Desktop runtime unavailable: {checked.stderr.strip()}. "
-                          "Use --browser for Ungoogled Chromium or --no-browser and the loopback URL.")
+        raise LaunchError(f"Desktop runtime unavailable: {(checked.stderr or checked.stdout).strip()}. "
+                          "Run `uv sync --locked` (installs pywebview/PySide6), or use --no-browser and the "
+                          "loopback URL.")
     return command
 
 

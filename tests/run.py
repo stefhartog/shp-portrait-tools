@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory(prefix="shp-photocraft-tests-") as tmp:
     os.environ.update(SKIN_DATA=tmp + "/skin", SKIN_MODELS=tmp + "/models",
                       SHP_PC_PORT="1", SHP_PC_TOKEN_FILE=tmp + "/token", SHP_PC_EXCHANGE=tmp + "/exchange",
-                      SHP_PC_READ_ROOT=tmp)
+                      SHP_PC_READ_ROOT=tmp,
+                      # Keep the user's real settings.json (connection choice etc.) and logs out of the tests.
+                      XDG_CONFIG_HOME=tmp + "/config", XDG_STATE_HOME=tmp + "/state")
+    if os.name == "nt":
+        os.environ["APPDATA"] = tmp + "/appdata"
     for key in ("PORT", "TOKEN_FILE", "EXCHANGE", "READ_ROOT"):
         os.environ.pop(f"DNB_PC_{key}", None)
     suite = unittest.defaultTestLoader.discover(str(ROOT), pattern="test_*.py")

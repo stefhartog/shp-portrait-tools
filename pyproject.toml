@@ -10,8 +10,11 @@ dependencies = [
     "opencv-contrib-python>=4.10",
     "onnxruntime-gpu>=1.31.1",
     "rtmlib>=0.0.16",
-    "pywebview>=5.4; sys_platform == 'win32'",
+    "pywebview>=5.4",
     "pystray>=0.19.5; sys_platform == 'win32'",
+    # Linux desktop host: pywebview's Qt backend (QtWebEngine) and the QSystemTrayIcon tray.
+    "pyside6>=6.8; sys_platform == 'linux'",
+    "qtpy>=2.4; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
