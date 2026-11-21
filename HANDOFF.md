@@ -24,6 +24,16 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## Shared desktop host core (2026-11-21)
+
+`desktop/host.py` `DesktopHost` holds the platform-neutral host: geometry persistence, status/watch
+polling, the tray model (titles, enabled states, Load on startup, window actions), module controls with
+confirmation/revision retry, and the quit/restart/reload flow including the busy/changed-work checks,
+the acknowledged native-quit, the 90 s drain wait and the single detached relaunch. `windows_controller.Host`
+subclasses it with MessageBox dialogs, the pywebview picker, WebView2 hooks and prompt bridge, the pystray
+widget, foreground focus, single-instance handling and `webview.start`. Behaviour is unchanged. The Linux
+GTK controller still has its own copy until the Phase 3 Qt host replaces it.
+
 ## Single-worker supervisor (2026-11-21)
 
 `supervisor.SkinWorker` replaces the multi-module `Modules` registry: one process, token, phase,

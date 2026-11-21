@@ -82,7 +82,8 @@ not pick up Python changes.
 ```
 launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy, mounted iframe)
    │                └─► modules/skin/ui_server.py   (owned backend 18765)
-   └─► desktop/ (Linux: GTK3/WebKit2 controller.py; Windows: windows_controller.py, pywebview + pystray)
+   └─► desktop/ (Windows: windows_controller.Host = host.DesktopHost + WebView2/Win32/pystray;
+                Linux: GTK3/WebKit2 controller.py, not yet on DesktopHost)
 ```
 
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
@@ -91,6 +92,10 @@ launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy,
   The supervisor manages exactly one worker (`SkinWorker`; `MODULE`/`SERVER_MODULE` in `launcher.py`). Its HTTP
   API keeps the per-module shape (`/api/status` → `modules.skin`, `/api/modules/skin/<action>`) that the shell and
   both tray hosts use, and it still proxies `/skin/` so the shell and the Skin Tools page share one origin.
+- `desktop/host.py` `DesktopHost`: platform-neutral window geometry, status polling, tray model, module controls
+  and the quit/restart/reload confirmation flow (with the 90 s drain wait). Platform hosts subclass it and add only
+  dialogs/pickers, webview hooks, the tray widget and process helpers (`own_identity`, `process_alive`,
+  `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).
