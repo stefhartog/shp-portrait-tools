@@ -1,77 +1,84 @@
 # Linux: closing the gap after the Windows-first desktop changes
 
 Written 2026-11-21 after the shell/proxy removal (`main` at the commit that added this file). Windows is
-current and verified live; **Linux is knowingly broken** until the items below are done. Work on a fresh
-pull on the Linux machine. Tests that need Linux (GTK, JavaScriptCore, Firefox, `/proc`, pidfds,
+current and verified live; **Linux is knowingly broken** until the items below are done. Work in the fresh
+clone set up by "Start here" below. Tests that need Linux (GTK, JavaScriptCore, Firefox, `/proc`, pidfds,
 bubblewrap) could not run on Windows; their status is noted per item.
 
-## Start here: update the Linux machine and get Tools running
+## Start here: a fresh install on the Linux machine
 
 For the AI session on the Linux machine. Read `CLAUDE.md` first (it is written for Windows; on Linux use
 plain `uv`, not `python -m uv`). Ask the user before stopping a running Tools instance, before moving or
-replacing any existing file, and before anything that needs `sudo`. Run each step from a normal terminal
-in the checkout, not from a sandbox that redirects `$HOME`.
+replacing any existing file, and before anything that needs `sudo`. Run each step from a normal terminal,
+not from a sandbox that redirects `$HOME`.
 
-The checkout lives at **`~/shp-photocraft-tools`** and must stay there: the Linux watch folder is
-`/home/stef/shp-photocraft-tools/watchfolder` (`platform_paths.LINUX_INBOX_ROOT`, ignored by git), and the
-installed launcher points into this folder's `.venv`. So update it **in place**; do not clone into a new
-folder or move the old one aside.
+**Goal: ignore the existing install and set up a fresh clone with fresh settings.** The old checkout
+(`~/shp-photocraft-tools`) and the old data/config/state folders (`shp-photocraft-tools` under
+`~/.local/share`, `~/.config`, `~/.local/state`) are left untouched; nothing is migrated from them except
+copying the model files. The user deletes the old install later. The watch folder is ignored: the user
+plans to remove that feature, and its hard-coded inbox (`/home/stef/shp-photocraft-tools/watchfolder`) only
+reports "not ready" if missing.
 
-1. **Quit Tools.** Ask the user to quit from the tray (or close the Tools window and stop the services) and
-   to save any work first. Check nothing is left: `pgrep -af shp_photocraft_tools`,
-   `ss -ltnp | grep -E ':(18760|18765|18768)\b'`. If something remains, show it to the user; don't kill it
-   without their OK.
-2. **Pull the current `main` from GitHub.**
+1. **Quit the old Tools.** Ask the user to quit it from the tray and save any work first. Check nothing is
+   left: `pgrep -af 'shp_photocraft_tools|shp_portrait_tools'`, `ss -ltnp | grep -E ':(18760|18765|18768)\b'`.
+   If something remains, show it to the user; don't kill it without their OK.
+2. **Clone a fresh copy.**
    ```sh
-   cd ~/shp-photocraft-tools
-   git status --short          # must be clean (ignored inbox/models/settings are fine)
-   git remote -v               # expect github.com/stefhartog/shp-portrait-tools
-   git fetch origin
-   git switch main
-   git pull --ff-only origin main
+   test ! -e ~/shp-portrait-tools || echo "exists: ask the user"
+   git clone https://github.com/stefhartog/shp-portrait-tools.git ~/shp-portrait-tools
+   cd ~/shp-portrait-tools
    git log --oneline -1        # compare with the newest commit on GitHub
    ```
-   If `git status` shows local changes, or the pull is not a fast-forward, stop and ask the user (offer
-   `git stash` or a backup branch); never reset or discard their work. If the remote still has the old
-   repository name, GitHub redirects; `git remote set-url origin https://github.com/stefhartog/shp-portrait-tools.git`
-   only with the user's OK.
-3. **Rebuild the environment** (the package was renamed to `shp_portrait_tools`, so this must be a real
-   sync, not `--no-sync`):
+   If `~/shp-portrait-tools` already exists, stop and ask the user what to do with it.
+3. **Install the environment** (from inside the new clone):
    ```sh
+   uv python install 3.13
    uv sync --locked --extra gpu
    uv run --no-sync python -c "import shp_portrait_tools, sys; print(shp_portrait_tools.__file__, sys.version)"
    ```
-4. **Reinstall the desktop launcher.** The old `~/.local/bin/shp-photocraft-tools` wrapper still runs
-   `shp_photocraft_tools.launcher`, which no longer exists. The installer first migrates the folders
-   (`~/.local/share|~/.config|~/.local/state/shp-photocraft-tools` → `shp-portrait-tools`, `data/dnb` →
-   `data/skin`, `launcher.json` paths rewritten; see item 5 under "What changed" below), then writes the
-   wrapper, `launcher.json`, the `.desktop` files and icons.
-   - Note the old settings first: `cat ~/.config/shp-photocraft-tools/launcher.json` (or the
-     `shp-portrait-tools` one if already migrated) for `models` and `exiftool`.
-   - Models end up in `~/.local/share/shp-portrait-tools/skin/models` after the migration.
+   The printed path must be inside `~/shp-portrait-tools`.
+4. **Create fresh, empty Tools folders so nothing is migrated.** The launcher and installer move the old
+   `shp-photocraft-tools` folders only when the new `shp-portrait-tools` folder does not exist yet; creating
+   the new ones first leaves the old ones alone:
+   ```sh
+   mkdir -p ~/.local/share/shp-portrait-tools/skin/models ~/.config/shp-portrait-tools ~/.local/state/shp-portrait-tools
+   ```
+   Copy (don't move) the three ONNX models from the old install: look in
+   `~/.local/share/shp-photocraft-tools/dnb/models` (or wherever the old
+   `~/.config/shp-photocraft-tools/launcher.json` `models` points):
+   ```sh
+   cp -n <old models folder>/{yunet.onnx,face_landmarks.onnx,selfie_multiclass_256x256.onnx} \
+     ~/.local/share/shp-portrait-tools/skin/models/
+   ```
+   Check them against the hashes in `MODELS.md`. The PhotoCraft control folders under
+   `~/.config/shp-photocraft-tools/<module>` (token, exchange) keep being used by design; don't move them.
+5. **Install the desktop launcher.**
    ```sh
    uv run --no-sync python scripts/install_desktop.py \
      --models "$HOME/.local/share/shp-portrait-tools/skin/models" [--exiftool /path/to/exiftool]
    ```
-   It refuses to overwrite a file whose content differs ("Refusing to overwrite an existing different
-   file: …"); the old wrapper and `launcher.json` will differ. With the user's OK, rename exactly the file it
-   names to `<file>.bak-YYYYMMDD` and run it again, one file at a time. Afterwards check
-   `~/.config/shp-portrait-tools/launcher.json` (`ports.skin` 18765; old `dnb`/`crop`/`comfy` keys are gone or
-   ignored) and that `~/.local/share/shp-portrait-tools/skin` holds the models, presets and settings.
-5. **Start it without the native window** (the GTK window is broken until item 1 of "To do" is done):
+   The launcher files keep their old names (`~/.local/bin/shp-photocraft-tools`,
+   `~/.local/share/applications/shp-photocraft-tools.desktop`, the Desktop shortcut and icons), so the old
+   install's copies are in the way: the installer stops with "Refusing to overwrite an existing different
+   file: …". With the user's OK, rename exactly the file it names to `<file>.bak-YYYYMMDD` and run it again,
+   one file at a time. Afterwards `~/.local/bin/shp-photocraft-tools` must exec
+   `~/shp-portrait-tools/.venv/bin/python -m shp_portrait_tools.launcher`, and
+   `~/.config/shp-portrait-tools/launcher.json` must name the new models folder and `ports.skin` 18765.
+   (The ExifTool path, if used, is in the old `launcher.json`.)
+6. **Start it without the native window** (the GTK window is broken until item 1 of "To do" is done):
    ```sh
    uv run --no-sync shp-portrait-tools --no-browser
    ```
    Open `http://127.0.0.1:18760/` in a normal browser: the status page moves on to Skin Tools
-   (`http://127.0.0.1:18765/`). Check the five tabs, Settings & Info (connection Photoshop/PhotoCraft/
-   Standalone; PhotoCraft is the one that matters on Linux), Get Image from PhotoCraft and Send Layers.
-   In a plain browser Standalone's Get Image has no file picker; use the Image analysis list or path box.
+   (`http://127.0.0.1:18765/`). Check the five tabs, Settings & Info (connection: choose PhotoCraft), Get
+   Image from PhotoCraft and Send Layers. Settings and presets start at their defaults. In a plain browser
+   Standalone's Get Image has no file picker; use the Image analysis list or path box.
    Logs: `~/.local/state/shp-portrait-tools/` and `~/.local/share/shp-portrait-tools/state/`.
-6. **Run the tests** and compare with "Run and fix the Linux-only tests" below:
+7. **Run the tests** and compare with "Run and fix the Linux-only tests" below:
    `uv run --no-sync python tests/run.py`.
-7. Then work through **To do**, starting with the Qt host. AI Fill is now the separate
-   `github.com/stefhartog/shp-ai-fill` repository; clone it into its own folder only if the user wants it
-   on this machine (its data stays in `~/.local/share/shp-photocraft-tools/crop`).
+8. Then work through **To do**, starting with the Qt host, in the new clone. AI Fill is the separate
+   `github.com/stefhartog/shp-ai-fill` repository; clone it into its own folder only if the user wants it on
+   this machine.
 
 ## What changed under Linux's feet
 
@@ -184,15 +191,16 @@ desktop changes, i.e. these **pre-existing** failures remain:
 
 ### 5. Migration and paths on the real Linux install
 
-- First start of the new launcher migrates `~/.local/share/shp-photocraft-tools` → `shp-portrait-tools`
-  (`dnb`, `state`, `webview`, `watchfolder`; AI Fill's `crop` stays), `~/.config/...` (launcher.json*,
-  settings.json, photoshop, Chromium profile; the per-module PhotoCraft folders stay), `~/.local/state/...`
-  (all), then renames `data/dnb` → `data/skin` and rewrites launcher.json paths. Run it from a normal
-  terminal or the desktop launcher and check the folders and `launcher.json` afterwards.
+- The fresh install in "Start here" skips the folder migration on purpose (the new folders exist first).
+  `migrate_legacy_roots()` therefore stays unexercised on Linux; it moves `~/.local/share/shp-photocraft-tools`
+  → `shp-portrait-tools` (`dnb`, `state`, `webview`, `watchfolder`; AI Fill's `crop` stays), `~/.config/...`
+  (launcher.json*, settings.json, photoshop, Chromium profile; the per-module PhotoCraft folders stay),
+  `~/.local/state/...` (all), then renames `data/dnb` → `data/skin` and rewrites launcher.json paths, only
+  when the new folder is missing.
 - PhotoCraft control folders stay at `~/.config/shp-photocraft-tools/<module>` by design (`detect_config`),
   as do the `photocraft-dnb` LightCraft wrapper and `DNB_PC_*`.
-- `shared/platform_paths.LINUX_INBOX_ROOT` is still hard-coded to `/home/stef/shp-photocraft-tools`
-  (the checkout path); make it portable before the Phase 4 installer.
+- `shared/platform_paths.LINUX_INBOX_ROOT` is still hard-coded to `/home/stef/shp-photocraft-tools` (the
+  old checkout). The user plans to remove the watch-folder feature altogether, which removes this too.
 - App identity strings (`.desktop` name, `StartupWMClass`, icon names `shp-photocraft-tools*`) are
   unchanged; rename them together with the Qt host if wanted.
 
