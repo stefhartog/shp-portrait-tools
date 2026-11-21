@@ -163,16 +163,17 @@ OS may retain freed memory in the process working set.
 
 **Torso + head** is the default for Open/Get and batch.
 Interactive Analysis reports the Torso + head estimate and the face-led
-baseline for the same subject when available. Typing a value in **px / 63 mm**
-overrides the automatic estimate for the current image. Batch
+baseline for the same subject when available. Resizing the stick figure in Image analysis (scroll over it;
+the readout is the eye distance in pixels, which is S) overrides the automatic estimate for the current image;
+**Auto** restores it. Batch
 estimates scale independently for each image; they do not inherit that override.
 The baseline estimator is retained for development but is no longer selectable
 in the desktop UI.
 
 The torso + head estimate weights shoulder-to-hip midpoint distance at 75%
 and YuNet face-box height (a head-size proxy, not a crown-to-chin measurement)
-at 25%. The temporary image-calibrated test references are about 419.3 mm
-for the torso and 174.7 mm for the face-box proxy, fitted to the baseline on
+at 25%. The temporary image-calibrated test references are about 424.3 mm
+(0.30 × the 1700 mm `BODY_H_MM` × 0.832) for the torso and 174.7 mm for the face-box proxy, fitted to the baseline on
 one frontal example. They are not general anthropometric averages. With two
 usable cues, a larger estimate up to 20% above the smaller is medium
 confidence; above 20% and up to 35% is low confidence. A single usable cue

@@ -47,8 +47,6 @@ from shp_portrait_tools.shared.photoshop import Broker as PhotoshopBroker, handl
 from . import frequency_separation as FS
 from . import skintone as ST
 from . import directional_blur as DB
-from . import combine_scale as C
-from . import estimate_body_scale as B
 from . import image_session, preview_service, processing_service, progress, transfer_service
 from .cache_coordinator import CacheCoordinator
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE, memory_rejection
@@ -833,7 +831,7 @@ def finish_loaded_image(path, img, source_img, raw8, mode, icc_out, source_icc,
                       **({"sc": np.array(t["sc"], copy=True)} if t.get("sc") is not None else {})}
                      if t is not None and t.get("kp") is not None else None)
     info = {"name": path.name if path is not None else capture_name, "width": w, "height": h, "S": S,
-            "confidence": conf, "desc": desc,
+            "head": head_position(t, w, h), "confidence": conf, "desc": desc,
             "pose_backend": pose_config["backend"],
             "seconds": time.perf_counter() - started,
             "timings": {"loaded": prepared - started, "analyzed": analyzed - prepared,
@@ -1029,105 +1027,22 @@ def api_hue_center(req):
     return {"generation": generation, **result}
 
 
-LANDMARK_NAMES = B.KP[1:3] + B.KP[5:17]
+def head_position(t, w, h):
+    """The analysed subject's head centre as image fractions (face box, else nose, else subject centre).
 
-
-def landmark_subjects():
-    return STATE["seen"] or [{"face": None, "face_info": None, "kp": None, "sc": None, "cues": [], "target": True}]
-
-
-def landmark_points(subject):
-    points = {}
-    kp, sc = subject["kp"], subject["sc"]
-    if kp is not None:
-        for name in LANDMARK_NAMES:
-            i = B.I[name]
-            if sc[i] >= B.MIN_SCORE:
-                points[name] = {"x": float(kp[i][0]), "y": float(kp[i][1]), "visible": True, "source": "detected"}
-    fi = subject["face_info"]
-    if fi is not None and fi[2] >= 0.5:
-        for name, i in (("l_eye", 468), ("r_eye", 473)):
-            points[name] = {"x": float(fi[0][i][0]), "y": float(fi[0][i][1]), "visible": True, "source": "detected"}
-    return points
-
-
-def api_landmarks(req):
-    if STATE["img"] is None:
-        raise ValueError("load an image first")
-    subjects = landmark_subjects()
-    h, w = STATE["img"].shape[:2]
-    return {"generation": STATE["landmark_generation"], "width": w, "height": h,
-            "subjects": [{"label": f"Subject #{i + 1}" + (" (analysis target)" if s["target"] else ""),
-                          "points": landmark_points(s), "overrides": STATE["landmark_overrides"].get(i)}
-                         for i, s in enumerate(subjects)]}
-
-
-def api_landmark_estimate(req):
-    if STATE["img"] is None or req.get("generation") != STATE.get("landmark_generation"):
-        raise ValueError("image changed; reopen scale landmarks")
-    index = req.get("subject")
-    subjects = landmark_subjects()
-    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(subjects):
-        raise ValueError("select a valid subject")
-    overrides = req.get("points", {})
-    excluded = req.get("excluded", [])
-    if not isinstance(overrides, dict) or not isinstance(excluded, list) or any(n not in LANDMARK_NAMES for n in overrides):
-        raise ValueError("invalid landmarks")
-    if any(n not in [s[0] for s in B.SEGMENTS] for n in excluded):
-        raise ValueError("invalid excluded segment")
-    h, w = STATE["img"].shape[:2]
-    for p in overrides.values():
-        if not isinstance(p, dict) or not isinstance(p.get("visible"), bool):
-            raise ValueError("invalid landmark visibility")
-        if p["visible"]:
-            x, y = p.get("x"), p.get("y")
-            if (not isinstance(x, (int, float)) or not isinstance(y, (int, float))
-                    or not math.isfinite(x) or not math.isfinite(y) or not 0 <= x <= w or not 0 <= y <= h):
-                raise ValueError("landmark outside image")
-    sub = subjects[index]
-    points = landmark_points(sub)
-    points.update({n: dict(p, source="manual") for n, p in overrides.items()})
-    kp = np.zeros((17, 2), dtype=float)
-    sc = np.zeros(17, dtype=float)
-    for name, p in points.items():
-        if p["visible"]:
-            kp[B.I[name]] = (p["x"], p["y"])
-            sc[B.I[name]] = 1
-    body = B.estimate(kp, sc, excluded)
-    unavailable = []
-    for name, a, b, _ in B.SEGMENTS:
-        if name in excluded:
-            continue
-        pa, _ = B.point(kp, sc, a)
-        pb, _ = B.point(kp, sc, b)
-        if pa is None or pb is None or np.linalg.norm(pa - pb) <= 1e-6:
-            unavailable.append(name)
-    cues = [tuple(c) for c in sub.get("cues", []) if c[0] != "body"]
-    eyes_changed = any(n in overrides for n in ("l_eye", "r_eye"))
-    if eyes_changed:
-        cues = [c for c in cues if c[0] not in ("face_ipd", "yunet_ipd", "eye_corners")]
-        a, b = points.get("l_eye"), points.get("r_eye")
-        if a and b and a["visible"] and b["visible"]:
-            d = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
-            if d > 1e-6:
-                cues.append(("manual_eye_centres_2d", d, 0.20))
-    if body:
-        cues.append(("body", body["S"], 0.20))
-    result = C.combine(cues)
-    if overrides or excluded:
-        if result["confidence"] == "high":
-            result["confidence"] = "medium"
-        if result["sigma"] is not None:
-            result["sigma"] = max(result["sigma"], 0.15)
-    if req.get("apply"):
-        if result["S"] is None:
-            raise ValueError("no usable scale cue")
-        STATE["landmark_overrides"][index] = {"points": overrides, "excluded": excluded}
-        STATE["preview_cache"] = {}
-    return {"S": result["S"], "confidence": result["confidence"], "sigma": result["sigma"],
-            "used": result["used"], "dropped": result["dropped"],
-            "segments": body["rows"] if body else [], "excluded": excluded, "unavailable": unavailable,
-            "body_spread": body["spread"] if body and math.isfinite(body["spread"]) else None}
+    Only places the stick figure in the Image analysis scale widget; it never affects processing."""
+    if t is None or not w or not h:
+        return None
+    if t.get("face") is not None:
+        f = t["face"]
+        x, y = f[0] + f[2] / 2, f[1] + f[3] / 2
+    elif t.get("kp") is not None and t.get("sc") is not None and t["sc"][0] >= 0.3:
+        x, y = t["kp"][0][:2]
+    elif t.get("centre") is not None:
+        x, y = t["centre"]
+    else:
+        return None
+    return [round(float(x) / w, 4), round(float(y) / h, 4)]
 
 
 COCO_BONES = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
@@ -2150,14 +2065,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
         if path == "/api/images":
             return self.send(200, json.dumps(list_images()).encode(), "application/json")
-        if path == "/img/landmarks":
-            if STATE["img"] is None:
-                return self.send(404, b"no image yet", "text/plain")
-            img = STATE["img"]
-            h, w = img.shape[:2]
-            k = min(1.0, 1400 / max(h, w))
-            preview = cv2.resize(img, (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA) if k < 1 else img
-            return self.send(200, encode(u8(preview), ".jpg", 92, STATE["icc"]), "image/jpeg")
         if path.startswith("/img/"):
             kind = path[5:]
             data = STATE["imgs"].get(kind)
@@ -2192,7 +2099,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             if self.path == "/api/batch/cancel":
                 return self.send(200, json.dumps(api_batch_cancel(req)).encode(), "application/json")
             fn = {"/api/load": api_load, "/api/hue-center": api_hue_center, "/api/run": api_preview_request, "/api/centre": api_centre, "/api/color-pick": api_color_pick, "/api/analysis": api_analysis, "/api/save": api_save, "/api/profile": api_profile, "/api/tone": api_tone,
-                  "/api/landmarks": api_landmarks, "/api/landmarks/estimate": api_landmark_estimate,
                   "/api/pc/status": api_pc_status, "/api/pc/fetch": api_pc_fetch, "/api/pc/send": api_pc_send, "/api/pc/send_layers":api_pc_send_layers, "/api/pc/launch": api_pc_launch,
                   "/api/editor": api_editor, "/api/editor/pair": api_photoshop_pair, "/api/editor/revoke": api_photoshop_revoke,
                   "/api/send-result": api_send_result,

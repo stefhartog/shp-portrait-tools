@@ -66,7 +66,6 @@
   input[type=number] { width:68px; -moz-appearance:textfield; appearance:textfield; }
   input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
   button.primary.dirty { box-shadow:0 0 0 2px var(--warn); }
-  #landmarkOpen.dirty { box-shadow:0 0 0 2px var(--warn); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 10px 8px; margin:8px 0; }
   .card .head { display:flex; justify-content:space-between; align-items:center; font-weight:600; }
   .card .head button { padding:0 8px; }
@@ -148,11 +147,12 @@
     .pan { height: 70vh; flex:none; }
   }
   .pan.zin { cursor:zoom-in; } .pan.zout { cursor:zoom-out; }
-  #landmarkOverlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; }
-  .landmark-editor .pan { cursor:crosshair; }
-  #landmarkSegments { max-height:105px; overflow:auto; font-size:11px; }
-  #landmarkSegments label { display:inline-block; margin-right:8px; }
-  #landmarkSummary { font-size:11px; color:var(--dim); margin:6px 0; white-space:pre-line; }
+  #scaleFrame { display:block; margin:6px auto 4px; touch-action:none; cursor:grab; }
+  #scaleFrame:active { cursor:grabbing; }
+  #scaleFrame .frame { fill:none; stroke:var(--dim); stroke-width:1.5; }
+  #scaleFrame .figure { fill:none; stroke:var(--text); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
+  #scaleFrame .auto { fill:none; stroke:var(--dim); stroke-width:1.2; stroke-dasharray:4 3; stroke-linecap:round; }
+  #scaleAuto { padding:1px 8px; }
   .distribution { display:block; width:100%; height:110px; background:var(--input); border:1px solid var(--line); border-radius:4px; transform:translateX(-2px); }
 </style>
 </head>
@@ -329,16 +329,11 @@
         <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
       </div>
       <div id="info">No photo loaded.</div>
-      <div class="row"><label for="S" title="Estimated pixels per 63 mm at the subject. Type a value to override it." style="cursor:help">px / 63 mm</label><input type="number" id="S" min="10" max="5000" step="1"></div>
-      <button id="landmarkOpen" disabled>Adjust scale landmarks</button>
-      <div id="landmarkEditor" hidden>
-        <div class="row"><label for="landmarkSubject">subject</label><select id="landmarkSubject"></select></div>
-        <div class="row"><label for="landmarkName">point</label><select id="landmarkName"></select></div>
-        <div class="hint">Click to place; drag a point or use arrow keys to nudge it. Alt-drag pans; wheel zooms. Eye centres are the centres of the visible pupils.</div>
-        <div class="row"><button id="landmarkMissing">Mark missing</button><button id="landmarkUndo">Undo</button><button id="landmarkReset">Reset</button></div>
-        <div class="sub">Exclude unreliable / foreshortened segments</div><div id="landmarkSegments"></div>
-        <div id="landmarkSummary"></div>
-        <div class="row"><button id="landmarkApply" class="primary" disabled>Apply scale</button><button id="landmarkCancel">Cancel</button></div>
+      <input type="hidden" id="S">
+      <div id="scaleFigure" hidden>
+        <svg id="scaleFrame" role="img" aria-label="Subject scale: scroll to resize the figure, drag to move it"
+             title="Subject scale. Scroll over the figure to resize it to the person in the photo; drag to move it. The size sets the eye distance (pixels between the pupils) that size-based controls use."></svg>
+        <div class="row"><span title="Pixels between the subject's pupils (the scale S). Scroll over the figure to change it." style="cursor:help"><b id="scaleEyes"></b> eye distance</span><button id="scaleAuto" title="Back to the automatic estimate" hidden>Auto</button></div>
       </div>
       <details id="temporaryLog">
         <summary>Log</summary>
@@ -411,7 +406,6 @@ const state = {
   color: {hue:null, saturation:null, rgb:null, hueRange:30, saturationRange:0.25, blurMm:1, smoothMm:0.8, strength:1},
   loaded: false, busy: false, dirty: true, version: 0, avers: 0,
 };
-let landmarkEdit = null;
 let settingsRevision = 0;
 let mixOnlyPending = false, lastLayerPrecacheInfo = null;
 let uiReady = false, settingsOpen = false;
@@ -563,11 +557,11 @@ function renderAnalysisSummary() {
   if (!image) { $('info').textContent = 'No photo loaded.'; return; }
   const value = (v, suffix='') => Number.isFinite(v) ? v.toFixed(1)+suffix : 'unavailable';
   const scale = Number($('S').value);
-  const scaleType = Number.isFinite(state.estS) && scale === state.estS ? 'estimated' : 'manual/landmark override';
+  const scaleType = Number.isFinite(state.estS) && scale === state.estS ? 'estimated' : 'manual';
   $('info').textContent = [
     `${image.name} — ${image.width} × ${image.height}`,
     `Colour/profile: ${image.colour || 'unavailable'}`,
-    `S: ${scale > 0 ? value(scale)+' px / 63 mm ('+scaleType+')' : 'unavailable'}`,
+    `Eye distance (S): ${scale > 0 ? value(scale)+' px ('+scaleType+')' : 'unavailable'}`,
     image.scale_comparison ? `S comparison: baseline ${value(image.scale_comparison.baseline)}; torso + head ${value(image.scale_comparison.body_priority)} (${image.scale_comparison.method})` : '',
     `Detection confidence: ${image.confidence || 'unavailable'}; ${image.desc || 'no scale cue'}`,
     `Detected mask: ${image.has_mask ? 'available' : 'unavailable'}${Number.isFinite(image.mask_pct) ? ' ('+image.mask_pct+'%)' : ''}`,
@@ -870,7 +864,6 @@ function announceMode() { renderTabs(); }
 function switchMode(mode) {
   endPreviewCompare();
   mode = uiMode(mode);
-  if (state.mode !== mode) closeLandmarks();
   if (mode !== 'mask') setPickingColor(false);
   if (state.mode !== mode) {
     state.mode = mode; syncMode(); state.version = 0; markDirty(true);
@@ -883,7 +876,7 @@ function scaleFrequencyRadius() {
   const S = Number($('S').value);
   if (sliders.layerBlur) updateLayerBlurTip();
   if (!Number.isFinite(S) || S <= 0) {
-    sliders.frequencyCalibration.lab.title = FREQUENCY_RADIUS_TIP + ' No valid scale: enter S (px / 63 mm) to calculate it.';
+    sliders.frequencyCalibration.lab.title = FREQUENCY_RADIUS_TIP + ' No valid scale: scroll over the figure in Image analysis to set the eye distance.';
     sliders.blurPercent.lab.title = FREQUENCY_BLUR_TIP;
     return;
   }
@@ -894,6 +887,83 @@ function scaleFrequencyRadius() {
   sliders.blurPercent.lab.title = `${FREQUENCY_BLUR_TIP} Current: ${state.frequency.radius} × ${state.frequency.blur_percent}% = ${state.frequency.blur_radius} px.`;
 }
 $('S').onchange = () => { scaleFrequencyRadius(); markDirty(); };
+
+/* ---------- subject scale: a stick figure sized from S (pixels between the pupils, 63 mm) ---------- */
+// The figure is an average adult (1700 mm tall, as estimate_body_scale.BODY_H_MM; head 13% of that), drawn in a
+// frame shaped like the photo.
+// Its size is S; its position is only a visual aid (it starts at the detected head) and is never sent.
+const SCALE_BODY_EYES = 1700 / 63, SCALE_HEAD = 0.13, SCALE_BOX = [196, 230];
+const scaleFig = {auto:null, cur:null, timer:0};
+function scaleFigureLoad(r) {
+  const ok = r.width > 0 && r.height > 0;
+  $('scaleFigure').hidden = !ok;
+  clearTimeout(scaleFig.timer);
+  if (!ok) { scaleFig.auto = scaleFig.cur = null; return; }
+  const [hx, hy] = Array.isArray(r.head) ? r.head : [0.5, 0.2];
+  scaleFig.auto = r.S > 0 ? {S:r.S, hx, hy} : null;
+  // Without an estimate, start from a full-length figure; S stays unset until the figure is resized.
+  scaleFig.cur = {S:r.S > 0 ? r.S : r.height * 0.85 / SCALE_BODY_EYES, hx, hy, w:r.width, h:r.height, set:r.S > 0};
+  drawScaleFigure();
+}
+function scaleStick(f, bw, bh) {
+  const H = f.S * SCALE_BODY_EYES / scaleFig.cur.h * bh, d = SCALE_HEAD * H, x = f.hx * bw, top = f.hy * bh - d / 2;
+  const y = v => top + v * H, n = v => v.toFixed(1);
+  return `<circle cx="${n(x)}" cy="${n(y(SCALE_HEAD / 2))}" r="${n(d / 2)}"/>` +
+    `<path d="M${n(x)} ${n(y(SCALE_HEAD))}V${n(y(.53))}M${n(x)} ${n(y(.2))}L${n(x - .2 * H)} ${n(y(.42))}` +
+    `M${n(x)} ${n(y(.2))}L${n(x + .2 * H)} ${n(y(.42))}M${n(x)} ${n(y(.53))}L${n(x - .13 * H)} ${n(y(1))}` +
+    `M${n(x)} ${n(y(.53))}L${n(x + .13 * H)} ${n(y(1))}"/>`;
+}
+function scaleFigureManual() {
+  const a = scaleFig.auto, c = scaleFig.cur;
+  return !a || Math.abs(c.S - a.S) > 0.05 || Math.abs(c.hx - a.hx) > 0.002 || Math.abs(c.hy - a.hy) > 0.002;
+}
+function drawScaleFigure() {
+  const c = scaleFig.cur; if (!c) return;
+  const k = Math.min(SCALE_BOX[0] / c.w, SCALE_BOX[1] / c.h), bw = Math.round(c.w * k), bh = Math.round(c.h * k);
+  const svg = $('scaleFrame');
+  svg.setAttribute('width', bw); svg.setAttribute('height', bh); svg.setAttribute('viewBox', `0 0 ${bw} ${bh}`);
+  const manual = scaleFigureManual();
+  svg.innerHTML = `<defs><clipPath id="scaleClip"><rect width="${bw}" height="${bh}"/></clipPath></defs>` +
+    `<g clip-path="url(#scaleClip)">${manual && scaleFig.auto ? `<g class="auto">${scaleStick(scaleFig.auto, bw, bh)}</g>` : ''}` +
+    `<g class="figure">${scaleStick(c, bw, bh)}</g></g>` +
+    `<rect class="frame" x=".75" y=".75" width="${bw - 1.5}" height="${bh - 1.5}" rx="3"/>`;
+  $('scaleEyes').textContent = c.set ? `${Math.round(c.S)} px` : 'Not found –';
+  $('scaleAuto').hidden = !(scaleFig.auto && manual);
+}
+function commitScale() {
+  const c = scaleFig.cur; if (!c?.set) return;
+  $('S').value = scaleFig.auto && Math.abs(c.S - scaleFig.auto.S) <= 0.05 ? scaleFig.auto.S : Math.round(c.S * 10) / 10;
+  $('S').onchange();
+  renderAnalysisSummary();
+}
+$('scaleFrame').addEventListener('wheel', e => {
+  const c = scaleFig.cur; if (!c || !state.loaded) return;
+  e.preventDefault();
+  c.S = Math.min(5000, Math.max(10, c.S * Math.pow(1.08, -Math.sign(e.deltaY))));
+  c.set = true;
+  drawScaleFigure();
+  clearTimeout(scaleFig.timer);
+  scaleFig.timer = setTimeout(commitScale, 350);  // one recalculation after the wheel settles
+}, {passive:false});
+let scaleDrag = null;
+$('scaleFrame').addEventListener('pointerdown', e => {
+  const c = scaleFig.cur; if (!c || e.button !== 0) return;
+  scaleDrag = {x:e.clientX, y:e.clientY, hx:c.hx, hy:c.hy, r:$('scaleFrame').getBoundingClientRect()};
+  $('scaleFrame').setPointerCapture(e.pointerId);
+});
+$('scaleFrame').addEventListener('pointermove', e => {
+  const c = scaleFig.cur; if (!scaleDrag || !c) return;
+  c.hx = scaleDrag.hx + (e.clientX - scaleDrag.x) / scaleDrag.r.width;
+  c.hy = scaleDrag.hy + (e.clientY - scaleDrag.y) / scaleDrag.r.height;
+  drawScaleFigure();
+});
+['pointerup', 'pointercancel'].forEach(type => $('scaleFrame').addEventListener(type, () => { scaleDrag = null; }));
+$('scaleAuto').onclick = () => {
+  if (!scaleFig.auto || !scaleFig.cur) return;
+  clearTimeout(scaleFig.timer);
+  Object.assign(scaleFig.cur, scaleFig.auto, {set:true});
+  drawScaleFigure(); commitScale();
+};
 
 /* ---------- bands ---------- */
 const bandSliders = [];
@@ -937,7 +1007,7 @@ function updateLayerBlurTip() {
   const S = Number($('S').value);
   sliders.layerBlur.lab.title = LAYER_BLUR_TIP + (Number.isFinite(S) && S > 0
     ? ` Current: ${state.layerBlur} × ${S} / 181 = ${(state.layerBlur*S/181).toFixed(2)} px.`
-    : ' No valid scale: enter S (px / 63 mm) to calculate it.');
+    : ' No valid scale: scroll over the figure in Image analysis to set the eye distance.');
 }
 sliders.layerBlur = slider($('globals'), 'Layer blur', 0, 20, 0.1, state.layerBlur, v => {
   state.layerBlur = v; updateLayerBlurTip(); markDirty();
@@ -1143,7 +1213,6 @@ function beginLoadTimings(message) {
   state.loadEpoch = (state.loadEpoch || 0) + 1;
   clearTimeout(markDirty.t);
   endPreviewCompare();
-  closeLandmarks(false);
   clearPanels();
   invalidateMaskCacheStatus();
   invalidateLayerPrecache();
@@ -1171,7 +1240,6 @@ function applyLoaded(r) {
     endPreviewCompare();
     state.imageInfo = r;
     syncPose();
-    closeLandmarks(false);
     state.loadEpoch = (state.loadEpoch || 0) + 1;
     temporaryLog.cache = {};
     renderCalculationLog();
@@ -1187,8 +1255,7 @@ function applyLoaded(r) {
     if (r.skin_colour) { state.color.hue = r.skin_colour.hue; state.color.saturation = r.skin_colour.saturation; setColorSwatch(r.skin_colour.rgb); $('colorOn').checked = true; setToneMid(r.skin_colour.light); drawTone(); }
     syncColorControls();
     $('S').value = Number.isFinite(r.S) && r.S > 0 ? r.S : '';
-    $('landmarkOpen').disabled = false;
-    $('landmarkOpen').classList.toggle('dirty', !r.S || r.confidence !== 'high');
+    scaleFigureLoad(r);
     scaleFrequencyRadius();
     renderAnalysisSummary();
     ['maskOn'].forEach(id => { $(id).disabled = !r.has_mask; });
@@ -1294,7 +1361,6 @@ function setBusy(b, operation=true) {
   st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
-  $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcGet').disabled = b; syncTransferButtons();
   $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
@@ -1907,141 +1973,6 @@ function imagePoint(p, e) {
   const v = ((e.clientY - r.top - p.clientTop - ph / 2 - view.ty) / sc + nh / 2) / nh;
   return u < 0 || u > 1 || v < 0 || v > 1 ? null : {u, v};
 }
-const landmarkLabels = {
-  l_eye:'Left eye centre', r_eye:'Right eye centre', l_sho:'Left shoulder', r_sho:'Right shoulder',
-  l_elb:'Left elbow', r_elb:'Right elbow', l_wri:'Left wrist', r_wri:'Right wrist',
-  l_hip:'Left hip', r_hip:'Right hip', l_kne:'Left knee', r_kne:'Right knee', l_ank:'Left ankle', r_ank:'Right ankle'
-};
-const landmarkSegments = {
-  upper_arm_l:['l_sho','l_elb'], upper_arm_r:['r_sho','r_elb'], forearm_l:['l_elb','l_wri'], forearm_r:['r_elb','r_wri'],
-  thigh_l:['l_hip','l_kne'], thigh_r:['r_hip','r_kne'], shank_l:['l_kne','l_ank'], shank_r:['r_kne','r_ank'],
-  shoulders:['l_sho','r_sho'], torso:['mid_sho','mid_hip']
-};
-const copyLandmarks = value => JSON.parse(JSON.stringify(value));
-function landmarkDraft() { return landmarkEdit?.drafts[landmarkEdit.subject]; }
-function landmarkCurrentPoints() {
-  const d = landmarkDraft();
-  return d ? {...landmarkEdit.subjects[landmarkEdit.subject].points, ...d.points} : {};
-}
-function landmarkSnapshot() {
-  const d = landmarkDraft();
-  d.undo.push(copyLandmarks({points:d.points, excluded:d.excluded}));
-}
-function drawLandmarks() {
-  const svg = $('landmarkOverlay'), img = $('p0').querySelector('img');
-  if (!svg || !landmarkEdit || !img?.naturalWidth) return;
-  const p = $('p0'), pw = p.clientWidth, ph = p.clientHeight;
-  const scale = Math.min(pw / img.naturalWidth, ph / img.naturalHeight) * view.z;
-  const xy = point => [pw/2 + view.tx + (point.x / landmarkEdit.width - 0.5) * img.naturalWidth * scale,
-                       ph/2 + view.ty + (point.y / landmarkEdit.height - 0.5) * img.naturalHeight * scale];
-  const points = landmarkCurrentPoints(), d = landmarkDraft();
-  svg.replaceChildren();
-  const add = (tag, attrs) => {
-    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-    Object.entries(attrs).forEach(([k,v]) => el.setAttribute(k, v)); svg.append(el);
-  };
-  for (const [name, [a,b]] of Object.entries(landmarkSegments)) {
-    if (!points[a]?.visible || !points[b]?.visible) continue;
-    const [x1,y1] = xy(points[a]), [x2,y2] = xy(points[b]);
-    add('line', {x1,y1,x2,y2,stroke:d.excluded.includes(name) ? '#f88' : '#81e4b7', 'stroke-width':2});
-  }
-  for (const [name, point] of Object.entries(points)) {
-    if (!point.visible) continue;
-    const [cx,cy] = xy(point);
-    add('circle', {cx,cy,r:name === $('landmarkName').value ? 7 : 5, fill:point.source === 'manual' || name in d.points ? '#ffb64d' : '#81e4b7', stroke:'#111', 'stroke-width':2});
-  }
-}
-function landmarkChanged() {
-  drawLandmarks();
-  const d = landmarkDraft();
-  if (!d) return;
-  const edit = landmarkEdit;
-  edit.proposal = null;
-  const request = ++edit.request;
-  $('landmarkApply').disabled = true;
-  $('landmarkSummary').textContent = 'Calculating proposal...';
-  api('/api/landmarks/estimate', {generation:edit.generation, subject:edit.subject, points:d.points, excluded:d.excluded})
-    .then(r => {
-      if (landmarkEdit !== edit || request !== edit.request) return;
-      edit.proposal = r;
-      $('landmarkApply').disabled = !(r.S > 0);
-      const cues = r.used.map(c => `${c[0]} ${c[1].toFixed(1)} px`).join(', ') || 'none';
-      const dropped = r.dropped.map(c => c[0]).concat(r.excluded).join(', ') || 'none';
-      $('landmarkSummary').textContent = (r.S ? `Proposed S ${r.S.toFixed(1)} px, ${r.confidence}, uncertainty at least ±${Math.round(r.sigma*100)}%.\n` : 'No usable scale cue.\n') +
-        `Contributing: ${cues}\nExcluded / disagreeing: ${dropped}\nBody segments used: ${r.segments.map(s => s[0]).join(', ') || 'none'}\n` +
-        `Unavailable / degenerate: ${r.unavailable.join(', ') || 'none'}${r.body_spread === null ? '' : `\nBody segment disagreement: ${Math.round(r.body_spread * 100)}% of estimated height`}\n` +
-        'Population averages: 63 mm eye distance, 1680 mm body height. 2D lengths may be foreshortened; placement does not establish depth.';
-    }).catch(e => { if (landmarkEdit === edit && request === edit.request) $('landmarkSummary').textContent = e.message; });
-}
-function landmarkSelectSubject() {
-  landmarkEdit.request++;
-  landmarkEdit.subject = $('landmarkSubject').value === '' ? null : Number($('landmarkSubject').value);
-  $('landmarkSegments').replaceChildren();
-  const d = landmarkDraft();
-  $('landmarkApply').disabled = true;
-  if (!d) { $('landmarkSummary').textContent = 'Select the subject to adjust.'; drawLandmarks(); return; }
-  for (const name of Object.keys(landmarkSegments)) {
-    const label = document.createElement('label'), box = document.createElement('input');
-    box.type = 'checkbox'; box.checked = d.excluded.includes(name);
-    box.onchange = () => { landmarkSnapshot(); d.excluded = box.checked ? [...d.excluded, name] : d.excluded.filter(n => n !== name); landmarkChanged(); };
-    label.append(box, document.createTextNode(name.replaceAll('_', ' '))); $('landmarkSegments').append(label);
-  }
-  landmarkChanged();
-}
-function closeLandmarks(refresh=true) {
-  if (!landmarkEdit) return;
-  const old = landmarkEdit;
-  landmarkEdit = null;
-  $('landmarkEditor').hidden = true; $('app').classList.remove('landmark-editor');
-  $('landmarkOverlay')?.remove();
-  Object.assign(view, old.view);
-  tabSel.A = old.tab; syncTabs();
-  if (refresh) { if (state.version) showImages(); else clearPanels(); layout(); }
-}
-$('landmarkOpen').onclick = async () => {
-  if (landmarkEdit || state.busy) return;
-  try {
-    const data = await api('/api/landmarks', {});
-    clearTimeout(markDirty.t); setPickingColor(false);
-    landmarkEdit = {...data, subject:null, request:0, view:{...view}, tab:tabSel.A,
-      drafts:data.subjects.map(s => ({points:copyLandmarks(s.overrides?.points || {}), excluded:[...(s.overrides?.excluded || [])], undo:[]}))};
-    $('landmarkEditor').hidden = false; $('app').classList.add('landmark-editor');
-    $('landmarkSubject').replaceChildren(new Option('select subject', ''));
-    data.subjects.forEach((s,i) => $('landmarkSubject').add(new Option(s.label.toLowerCase(), i)));
-    $('landmarkName').replaceChildren();
-    Object.entries(landmarkLabels).forEach(([n,label]) => $('landmarkName').add(new Option(label.toLowerCase(), n)));
-    landmarkSelectSubject();
-    tabSel.A = 'orig'; syncTabs(); Object.assign(view, {z:1,tx:0,ty:0});
-    const p = $('p0'); p.replaceChildren();
-    const img = document.createElement('img'); img.draggable = false; img.onload = layout; img.src = `img/landmarks?v=${data.generation}`; p.append(img);
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.id = 'landmarkOverlay'; p.append(svg);
-  } catch (e) { setStatus(e.message, true); }
-};
-$('landmarkSubject').onchange = landmarkSelectSubject;
-$('landmarkName').onchange = drawLandmarks;
-$('landmarkMissing').onclick = () => {
-  const d = landmarkDraft(); if (!d) return;
-  landmarkSnapshot(); d.points[$('landmarkName').value] = {visible:false, source:'manual'}; landmarkChanged();
-};
-$('landmarkUndo').onclick = () => {
-  const d = landmarkDraft(); if (!d?.undo.length) return;
-  Object.assign(d, d.undo.pop()); landmarkSelectSubject();
-};
-$('landmarkReset').onclick = () => {
-  const d = landmarkDraft(); if (!d) return;
-  landmarkSnapshot(); d.points = {}; d.excluded = []; landmarkSelectSubject();
-};
-$('landmarkCancel').onclick = () => closeLandmarks();
-$('landmarkApply').onclick = async () => {
-  const edit = landmarkEdit, d = landmarkDraft(); if (!d || !edit.proposal?.S) return;
-  $('landmarkApply').disabled = true;
-  try {
-    const r = await api('/api/landmarks/estimate', {generation:edit.generation, subject:edit.subject, points:d.points, excluded:d.excluded, apply:true});
-    if (landmarkEdit !== edit) return;
-    closeLandmarks(); $('S').value = r.S; $('S').onchange();
-    setStatus(`Scale applied: ${r.S.toFixed(1)} px (${r.confidence}).`, false, true);
-  } catch (e) { setStatus(e.message, true); if (landmarkEdit === edit) $('landmarkApply').disabled = false; }
-};
 function clearPanels() {
   pans.forEach(p => {
     p.finishDisplay?.(false);
@@ -2061,7 +1992,7 @@ function showImages() {
     p.finishDisplay = resolve;
     const revision = `${state.loadEpoch || 0}-${state.version}-${state.avers}`;
     if (p.previewRevision !== revision) { p.previewRevision = revision; p.previewCache = new Map(); }
-    const src = landmarkEdit && i === 0 ? `img/landmarks?v=${landmarkEdit.generation}` : `img/${kinds[i]}?v=${state.version}-${state.avers}`;
+    const src = `img/${kinds[i]}?v=${state.version}-${state.avers}`;
     const display = img => {
       if (!current()) return resolve(false);
       const previous = p.querySelector('img');
@@ -2101,7 +2032,6 @@ function layout() {
     img.style.transform = `translate(${pw/2 + view.tx}px, ${ph/2 + view.ty}px) scale(${s}) translate(${-nw/2}px, ${-nh/2}px)`;
     img.style.imageRendering = s > 2 ? 'pixelated' : 'auto';
   });
-  drawLandmarks();
 }
  const startPick = (target, msg) => {
   if (pickingColor === target) { setPickingColor(false); setStatus('Pick cancelled.'); return; }
@@ -2148,49 +2078,23 @@ pans.forEach(p => {
     view.tx = mx - (mx - view.tx) * k; view.ty = my - (my - view.ty) * k; view.z = z; layout();
   }, {passive:false});
   let drag = null;
-  let landmarkDrag = null;
   p.addEventListener('pointerdown', e => {
     if (e.button === 0 && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey &&
-        state.loaded && state.version && state.mode !== 'mask' && !state.busy && !landmarkEdit && !pickingColor) {
+        state.loaded && state.version && state.mode !== 'mask' && !state.busy && !pickingColor) {
       if (previewCompare) return;
       previewCompare = {tab:tabSel.A, pointerId:e.pointerId, pane:p};
       tabSel.A = tabSel.A === 'orig' ? 'result' : 'orig';
       syncTabs(); showImages();
       p.setPointerCapture(e.pointerId); e.preventDefault(); return;
     }
-    if (landmarkEdit && p === pans[0] && e.button === 0 && !e.altKey) {
-      const d = landmarkDraft(), pos = imagePoint(p, e);
-      if (!d || !pos) return;
-      landmarkEdit.request++; landmarkEdit.proposal = null; $('landmarkApply').disabled = true;
-      const points = landmarkCurrentPoints(), img = p.querySelector('img');
-      const scale = Math.min(p.clientWidth / img.naturalWidth, p.clientHeight / img.naturalHeight) * view.z;
-      let nearest = null, distance = 12;
-      for (const [name, point] of Object.entries(points)) {
-        if (!point.visible) continue;
-        const dx = (point.x / landmarkEdit.width - pos.u) * img.naturalWidth * scale;
-        const dy = (point.y / landmarkEdit.height - pos.v) * img.naturalHeight * scale;
-        if (Math.hypot(dx,dy) < distance) { distance = Math.hypot(dx,dy); nearest = name; }
-      }
-      const name = nearest || $('landmarkName').value;
-      $('landmarkName').value = name; landmarkSnapshot();
-      landmarkDrag = name;
-      d.points[name] = {x:pos.u * landmarkEdit.width, y:pos.v * landmarkEdit.height, visible:true, source:'manual'};
-      p.focus(); p.setPointerCapture(e.pointerId); drawLandmarks(); e.preventDefault(); return;
-    }
     drag = {x:e.clientX, y:e.clientY, tx:view.tx, ty:view.ty, shift:e.shiftKey, ctrl:e.ctrlKey, button:e.button};
     if (e.button === 0 && e.ctrlKey) e.preventDefault();
     p.setPointerCapture(e.pointerId); p.classList.add('drag');
   });
   p.addEventListener('pointermove', e => {
-    if (landmarkDrag && landmarkEdit) {
-      const pos = imagePoint(p, e);
-      if (pos) { landmarkDraft().points[landmarkDrag] = {x:pos.u * landmarkEdit.width, y:pos.v * landmarkEdit.height, visible:true, source:'manual'}; drawLandmarks(); }
-      return;
-    }
     if (drag && !drag.ctrl) { view.tx = drag.tx + e.clientX - drag.x; view.ty = drag.ty + e.clientY - drag.y; layout(); }
   });
   p.addEventListener('pointerup', e => {
-    if (landmarkDrag) { landmarkDrag = null; landmarkChanged(); return; }
     const d = drag; drag = null; p.classList.remove('drag');
     if (!d || d.button !== 0 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
     if (pickingColor) {
@@ -2210,22 +2114,10 @@ pans.forEach(p => {
     moveCrop({u, v});
   });
   p.addEventListener('pointercancel', () => {
-    if (landmarkDrag) { landmarkDrag = null; if (landmarkEdit) landmarkChanged(); }
     drag = null; p.classList.remove('drag');
   });
   p.addEventListener('contextmenu', e => { if (e.ctrlKey) e.preventDefault(); });
   p.addEventListener('dblclick', () => { view.z = 1; view.tx = 0; view.ty = 0; layout(); });
-});
-$('p0').addEventListener('keydown', e => {
-  const delta = {ArrowLeft:[-1,0], ArrowRight:[1,0], ArrowUp:[0,-1], ArrowDown:[0,1]}[e.key];
-  if (!landmarkEdit || !delta || !landmarkDraft()) return;
-  const name = $('landmarkName').value, point = landmarkCurrentPoints()[name];
-  if (!point?.visible) return;
-  landmarkSnapshot();
-  const step = e.shiftKey ? 10 : 1;
-  landmarkDraft().points[name] = {x:Math.min(landmarkEdit.width, Math.max(0, point.x + delta[0]*step)),
-    y:Math.min(landmarkEdit.height, Math.max(0, point.y + delta[1]*step)), visible:true, source:'manual'};
-  landmarkChanged(); e.preventDefault();
 });
 window.addEventListener('resize', layout);
 

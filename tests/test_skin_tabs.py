@@ -114,6 +114,67 @@ for (const editor of ['photoshop', 'photocraft']) {
                          '<option value="photoshop">Photoshop</option><option value="photocraft">PhotoCraft</option>'
                          '<option value="standalone">Standalone</option>')
 
+    def test_scale_figure_shows_resizes_commits_and_resets(self):
+        code = "const SCALE_BODY_EYES" + HTML.split("const SCALE_BODY_EYES", 1)[1].split("/* ---------- bands", 1)[0]
+        script = r"""
+const assert = require('node:assert/strict');
+const nodes = {};
+function el(id){ return nodes[id] ??= {id, hidden:false, value:'', textContent:'', innerHTML:'', attrs:{}, handlers:{},
+  setAttribute(k,v){ this.attrs[k]=String(v); }, addEventListener(t,f){ this.handlers[t]=f; },
+  setPointerCapture(){}, getBoundingClientRect(){ return {width:+this.attrs.width, height:+this.attrs.height}; }}; }
+const $ = el;
+const state = {loaded:true};
+let changes = 0, summaries = 0, timers = [];
+$('S').onchange = () => changes++;
+const renderAnalysisSummary = () => summaries++;
+const setTimeout = fn => (timers.push(fn), timers.length), clearTimeout = () => { timers = []; };
+""" + code + r"""
+const wheel = dy => $('scaleFrame').handlers.wheel({deltaY:dy, preventDefault(){}});
+// A portrait photo with an estimate: figure drawn, readout in px, no Auto button yet, nothing committed.
+scaleFigureLoad({width:4000, height:6000, S:330, head:[0.5, 0.2]});
+assert.equal($('scaleFigure').hidden, false);
+assert.equal($('scaleEyes').textContent, '330 px');
+assert.equal($('scaleAuto').hidden, true);
+assert.equal($('scaleFrame').attrs.height, '230');
+assert.equal($('scaleFrame').attrs.width, '153');
+assert.match($('scaleFrame').innerHTML, /class="figure"/);
+assert.doesNotMatch($('scaleFrame').innerHTML, /class="auto"/);
+// Scrolling grows the figure; one commit after the wheel settles sets S once.
+wheel(-1); wheel(-1);
+assert.equal($('scaleEyes').textContent, Math.round(330*1.08*1.08) + ' px');
+assert.equal($('scaleAuto').hidden, false);
+assert.match($('scaleFrame').innerHTML, /class="auto"/);
+assert.equal(changes, 0);
+timers.forEach(fn => fn());
+assert.equal(changes, 1);
+assert.equal($('S').value, Math.round(330*1.08*1.08*10)/10);
+// Dragging only moves the figure: no new commit.
+$('scaleFrame').handlers.pointerdown({button:0, clientX:0, clientY:0, pointerId:1});
+$('scaleFrame').handlers.pointermove({clientX:15.3, clientY:23});
+$('scaleFrame').handlers.pointerup({});
+assert.equal(changes, 1);
+assert.ok(Math.abs(scaleFig.cur.hx - 0.6) < 1e-9 && Math.abs(scaleFig.cur.hy - 0.3) < 1e-9);
+// Auto restores the exact estimate (so the summary reads "estimated") and position.
+$('scaleAuto').onclick();
+assert.equal($('S').value, 330);
+assert.equal(changes, 2);
+assert.equal($('scaleAuto').hidden, true);
+assert.equal(scaleFig.cur.hx, 0.5);
+// No estimate: a figure to start from, nothing committed until the user resizes it; no Auto to go back to.
+$('S').value = '';
+scaleFigureLoad({width:6000, height:4000, S:null, head:null});
+assert.equal($('scaleEyes').textContent, 'Not found –');
+assert.equal($('scaleFrame').attrs.width, '196');
+assert.equal($('scaleAuto').hidden, true);
+wheel(1); timers.forEach(fn => fn());
+assert.ok(Number($('S').value) > 0);
+assert.equal($('scaleAuto').hidden, true);
+"""
+        result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('id="landmarkOpen"', HTML)
+        self.assertIn('<input type="hidden" id="S">', HTML)
+
     def test_markup_has_one_tab_per_view_and_settings_live_in_the_page(self):
         self.assertEqual(re.findall(r'role="tab" aria-selected="[^"]+" data-view="([^"]+)"', HTML),
                          ["mask", "frequency", "dnb", "combine", "settings"])

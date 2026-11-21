@@ -22,7 +22,7 @@ def publish_source(session, prepared, *, kind="local"):
     generation = session.get("landmark_generation", 0) + 1
     session.update(prepared, source_kind=kind, landmark_generation=generation,
                    imgs={}, region_key=None, region=None, last=None, struct=None, avers=0,
-                   landmark_overrides={}, preview_cache={}, full_mask_cache=None)
+                   preview_cache={}, full_mask_cache=None)
     return generation
 
 

@@ -166,7 +166,7 @@ class DnbTests(unittest.TestCase):
         self.assertNotIn("scale_comparison", baseline)
         self.assertTrue(experiment["seen"][0]["target"])
         self.assertAlmostEqual(experiment["scale_comparison"]["baseline"], baseline["S"])
-        self.assertAlmostEqual(experiment["S"], 59.09, delta=.06)
+        self.assertAlmostEqual(experiment["S"], 58.56, delta=.06)  # torso reference 0.30 x 1700 mm x 0.832
         self.assertEqual(experiment["conf"], "medium")
         # A low-scoring head still permits the torso, but at low confidence.
         face[14] = .8
@@ -193,13 +193,13 @@ class DnbTests(unittest.TestCase):
         kp = np.zeros((17, 2), dtype=float)
         for side, x in (("l", 200), ("r", 500)):
             kp[C.B.I[f"{side}_sho"]] = (x, 1300)
-            kp[C.B.I[f"{side}_hip"]] = (x, 1300 + old_torso_s * 504 / 63)
+            kp[C.B.I[f"{side}_hip"]] = (x, 1300 + old_torso_s * 0.30 * C.B.BODY_H_MM / 63)
         face = np.array([150, 25, 400, old_head_s * 210 / 63, *([0] * 10), .95])
         baseline = C.combine([("face_ipd", 449.1, .08)])
         scale, confidence, method = C.body_priority(face, (kp, np.ones(17)), (5000, 1000), baseline)
         self.assertAlmostEqual(scale, baseline["S"], places=8)
         self.assertEqual(confidence, "medium")
-        self.assertIn("image-calibrated test references: torso 419.3 mm, head proxy 174.7 mm", method)
+        self.assertIn(f"image-calibrated test references: torso {C._TORSO_TEST_MM:.1f} mm, head proxy 174.7 mm", method)
 
     def test_open_defaults_to_body_priority_and_honors_baseline_and_manual_scale(self):
         target = {"S": 52., "conf": "low", "desc": "torso only", "centre": None, "seen": [],
@@ -559,80 +559,26 @@ class DnbTests(unittest.TestCase):
         with Image.open(io.BytesIO(self.get("/img/orig")[0])) as image:
             self.assertEqual(image.info["icc_profile"], profile)
 
-    def test_manual_scale_proposals_are_subject_scoped_and_commit_only_on_apply(self):
-        self.post("/api/load", {"path": str(self.image)})
-        kp = np.zeros((17, 2))
-        sc = np.zeros(17)
-        kp[5], kp[7] = [10, 20], [30, 20]
-        sc[5], sc[7] = 1, 1
-        S.STATE["seen"] = [
-            {"kp": kp, "sc": sc, "face_info": None, "face": None, "target": True,
-             "cues": [("face_ipd", 30, 0.08), ("iris", 32, 0.12), ("body", 4, 0.2)]},
-            {"kp": None, "sc": None, "face_info": None, "face": None, "target": False, "cues": []},
-        ]
-        data = self.post("/api/landmarks", {})
-        self.assertEqual(len(data["subjects"]), 2)
-        self.assertEqual(data["subjects"][0]["points"]["l_sho"]["x"], 10)
-        req = {"generation": data["generation"], "subject": 0,
-               "points": {"l_eye": {"x": 20, "y": 10, "visible": True},
-                          "r_eye": {"x": 40, "y": 10, "visible": True}}, "excluded": []}
-        proposal = self.post("/api/landmarks/estimate", req)
-        names = [c[0] for c in proposal["used"] + proposal["dropped"]]
-        self.assertIn("manual_eye_centres_2d", names)
-        self.assertNotIn("face_ipd", names)
-        self.assertIn("iris", names)
-        self.assertLessEqual(names.count("body"), 1)
-        self.assertNotEqual(proposal["confidence"], "high")
-        self.assertGreaterEqual(proposal["sigma"], 0.15)
-        self.assertEqual(S.STATE["landmark_overrides"], {})
-        self.assertEqual(S.STATE["seen"][0]["kp"][5, 0], 10)
-        self.post("/api/landmarks/estimate", dict(req, apply=True))
-        self.assertEqual(self.post("/api/landmarks", {})["subjects"][0]["overrides"]["points"], req["points"])
-        self.assertIsNone(self.post("/api/landmarks", {})["subjects"][1]["overrides"])
-        empty = self.post("/api/landmarks/estimate", dict(req, subject=1, points={}))
-        self.assertIsNone(empty["S"])
-        self.post("/api/load", {"path": str(self.image)})
-        self.assertEqual(S.STATE["landmark_overrides"], {})
-        with self.assertRaises(HTTPError):
-            self.post("/api/landmarks/estimate", req)
-
-    def test_manual_segments_missing_degenerate_and_exclusion(self):
-        self.post("/api/load", {"path": str(self.image)})
-        generation = self.post("/api/landmarks", {})["generation"]
-        def point(x, y):
-            return {"x": x, "y": y, "visible": True}
-        req = {"generation": generation, "subject": 0, "points": {
-            "l_sho": point(10, 20), "l_elb": point(30, 20), "l_wri": point(30, 20),
-            "r_sho": point(50, 20), "r_elb": point(55, 20)}, "excluded": []}
-        result = self.post("/api/landmarks/estimate", req)
-        self.assertEqual({row[0] for row in result["segments"]}, {"upper_arm_l", "upper_arm_r", "shoulders"})
-        self.assertIn("forearm_l", result["unavailable"])
-        self.assertIsNotNone(result["body_spread"])
-        expected = estimate_body_scale.estimate(
-            np.array([[p["x"], p["y"]] if (p := req["points"].get(n)) else [0, 0]
-                      for n in estimate_body_scale.KP]),
-            np.array([1 if n in req["points"] else 0 for n in estimate_body_scale.KP]))
-        self.assertAlmostEqual(result["S"], expected["S"])
-        excluded = self.post("/api/landmarks/estimate", dict(req, excluded=["upper_arm_r"]))
-        self.assertNotIn("upper_arm_r", [row[0] for row in excluded["segments"]])
-        req["points"]["l_elb"] = {"visible": False}
-        missing = self.post("/api/landmarks/estimate", req)
-        self.assertNotIn("upper_arm_l", [row[0] for row in missing["segments"]])
-        req["points"]["l_sho"] = point(-1, 20)
-        with self.assertRaises(HTTPError):
-            self.post("/api/landmarks/estimate", req)
-
     def test_manual_scale_recalculates_all_skin_modes(self):
-        self.post("/api/load", {"path": str(self.image)})
-        generation = self.post("/api/landmarks", {})["generation"]
-        req = {"generation": generation, "subject": 0,
-               "points": {"l_eye": {"x": 20, "y": 20, "visible": True},
-                          "r_eye": {"x": 80, "y": 20, "visible": True}}, "excluded": [], "apply": True}
-        scale = self.post("/api/landmarks/estimate", req)["S"]
+        loaded = self.post("/api/load", {"path": str(self.image)})
+        self.assertTrue(loaded["head"] is None or (len(loaded["head"]) == 2 and all(0 <= v <= 1 for v in loaded["head"])))
+        scale = 60.0  # what the Image analysis figure sends after the user resizes it
         for mode in ("dnb", "mask", "frequency"):
             result = self.post("/api/run", dict(PARAMS, S=scale, mode=mode))
             self.assertEqual(result["stats"]["preview_px"], [128, 96])
             self.assertAlmostEqual(S.STATE["last"]["S"], scale)
+
+    def test_head_position_for_the_scale_figure(self):
+        sc = np.zeros(17)
+        kp = np.zeros((17, 2))
+        kp[0], sc[0] = (50, 30), 0.9
+        self.assertEqual(S.head_position({"face": (40, 10, 20, 30), "kp": kp, "sc": sc}, 100, 200), [0.5, 0.125])
+        self.assertEqual(S.head_position({"face": None, "kp": kp, "sc": sc}, 100, 200), [0.5, 0.15])
+        sc[0] = 0.1
+        self.assertEqual(S.head_position({"face": None, "kp": kp, "sc": sc, "centre": (25, 100)}, 100, 200), [0.25, 0.5])
+        self.assertIsNone(S.head_position({"face": None, "kp": None, "sc": None, "centre": None}, 100, 200))
+        self.assertIsNone(S.head_position(None, 100, 200))
+        self.assertFalse(hasattr(S, "api_landmarks") or hasattr(S, "api_landmark_estimate"))
 
     def test_unscaled_detected_subjects_are_available_without_retargeting_mask(self):
         self.patches[4].stop()

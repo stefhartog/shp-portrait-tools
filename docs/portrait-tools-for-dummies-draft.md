@@ -148,10 +148,11 @@ workflow, not a requirement to use every effect.
    right. Analysis offers **faces & bodies**, **skin** and **structure** overlays.
    Check the intended person and make sure important areas are not unexpectedly
    excluded. Detection is a starting point, not a guarantee of correct coverage.
-4. **Check the scale.** Open **Image analysis** and look at **px / 63 mm**.
-   This is scale S: the estimated image pixels spanning 63 mm at the subject.
-   It lets size-based adjustments adapt to the photograph. If analysis cannot
-   find a usable scale, correct it rather than inventing a number; see below.
+4. **Check the scale.** Open **Image analysis** and look at the stick figure. It is
+   an average adult drawn at the size analysis estimated for the person in your photo;
+   below it, **eye distance** is the same scale in pixels between the pupils (scale S).
+   It lets size-based adjustments adapt to the photograph. If the figure is clearly
+   too big or small for the person, correct it; see below.
 5. **Try FS & Tone.** Compare **Original** with **Result** on the left.
    Start with the existing settings. Change one control, release it, then wait
    for the preview. Switch additional **Blur** or **Skintone Correction** off/on
@@ -168,23 +169,22 @@ workflow, not a requirement to use every effect.
 
 ### If the scale estimate is wrong
 
-**Torso + head** is the automatic default for Open/Get, batch, and watch-folder.
+**Torso + head** is the automatic default for Open/Get and batch.
 Analysis reports the face-led baseline when available for comparison. Manually
-correct the current image scale if needed. Batch and watch-folder estimate each
-image independently. See the [scale estimator guide](skin-tools-architecture.md#automatic-s-estimator)
+correct the current image scale if needed. Batch estimates each image
+independently. See the [scale estimator guide](skin-tools-architecture.md#automatic-s-estimator)
 for the cue weights, test calibration, and fallback rules.
 
-Under **Skin Mask > Image analysis**, choose **Adjust scale landmarks**.
-Select the **subject** and **point**; click to place a point, drag to move it, or
-use arrow keys to nudge it. Eye centers mean the visible pupil centers.
-Use **Mark missing** for an unavailable point and exclude unreliable or
-foreshortened segments. **Undo**, **Reset** and **Cancel** are available.
-Review the proposed scale and uncertainty, then choose **Apply scale**.
+Under **Image analysis**, scroll over the stick figure until it is about the size
+of the person in the photo (the photo is next to it). Drag it to line it up if that
+helps; only its size matters. The eye distance updates and the previews recalculate
+once you stop scrolling. A dashed outline shows the automatic estimate, and **Auto**
+goes back to it. Precision isn't needed: matching the head size is usually enough,
+also for seated or leaning people.
 
-These edits adjust **scale only**. They do not rebuild the skin segmentation,
-change the selected skin region, or repair Directional Blur's pose geometry.
-They clear on a new image load. Directly typing **px / 63 mm** is also possible,
-but only do that if you have a defensible scale value.
+This adjusts **scale only**. It does not rebuild the skin segmentation, change the
+selected skin region, or repair Directional Blur's pose geometry, and it clears on a
+new image load.
 
 ## 4. Understanding the controls
 
@@ -196,13 +196,12 @@ but only do that if you have a defensible scale value.
   Keyboard changes are briefly delayed to avoid processing every keystroke.
   Busy controls and navigation are temporarily locked; wait for completion.
 - In skin previews, the mouse wheel zooms and dragging pans; the two panes stay
-  synchronized. Double-click to fit again. During landmark editing, use
-  **Alt-drag** to pan.
+  synchronized. Double-click to fit again.
 - Retouch previews start on **Result** (or **Combined**) at startup and after
   loading a new source; Skin Mask shows Original only. Hold **Ctrl + primary
   mouse button** in either pane to temporarily flip Original/Result. Release
   to restore the prior selection. Comparison is unavailable while processing,
-  picking colors, editing landmarks or using Skin Mask.
+  picking colors or using Skin Mask.
 - The preset selector has **Save**, **Save New** and **Delete**. Save overwrites
   the selected preset; Save New opens a name dialog. Cancel leaves presets
   unchanged, and an existing name requires confirmation before overwrite.
@@ -550,7 +549,7 @@ target the captured PhotoCraft document, not a local file.
 | File chooser or batch source selection is unavailable | Use the native Tools desktop. AI Fill has a standalone configured file list; skin-tools local file controls are currently hidden. Batch choosing requires the desktop. |
 | Analysis fails on a fresh machine | Verify all three manual models, pose-weight cache/download access, GPU libraries and compatible NVIDIA driver using README/MODELS. Startup alone does not test inference. |
 | Effect is missing or too weak | Compare Original/Result or Combined, check effect switches and mixes, then inspect the shared Skin Mask/light/color ranges and scale. Do not judge D&B strength from exaggerated band previews. |
-| Directional selectors are gray | Hover for missing-geometry details. Unusable regions are skipped; scale-landmark edits do not repair the pose. |
+| Directional selectors are gray | Hover for missing-geometry details. Unusable regions are skipped; a manual scale does not repair the pose. |
 | Crop & Expand Generate is disabled | Add area outside the original frame and check ComfyUI readiness, selected model files and nodes. Readiness is not a guarantee of sufficient GPU memory. |
 | Patch Fill Generate is disabled or fails | Paint a nonempty mask, verify FLUX.1 Fill models/nodes and read the status. A patch too faint for its feathering needs a larger painted area or less feathering. |
 | FS/Combine reports source/profile errors | These paths require opaque, finite, supported SDR samples and captured ICC data. Inspect the error and prepare a supported source/profile in the editor rather than forcing the operation. |

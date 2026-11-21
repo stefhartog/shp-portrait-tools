@@ -116,11 +116,3 @@ class PreviewCacheTests(unittest.TestCase):
         with patch.object(S, "PREVIEW_CACHE_LIMIT", 0):
             self.post("/api/run", T.PARAMS)
             self.assertFalse(S.STATE["preview_cache"])
-        self.post("/api/run", T.PARAMS)
-        # Applying landmarks is a distinct invalidation even if S ends up unchanged.
-        with patch.object(S, "landmark_subjects", return_value=[
-            {"face_info": None, "kp": None, "sc": None, "cues": [("fixture", 181, .2)]}]), \
-             patch.object(S.C, "combine", return_value={"S": 181, "confidence": "medium", "sigma": .2,
-                                                       "used": [], "dropped": []}):
-            S.api_landmark_estimate({"generation": S.STATE["landmark_generation"], "subject": 0, "apply": True})
-        self.assertFalse(S.STATE["preview_cache"])

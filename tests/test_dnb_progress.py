@@ -940,7 +940,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
           check($('info').textContent.includes('(estimated)'));
           $('S').value='190.5';state.skintone.hue_center=32;state.color.hue=null;
           renderAnalysisSummary();
-          check($('info').textContent.includes('manual/landmark override'));
+          check($('info').textContent.includes('(manual)'));
           check($('info').textContent.includes('32.0°'));
           check($('info').textContent.includes('hue unavailable'));
           finishProcessing(1000);

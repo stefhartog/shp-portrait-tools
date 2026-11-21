@@ -17,7 +17,7 @@ import numpy as np
 from rtmlib import Wholebody
 
 MAX_SIDE = 1600
-BODY_H_MM = 1680.0  # rough adult mixed-sex average
+BODY_H_MM = 1700.0  # average adult; the Image analysis stick figure uses the same height
 IPD_MM = 63.0
 KP = ["nose", "l_eye", "r_eye", "l_ear", "r_ear", "l_sho", "r_sho", "l_elb", "r_elb", "l_wri", "r_wri",
       "l_hip", "r_hip", "l_kne", "r_kne", "l_ank", "r_ank"]

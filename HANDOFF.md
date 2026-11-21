@@ -12,6 +12,22 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## Subject scale figure replaces the S box and landmark editor (2026-11-21)
+
+Image analysis shows the scale S as a stick figure in a frame shaped like the photo: an average adult (1700 mm,
+head 13%) whose drawn height is `S × 1700/63 / image height` of the frame, starting with its head at the
+analysed subject's head (`head`, new in the load response: face-box centre, else the nose keypoint, else the
+subject centre, as image fractions; null when nothing was found). Scrolling over the figure resizes it and
+commits S once the wheel settles (one recalculation); dragging moves it for the eye only and is never sent.
+The readout is **eye distance** in pixels, which is S itself (63 mm is the average distance between the
+pupils). A dashed outline of the estimate and an **Auto** button appear after a manual change; Auto restores
+the exact estimate. Without an estimate the figure starts full-length and S stays unset until it is resized.
+S still travels as the hidden `#S` value in every request, so processing, presets and batch are unchanged.
+
+Removed: the typed **px / 63 mm** box, the **Adjust scale landmarks** editor (subject/point editing, missing
+points, excluded segments), `/api/landmarks`, `/api/landmarks/estimate`, `/img/landmarks` and the source's
+`landmark_overrides`. Automatic pose detection is unchanged (it feeds the estimate and Directional Blur).
+
 ## One-command installers and v0.2.0 (2026-11-21)
 
 `install.ps1` (Windows) and `install.sh` (Linux) at the repository root are attached to each GitHub Release and
@@ -316,12 +332,12 @@ Presets save the entire bundle, including hidden mask/FS/D&B/Directional/Combine
 The preset star excludes navigation mode and S-derived FS pixel radii. Legacy `skintone`
 normalizes to `frequency`; absent new controls receive defaults in memory, not file rewrites.
 Saturation correction is removed; legacy fields are ignored rather than reinterpreted.
-Landmark edits belong to the source, clear on new load, and adjust scale only: they do
-not rebuild segmentation or change the selected skin region.
+A manual scale (the Image analysis figure, formerly landmark edits) belongs to the source, clears on new load,
+and adjusts scale only: it does not rebuild segmentation or change the selected skin region.
 
 | Mode | Processing controls | Left previews | Right previews |
 |---|---|---|---|
-| Skin Mask | Shared skin/feather, structure, light and colour range; Image analysis/S/landmarks | Original | Mask, Analysis |
+| Skin Mask | Shared skin/feather, structure, light and colour range; Image analysis/scale figure | Original | Mask, Analysis |
 | FS & Tone | Frequency Separation & Skin Tone, Blur, Directional Blur, Skintone Correction | Original, Result | Color, Detail, Region when Directional enabled |
 | D&B | BAND 1, BAND 2, SHARED CONTROLS | Original, Result | Band 1, Band 1 + mask; Band 2 and Band 2 + mask always available |
 | Combine | **FS mix and D&B mix**, plus local batch controls; edit ingredients in their individual tabs. Image analysis is hidden. | Original, Combined | FS result, D&B result, Mask |
