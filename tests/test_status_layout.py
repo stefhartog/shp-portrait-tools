@@ -82,7 +82,7 @@ class StatusLayoutTests(unittest.TestCase):
                     result = response[3]
                     return result.get("value", result) if isinstance(result, dict) else result
                 command("WebDriver:NewSession", capabilities={"alwaysMatch": {}})
-                for module in ("dnb",):
+                for module in ("skin",):
                     html = (root / f"modules/{module}/ui/index.html").read_text()
                     # Only actual markup/styles: no application script or image/API requests.
                     bar = html.split('<div id="bar">', 1)[1].split("<aside>", 1)[0]
@@ -139,7 +139,7 @@ class StatusLayoutTests(unittest.TestCase):
                       return {animation:style.animationName,transform:style.transform};
                     """, args=[], sandbox=None)
                     self.assertEqual(reduced, {"animation":"none", "transform":"none"})
-                    if module == "dnb":
+                    if module == "skin":
                         self.check_combine_controls(command, html, profile)
                         self.check_analysis_controls(command, html, profile)
                         self.check_preview_images(command, html, profile)
@@ -165,21 +165,21 @@ class StatusLayoutTests(unittest.TestCase):
                     process.wait(timeout=5)
 
     def check_panel_dimming(self, command, root, profile):
-        for module in ("dnb",):
+        for module in ("skin",):
             html=(root/f"modules/{module}/ui/index.html").read_text()
             markup=re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>","",html,flags=re.S)
             page=profile/f"{module}-panel-disabled.html"
             page.write_text(markup.replace("</head>","<style>"+stylesheet().decode()+"</style></head>"))
             command("WebDriver:Navigate",url=page.as_uri())
             before=command("WebDriver:ExecuteScript",script="""
-              const details=arguments[0]==='dnb'?document.getElementById('g-mask'):document.querySelector('details.crop-section');
+              const details=arguments[0]==='skin'?document.getElementById('g-mask'):document.querySelector('details.crop-section');
               const body=details.querySelector('.gbody');
               const label=document.createElement('label');label.id='panelDimLabel';label.textContent='setting label';
               body.append(label);
               const summary=details.querySelector(':scope > summary');
               const normal={header:getComputedStyle(summary).color,label:getComputedStyle(label).color};
               const input=document.createElement('input');input.type='range';input.disabled=true;
-              if(arguments[0]==='dnb'){input.classList.add('panel-disabled');document.getElementById('maskSliders').append(input);}
+              if(arguments[0]==='skin'){input.classList.add('panel-disabled');document.getElementById('maskSliders').append(input);}
               else {document.getElementById('xPrompt').disabled=true;document.getElementById('xAdv').append(input);}
               return {header:normal.header,label:normal.label,
                 hasDisabled:[...details.querySelectorAll('input:disabled')].length>0};
@@ -188,7 +188,7 @@ class StatusLayoutTests(unittest.TestCase):
                 command("WebDriver:ExecuteScript",script="document.documentElement.dataset.theme=arguments[0];",
                         args=[theme],sandbox=None)
                 result=command("WebDriver:ExecuteScript",script="""
-                  const details=arguments[0]==='dnb'?document.getElementById('g-mask'):document.querySelector('details.crop-section');
+                  const details=arguments[0]==='skin'?document.getElementById('g-mask'):document.querySelector('details.crop-section');
                   const summary=details.querySelector(':scope > summary');
                   const label=document.getElementById('panelDimLabel');
                   const disabled=[...details.querySelectorAll('input:disabled')];
@@ -197,7 +197,7 @@ class StatusLayoutTests(unittest.TestCase):
                     label:getComputedStyle(label).color,
                     labelOpacity:getComputedStyle(label).opacity,
                     controls:disabled.map(e=>getComputedStyle(e).opacity),
-                    toggle:arguments[0]==='dnb'?{
+                    toggle:arguments[0]==='skin'?{
                       opacity:getComputedStyle(document.getElementById('maskOn')).opacity,
                       cursor:getComputedStyle(document.getElementById('maskOn')).cursor
                     }:null};
@@ -215,7 +215,7 @@ class StatusLayoutTests(unittest.TestCase):
                   return getComputedStyle(e).opacity;
                 """,args=[],sandbox=None)
                 self.assertEqual(native,"0.5")
-                if module=="dnb":
+                if module=="skin":
                     self.assertEqual(result["toggle"],{"opacity":"1","cursor":"pointer"})
                     checked=command("WebDriver:ExecuteScript",script="""
                       const toggle=document.getElementById('maskOn');toggle.checked=true;
@@ -407,7 +407,7 @@ class StatusLayoutTests(unittest.TestCase):
             self.assertEqual(restored,before)
 
     def check_panel_graph_geometry(self, command, root, profile):
-        html=(root/"modules/dnb/ui/index.html").read_text()
+        html=(root/"modules/skin/ui/index.html").read_text()
         markup=re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>","",html,flags=re.S)
         page=profile/"dnb-panel-graphs.html"
         page.write_text(markup.replace("</head>","<style>"+stylesheet().decode()+"</style></head>"))
@@ -463,7 +463,7 @@ class StatusLayoutTests(unittest.TestCase):
                         self.assertLessEqual(graph["right"],graph["asideRight"])
 
     def check_stretch_removed(self, command, root, profile):
-        html=(root/"modules/dnb/ui/index.html").read_text()
+        html=(root/"modules/skin/ui/index.html").read_text()
         markup=re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>","",html,flags=re.S)
         page=profile/"dnb-stretch-removed.html"
         page.write_text(markup.replace("</head>","<style>"+stylesheet().decode()+"</style></head>"))
@@ -488,7 +488,7 @@ class StatusLayoutTests(unittest.TestCase):
         self.assertEqual(result["combined"],["result","dnb_result"])
 
     def check_preview_tabs(self, command, root, profile):
-        for module in ("dnb",):
+        for module in ("skin",):
             html = (root / f"modules/{module}/ui/index.html").read_text()
             markup = re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>", "", html, flags=re.S)
             page = profile / f"{module}-preview-tabs.html"
@@ -524,7 +524,7 @@ class StatusLayoutTests(unittest.TestCase):
                           leftEdge:r.left,rightEdge:r.right,viewport:innerWidth};
                       });
                     """, args=[theme], sandbox=None)
-                    self.assertGreaterEqual(len(result), 3 if module == "dnb" else 2)
+                    self.assertGreaterEqual(len(result), 3 if module == "skin" else 2)
                     for tab in result:
                         with self.subTest(module=module, theme=theme, width=width, tab=tab["text"]):
                             self.assertEqual(tab["font"], "13px")
@@ -579,7 +579,7 @@ class StatusLayoutTests(unittest.TestCase):
                 self.assertTrue(keyboard["focus"])
 
     def check_switch_geometry(self, command, root, profile):
-        for module in ("dnb",):
+        for module in ("skin",):
             html = (root / f"modules/{module}/ui/index.html").read_text()
             markup = re.sub(r"<script\b[^>]*>.*?</script>|<link\b[^>]*>", "", html, flags=re.S)
             page = profile / f"{module}-switches.html"
@@ -639,13 +639,13 @@ class StatusLayoutTests(unittest.TestCase):
                             self.assertEqual(switch["border"], "rgba(0, 0, 0, 0)")
                             self.assertGreaterEqual(switch["left"], 0)
                             self.assertLessEqual(switch["right"], switch["viewport"])
-                    if module=="dnb":
+                    if module=="skin":
                         moved=command("WebDriver:ExecuteScript",script="""
                           return {row:getComputedStyle(document.getElementById('blurMask')).transform,
                             summary:getComputedStyle(document.getElementById('maskOn')).transform};
                         """,args=[],sandbox=None)
                         self.assertEqual(moved,{"row":"matrix(1, 0, 0, 1, 0, -1)","summary":"none"})
-            selector = "#maskOn" if module == "dnb" else "#slora"
+            selector = "#maskOn" if module == "skin" else "#slora"
             command("WebDriver:ExecuteScript", script="""
               window.switchUnderTest=document.querySelector(arguments[0]);
               switchUnderTest.checked=false;switchUnderTest.disabled=false;
@@ -1025,7 +1025,7 @@ class StatusLayoutTests(unittest.TestCase):
         self.assertTrue(all(result.values()), result)
 
     def check_general_settings(self, command, root, profile):
-        html = (root / "modules/dnb/ui/index.html").read_text()
+        html = (root / "modules/skin/ui/index.html").read_text()
         shell = (root / "shell/index.html").read_text()
         shell_js = (root / "shell/shell.js").read_text()
         theme = (root / "shared/ui/theme.js").read_text()
@@ -1052,7 +1052,7 @@ class StatusLayoutTests(unittest.TestCase):
           };
           window.fetch=async()=>({ok:true,json:async()=>({modules:{
             crop:{phase:'stopped',startup_enabled:false},
-            dnb:{phase:'running',instance:'settings-fixture',startup_enabled:true}
+            skin:{phase:'running',instance:'settings-fixture',startup_enabled:true}
           }})});
           window.setTimeout=()=>0;
         """.replace("CHILD", json.dumps(child))
@@ -1076,7 +1076,7 @@ class StatusLayoutTests(unittest.TestCase):
             time.sleep(.1)
         self.assertEqual(evaluate("""
           return {mask:document.getElementById('tab-mask').getAttribute('aria-selected'),
-            visible:!document.getElementById('panel-dnb').inert};
+            visible:!document.getElementById('panel-skin').inert};
         """), {"mask":"true","visible":True})
         result = evaluate("""
           document.getElementById('tab-settings').click();
@@ -1086,7 +1086,7 @@ class StatusLayoutTests(unittest.TestCase):
           const before=child.settingsLookup('editorSelect')===control;
           return {selected:document.getElementById('tab-settings').getAttribute('aria-selected'),
             themeHost:document.getElementById('themeSelect').closest('#themeSettings')!==null,
-            dnbHidden:document.getElementById('panel-dnb').inert,
+            dnbHidden:document.getElementById('panel-skin').inert,
             cropHidden:document.getElementById('panel-crop').inert,
             settingsVisible:!document.getElementById('panel-settings').inert,
             sameControl:before,

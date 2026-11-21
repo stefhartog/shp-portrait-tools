@@ -7,13 +7,13 @@ import subprocess
 from pathlib import Path
 
 def af_point(path, width, height):
-    configured = os.environ.get("DNB_EXIFTOOL")
+    configured = os.environ.get("SKIN_EXIFTOOL") or os.environ.get("DNB_EXIFTOOL")
     executable = configured or shutil.which("exiftool")
     if not executable:
         return None
     tool = Path(executable).expanduser()
     if configured and not tool.is_file():
-        raise FileNotFoundError(f"DNB_EXIFTOOL does not exist: {tool}")
+        raise FileNotFoundError(f"SKIN_EXIFTOOL does not exist: {tool}")
     try:
         out = subprocess.run(["perl", str(tool), "-s3", "-Sony:FocusLocation", str(path)],
                              capture_output=True, text=True, timeout=30,

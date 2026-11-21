@@ -10,7 +10,7 @@ import numpy as np
 
 import test_skintone as T
 import test_fs_pipeline as P
-from shp_portrait_tools.modules.dnb import ui_server as U, skintone as ST, frequency_separation as FS
+from shp_portrait_tools.modules.skin import ui_server as U, skintone as ST, frequency_separation as FS
 
 
 class ToggleApiTests(unittest.TestCase):

@@ -16,7 +16,7 @@ from PIL import Image
 import test_combine as T
 from winlinks import directory_alias, file_symlink, require_file_symlink
 from test_dnb import synthetic_image
-from shp_portrait_tools.modules.dnb import ui_server as U, progress
+from shp_portrait_tools.modules.skin import ui_server as U, progress
 from shp_portrait_tools.shared.local_output import batch_output
 
 

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1] / "src" / "shp_portrait_tools"
 @unittest.skipUnless(EDGE.is_file(), "Microsoft Edge is not installed")
 class PhotoshopShellUiTests(unittest.TestCase):
     def test_editor_selection_unlocks_navigation_after_shell_moves_settings(self):
-        skin = (ROOT / "modules" / "dnb" / "ui" / "index.html").read_text(encoding="utf-8")
+        skin = (ROOT / "modules" / "skin" / "ui" / "index.html").read_text(encoding="utf-8")
         shell = (ROOT / "shell" / "index.html").read_text(encoding="utf-8")
         shell_js = (ROOT / "shell" / "shell.js").read_text(encoding="utf-8")
         shell_css = (ROOT / "shell" / "shell.css").read_text(encoding="utf-8")
@@ -61,7 +61,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
           const create=document.createElement.bind(document);
           document.createElement=tag=>{const node=create(tag);if(tag==='iframe')node.srcdoc=CHILD;return node;};
           window.fetch=async()=>({ok:true,json:async()=>({modules:{
-            crop:{phase:'stopped'},dnb:{phase:'running',instance:'fixture'}
+            crop:{phase:'stopped'},skin:{phase:'running',instance:'fixture'}
           }})});
         """.replace("CHILD", json.dumps(child))
         checks = """
@@ -69,7 +69,7 @@ class PhotoshopShellUiTests(unittest.TestCase):
           (async()=>{
             for(let i=0;i<100&&!document.getElementById('editorSelect');i++)await wait(20);
             const get=id=>document.getElementById(id);
-            const frame=document.querySelector('#panel-dnb iframe'), child=frame.contentWindow;
+            const frame=document.querySelector('#panel-skin iframe'), child=frame.contentWindow;
             const select=get('editorSelect');
             if(!select)throw Error('settings not mounted');
             const tabRects=[...document.querySelectorAll('.shell-header [role=tab]:not([hidden])')]

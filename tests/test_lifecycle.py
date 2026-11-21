@@ -6,7 +6,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from shp_portrait_tools.modules.dnb.ui_server import Handler
+from shp_portrait_tools.modules.skin.ui_server import Handler
 from shp_portrait_tools.shared.lifecycle import BrowserLifetime, BrowserServer
 
 

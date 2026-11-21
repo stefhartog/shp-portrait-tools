@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 import cv2
 
 import test_dnb as T
-from shp_portrait_tools.modules.dnb import ui_server as U
+from shp_portrait_tools.modules.skin import ui_server as U
 from shp_portrait_tools.shared.watch_folder import WatchFolder
 
 
@@ -288,7 +288,7 @@ class WatchApiTests(unittest.TestCase):
         target = {"document":{"index":2, "name":"Source.psd"}, "identity":{
             "id":"captured-doc", "revision":7, "width":128, "height":96}}
         import numpy as np
-        from shp_portrait_tools.modules.dnb.layer_cache import LayerCache
+        from shp_portrait_tools.modules.skin.layer_cache import LayerCache
         cache = LayerCache(limit=1024, memory=lambda: 100 * 1024**3)
         self.assertTrue(cache.put("old", (np.ones(100, np.float32),), 0))
         with patch.object(U, "LAYER_CACHE", cache), patch.object(U, "watch_target", return_value=target):

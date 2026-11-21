@@ -24,6 +24,17 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## Skin Tools module ID (2026-11-21)
+
+The module formerly called `dnb` is `skin`: package `modules/skin`, shell route `/skin/`, launcher.json
+keys, health identity, tray/status names (`photocraft_skin`), data subfolder `<data>/skin` and
+`SKIN_DATA`/`SKIN_MODELS`/`SKIN_WATCH_DIRECTORY`/`SKIN_EXIFTOOL`. Fallbacks: launcher.json `dnb` keys
+are read as `skin`, the `DNB_*` variables are honoured when the new ones are unset, and `<data>/dnb` is
+used until `migrate_legacy_roots()` renames it (and rewrites launcher.json paths). Unchanged on purpose:
+the Dodge & Burn feature name (`dnb` mode/tab, `shpdnb` outputs, `DNB_LAYER_BACKEND`, `dnb-*` UI
+preferences) and the PhotoCraft namespace (`DNB_PC_*`, `<config>/shp-photocraft-tools/dnb`,
+`photocraft-dnb`).
+
 ## Folder rename (2026-11-21)
 
 Data, config and (Linux) state folders are now `shp-portrait-tools`. `shared/platform_paths.py` prefers
@@ -102,7 +113,7 @@ The table below gives the broader application context from this handoff.
 | Surface | Responsibility |
 |---|---|
 | `modules/crop/` | AI Fill HTTP UI/server: Crop & Expand and Patch Fill, Comfy graphs, generated RGBA insertion. Only expansion resizes/crops the target canvas. |
-| `modules/dnb/` | Skin Mask, FS & Tone, Dodge & Burn and Combine share one HTTP service. Source state, previews, background preparation, full-resolution assembly, and transfers have separate modules; Combine reuses the same engines. |
+| `modules/skin/` | Skin Mask, FS & Tone, Dodge & Burn and Combine share one HTTP service. Source state, previews, background preparation, full-resolution assembly, and transfers have separate modules; Combine reuses the same engines. |
 | `shared/ui/` | Packaged local CSS, theme and lifecycle scripts, served identically by both modules. No Git CSS dependency/CDN. |
 | `shared/photocraft/` | Auth/config/env precedence, JSON-lines transport, reconnect/errors, document/session negotiation and merged-document fetch. Module-specific application remains separate. |
 | `launcher.py`, `supervisor.py`, `shell/` | Identity-verified owned startup, fixed proxy, mounted views, mode handshake, controls and lifecycle. |
@@ -181,7 +192,7 @@ batch captures the model directory/backend once. Face/body association remains
 one-to-one, independent face/iris cues remain, and Directional Blur requires
 scores for both experimental backends. No 68-point face/21-point hand data is
 fabricated. The exact model pair is locally provisioned in this workstation's
-`DNB_MODELS/opencv-zoo`; the selected backend remains unchanged. OpenCV 5.0.0
+`SKIN_MODELS/opencv-zoo`; the selected backend remains unchanged. OpenCV 5.0.0
 CPU DNN passed synthetic blank-image inference and adapter tests only. OpenCV
 4.x/ORT/CUDA and positive portrait quality/performance remain unverified; this
 family is not known to improve on either default rtmlib or Google Full.

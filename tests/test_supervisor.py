@@ -28,7 +28,7 @@ class GateTests(unittest.TestCase):
             pc = {"port": 17878, "token_file": str(root / "private" / "control.token"),
                   "exchange": str(root / "private" / "exchange"), "read_root": str(root / "private" / "exchange"),
                   "executable": str(root / "photocraft.exe"), "editor_config": str(root / "private" / "editor")}
-            config = {"photocraft": pc, "models": str(root), "ports": {"dnb": 18002}}
+            config = {"photocraft": pc, "models": str(root), "ports": {"skin": 18002}}
             clean_env = {key: value for key, value in os.environ.items()
                          if not key.startswith(("SHP_PC_", "DNB_PC_", "SHPC_PC_", "PHOTOCRAFT_"))}
             children = []
@@ -43,7 +43,7 @@ class GateTests(unittest.TestCase):
                  patch.object(Modules, "checked"), \
                  patch("shp_portrait_tools.supervisor.socket.create_connection") as connect:
                 modules = Modules(config, root / "data", root / "logs", "test")
-                modules.start("dnb")
+                modules.start("skin")
                 self.assertEqual(len(children), 1)
                 for child, prefix, module in zip(children, ("DNB",), ("dnb",)):
                     actual = detect_config(prefix, module, child)
@@ -53,7 +53,7 @@ class GateTests(unittest.TestCase):
                     self.assertEqual(child["PHOTOCRAFT_BIN"], pc["executable"])
                     self.assertEqual(child["PHOTOCRAFT_CONFIG_DIR"], pc["editor_config"])
                 status = external_status(environ=children[0])
-                self.assertEqual(status["photocraft_dnb"]["address"], "127.0.0.1:17878")
+                self.assertEqual(status["photocraft_skin"]["address"], "127.0.0.1:17878")
                 self.assertEqual(connect.call_count, 1)
 
     def test_explicit_photocraft_environment_overrides_saved_config(self):
@@ -70,17 +70,17 @@ class GateTests(unittest.TestCase):
             with patch("shp_portrait_tools.supervisor.socket.create_connection") as connect:
                 status = external_status()
             self.assertEqual(connect.call_count, 1)
-            self.assertEqual(status, {"photocraft_dnb": {"reachable": True, "address": "127.0.0.1:7878"}})
+            self.assertEqual(status, {"photocraft_skin": {"reachable": True, "address": "127.0.0.1:7878"}})
             with patch("shp_portrait_tools.supervisor.socket.create_connection", side_effect=OSError("offline")) as connect:
                 status = external_status()
             self.assertEqual(connect.call_count, 1)
-            self.assertFalse(status["photocraft_dnb"]["reachable"])
+            self.assertFalse(status["photocraft_skin"]["reachable"])
 
     def test_bad_external_configuration_is_reported(self):
         with patch.dict(os.environ, {"DNB_PC_PORT": "invalid"}):
             status = external_status()
-        self.assertFalse(status["photocraft_dnb"]["reachable"])
-        self.assertIn("error", status["photocraft_dnb"])
+        self.assertFalse(status["photocraft_skin"]["reachable"])
+        self.assertIn("error", status["photocraft_skin"])
 
     def test_busy_loaded_confirmation_revision_and_atomic_stop(self):
         busy, loaded = [False], [True]
@@ -149,44 +149,44 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(b"SHP Portrait Tools", self.request("/"))
         for path in ("/static/shell.js", "/static/shell.css", "/static/lifecycle.js", "/static/shp-ui.css"):
             self.assertTrue(self.request(path))
-        for name in ("dnb",):
+        for name in ("skin",):
             page = self.request(f"/{name}/")
             self.assertIn(b'href="static/shp-ui.css"', page)
             self.assertEqual(self.request(f"/{name}/api/health")["module"], name)
             self.assertEqual(self.request(f"/{name}/static/shp-ui.css"), self.request("/static/shp-ui.css"))
             self.assert_error(403, f"/{name}/api/owner/status", {})
         self.assert_error(404, "/crop/")
-        for path in ("/dnb/static/../pyproject.toml", "/dnb/%61pi/owner/status"):
+        for path in ("/skin/static/../pyproject.toml", "/skin/%61pi/owner/status"):
             self.assert_error(403, path)
         self.assert_error(404, "/http://example.test/")
 
     def test_stop_restart_loaded_guard(self):
-        self.request("/dnb/api/pc/fetch", {})
+        self.request("/skin/api/pc/fetch", {})
         before = self.wait_ready()
-        error = self.assert_error(409, "/api/modules/dnb/restart", {"instance": before["dnb"]["instance"]})
+        error = self.assert_error(409, "/api/modules/skin/restart", {"instance": before["skin"]["instance"]})
         self.assertEqual(error["code"], "confirmation")
-        self.assertEqual(self.wait_ready()["dnb"]["instance"], before["dnb"]["instance"])
+        self.assertEqual(self.wait_ready()["skin"]["instance"], before["skin"]["instance"])
         # Another shell changes work while the first confirmation is open.
-        self.request("/dnb/api/pc/fetch", {})
-        changed = self.assert_error(409, "/api/modules/dnb/restart",
-                                    {"instance": before["dnb"]["instance"], "confirm": True,
+        self.request("/skin/api/pc/fetch", {})
+        changed = self.assert_error(409, "/api/modules/skin/restart",
+                                    {"instance": before["skin"]["instance"], "confirm": True,
                                      "revision": error["revision"]})
         self.assertEqual(changed["code"], "changed")
-        restarted = self.control("dnb", "restart", confirm=True, revision=changed["revision"])
-        self.assertNotEqual(restarted["instance"], before["dnb"]["instance"])
+        restarted = self.control("skin", "restart", confirm=True, revision=changed["revision"])
+        self.assertNotEqual(restarted["instance"], before["skin"]["instance"])
         self.assertFalse(restarted["loaded"])
-        self.assertEqual(self.control("dnb", "stop")["phase"], "stopped")
-        error = self.assert_error(409, "/dnb/")
+        self.assertEqual(self.control("skin", "stop")["phase"], "stopped")
+        error = self.assert_error(409, "/skin/")
         self.assertEqual(error["code"], "module_stopped")
-        self.assertEqual(self.control("dnb", "start")["phase"], "running")
+        self.assertEqual(self.control("skin", "start")["phase"], "running")
 
     def test_hue_center_real_proxy_and_direct_child_route(self):
-        loaded=self.request("/dnb/api/pc/fetch",{})
+        loaded=self.request("/skin/api/pc/fetch",{})
         body={"generation":loaded["generation"],"S":loaded["S"],"mode":"frequency",
               "tone":{"on":False},"color":{"on":False},"structure":{"protect":0}}
-        proxied=self.request("/dnb/api/hue-center",body)
+        proxied=self.request("/skin/api/hue-center",body)
         self.assertIsInstance(proxied["center"],float)
-        connection=http.client.HTTPConnection("127.0.0.1",self.manager.config["ports"]["dnb"])
+        connection=http.client.HTTPConnection("127.0.0.1",self.manager.config["ports"]["skin"])
         try:
             connection.request("POST","/api/hue-center",json.dumps(body),{"Content-Type":"application/json"})
             response=connection.getresponse()
@@ -194,10 +194,10 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(json.loads(response.read()),proxied)
         finally:
             connection.close()
-        self.request("/dnb/api/test/hue-route",{"available":False})
+        self.request("/skin/api/test/hue-route",{"available":False})
         connection=http.client.HTTPConnection("127.0.0.1",self.server.server_port)
         try:
-            connection.request("POST","/dnb/api/hue-center",json.dumps(body),
+            connection.request("POST","/skin/api/hue-center",json.dumps(body),
                                {"Content-Type":"application/json","Origin":self.base})
             response=connection.getresponse()
             self.assertEqual(response.status,404)
@@ -208,26 +208,26 @@ class SupervisorTests(unittest.TestCase):
 
     def test_busy_api_and_background_job_cannot_be_forced(self):
         with ThreadPoolExecutor() as pool:
-            work = pool.submit(self.request, "/dnb/api/test/work", {})
+            work = pool.submit(self.request, "/skin/api/test/work", {})
             deadline = time.monotonic() + 2
-            while not self.manager.snapshot("dnb")["busy"] and time.monotonic() < deadline:
+            while not self.manager.snapshot("skin")["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)
-            result = self.assert_error(409, "/api/modules/dnb/stop",
-                                      {"instance": self.manager.modules["dnb"].instance, "confirm": True})
+            result = self.assert_error(409, "/api/modules/skin/stop",
+                                      {"instance": self.manager.modules["skin"].instance, "confirm": True})
             self.assertEqual(result["code"], "busy")
             self.assertTrue(work.result()["done"])
 
     def test_identity_change_and_missing_owner_capability_refused(self):
-        module = self.manager.modules["dnb"]
+        module = self.manager.modules["skin"]
         instance = module.instance
         module.instance = "not-the-owned-instance"
         try:
             with self.assertRaisesRegex(LaunchError, "ownership changed"):
-                self.manager.stop("dnb", True)
+                self.manager.stop("skin", True)
             self.assertIsNone(module.process.poll())
         finally:
             module.instance = instance
-        connection = http.client.HTTPConnection("127.0.0.1", self.manager.config["ports"]["dnb"])
+        connection = http.client.HTTPConnection("127.0.0.1", self.manager.config["ports"]["skin"])
         try:
             connection.request("POST", "/api/owner/stop", "{}")
             response = connection.getresponse()
@@ -239,13 +239,13 @@ class SupervisorTests(unittest.TestCase):
     def test_origin_host_payload_and_fixed_action_checks(self):
         for headers in ({"Origin": "https://evil.test"}, {"Origin": "null"},
                         {"Content-Type": "text/plain"}, {"X-SHP-Control": "0"}):
-            self.assert_error(403, "/api/modules/dnb/stop", {}, headers)
+            self.assert_error(403, "/api/modules/skin/stop", {}, headers)
         self.assert_error(403, "/api/status", headers={"Host": "rebound.example.test"})
-        self.assert_error(400, "/api/modules/dnb/exec", {})
+        self.assert_error(400, "/api/modules/skin/exec", {})
         self.assert_error(400, "/api/modules/crop/stop", {})
-        self.assert_error(400, "/api/modules/dnb/stop", {"confirm": "yes"})
-        self.assert_error(400, "/api/modules/dnb/stop", {"revision": True})
-        self.assert_error(409, "/api/modules/dnb/stop", {"instance": "stale-window"})
+        self.assert_error(400, "/api/modules/skin/stop", {"confirm": "yes"})
+        self.assert_error(400, "/api/modules/skin/stop", {"revision": True})
+        self.assert_error(409, "/api/modules/skin/stop", {"instance": "stale-window"})
 
     def test_last_shell_refresh_multiwindow_and_busy_completion_shutdown(self):
         life = self.server.lifetime = BrowserLifetime(grace=.1, startup=.1, lease=90)
@@ -258,9 +258,9 @@ class SupervisorTests(unittest.TestCase):
         life.touch("refreshed")
         self.assertFalse(life.should_stop(self.manager.busy))
         with ThreadPoolExecutor() as pool:
-            work = pool.submit(self.request, "/dnb/api/test/work", {})
+            work = pool.submit(self.request, "/skin/api/test/work", {})
             deadline = time.monotonic() + 2
-            while not self.manager.snapshot("dnb")["busy"] and time.monotonic() < deadline:
+            while not self.manager.snapshot("skin")["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)
             life.close("refreshed")
             time.sleep(.2)

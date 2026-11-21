@@ -103,7 +103,7 @@ def main():
         desktop = Path(result.stdout.strip())
     if not desktop.is_absolute() or desktop == home:
         parser.error("A distinct absolute desktop folder is required (use --desktop-dir)")
-    config = {"models": str(models), "ports": {"dnb": 18765}}
+    config = {"models": str(models), "ports": {"skin": 18765}}
     if args.exiftool:
         config["exiftool"] = str(args.exiftool.resolve())
     wrapper = ("#!/bin/sh\n# Managed by SHP PhotoCraft Tools scripts/install_desktop.py\n"

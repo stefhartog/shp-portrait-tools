@@ -19,12 +19,15 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .shared.filelock import file_lock
 from .shared.health import identity
-from .shared.platform_paths import data_root, global_config_dir, legacy_config_path, migrate_legacy_roots, state_root
+from .shared.platform_paths import (data_root, env, global_config_dir, legacy_config_path, migrate_legacy_roots,
+                                    module_folder, state_root)
 
 APP = "SHP Portrait Tools"
-DEFAULT_PORTS = {"dnb": 18765}
+DEFAULT_PORTS = {"skin": 18765}
 SHELL_PORT = 18760
-MODULES = {"dnb": "dnb.ui_server"}
+MODULES = {"skin": "skin.ui_server"}
+# launcher.json files written before the module rename use these keys.
+RENAMED_MODULES = {"dnb": "skin"}
 # AI Fill moved to the separate shp-ai-fill project; older launcher.json files still name it.
 RETIRED_MODULES = {"crop"}
 MODEL_FILES = ("yunet.onnx", "face_landmarks.onnx", "selfie_multiclass_256x256.onnx")
@@ -45,7 +48,8 @@ def read_config(path):
     config.pop("comfy", None)  # Tools-managed ComfyUI left with AI Fill.
     startup = config.get("startup", {})
     if isinstance(startup, dict):
-        startup = {name: value for name, value in startup.items() if name not in RETIRED_MODULES}
+        startup = {RENAMED_MODULES.get(name, name): value for name, value in startup.items()
+                   if name not in RETIRED_MODULES}
     if (not isinstance(startup, dict) or set(startup) - set(MODULES)
             or any(type(value) is not bool for value in startup.values())):
         raise LaunchError(f"'startup' must map module names to booleans in {path}")
@@ -59,9 +63,10 @@ def read_config(path):
             raise LaunchError(f"Missing or unreadable Skin Tools model: {model}. Update {path}; weights are not copied.")
     ports = config.get("ports", DEFAULT_PORTS)
     if isinstance(ports, dict):
-        ports = {name: port for name, port in ports.items() if name not in RETIRED_MODULES}
+        ports = {RENAMED_MODULES.get(name, name): port for name, port in ports.items()
+                 if name not in RETIRED_MODULES}
     if not isinstance(ports, dict) or set(ports) != set(MODULES):
-        raise LaunchError(f"'ports' must contain dnb in {path}")
+        raise LaunchError(f"'ports' must contain skin in {path}")
     if any(type(port) is not int or not 1024 <= port <= 65535 for port in ports.values()):
         raise LaunchError(f"Launcher ports must be integers between 1024 and 65535 in {path}")
     config["ports"] = ports
@@ -306,8 +311,8 @@ def write_default_config(path):
     """Windows only: a Skin Tools-first launcher.json; refuses to overwrite and copies no weights."""
     if path.exists():
         raise LaunchError(f"{path} already exists; edit it instead")
-    config = {"models": os.environ.get("DNB_MODELS") or str(data_root() / "dnb" / "models"),
-              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"dnb": True}}
+    config = {"models": env("SKIN_MODELS", "DNB_MODELS") or str(module_folder(data_root(), "skin") / "models"),
+              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"skin": True}}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n")
     return config

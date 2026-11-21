@@ -7,7 +7,7 @@ The page lets you pick a photo, set bands (feature-size range in mm, gain, taper
 see Original | Result | Soft-light layer side by side, and Save to write, at full resolution, 1_result (picture with
 the settings), 2_skinmask and 3_softlight_layer (no mask applied) plus settings.json to results/<name>_<time>/.
 The skin mask (segmenter minus eyes/brows/lips/nostrils minus off-colour pixels) is computed once at Load.
-Presets (named settings, plus one default loaded at start) are stored in $DNB_DATA/presets.json.
+Presets (named settings, plus one default loaded at start) are stored in $SKIN_DATA/presets.json.
 Global result/transfer file options live in the app config settings.json, outside module presets.
 Previews are computed on a downscaled copy (max ~1600 px) of the subject crop or the whole image; Save always
 works at full resolution.
@@ -104,7 +104,7 @@ def configure_processing_backends(settings):
     else:
         DNB_LAYER_BACKEND = processing_service.dnb_backend_settings(settings)
         SKIN_MASK_BACKEND = K.backend_setting(settings)
-WATCH_DIRECTORY = watch_directory("DNB_WATCH_DIRECTORY", "watchfolder", "watchfolder")
+WATCH_DIRECTORY = watch_directory("SKIN_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 FULL_MASK_LOCK = threading.RLock()
 FULL_MASK_CACHE_LIMIT = 256 * 1024 * 1024
@@ -2161,7 +2161,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             result = watcher.status() if watcher is not None else {"ready": False}
             return self.send(200, json.dumps(result).encode(), "application/json")
         if path == "/api/health":
-            return self.send(200, json.dumps({**identity("dnb", ROOT, MODELS),
+            return self.send(200, json.dumps({**identity("skin", ROOT, MODELS),
                 "ui_lifecycle": 1 if getattr(self.server, "lifetime", None) else 0}).encode(), "application/json")
         if path == "/static/lifecycle.js":
             return self.send(200, script(), "text/javascript; charset=utf-8")

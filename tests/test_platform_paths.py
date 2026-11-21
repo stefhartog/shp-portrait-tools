@@ -70,13 +70,15 @@ class MigrationTests(unittest.TestCase):
         self.legacy_install()
         self.assertEqual(P.data_root(), self.old_data)
         self.assertEqual(P.global_config_dir(), self.old_config)
-        self.assertEqual(P.module_data("DNB_DATA_UNSET", "dnb"), self.old_data / "dnb")
+        # The Skin Tools subfolder was `dnb` before the module rename; it is still found.
+        self.assertEqual(P.module_data("SKIN_DATA_UNSET", "skin"), self.old_data / "dnb")
 
     def test_moves_only_app_owned_entries_and_rewrites_models_path(self):
         self.legacy_install()
         self.migrate()
-        self.assertEqual(sorted(p.name for p in self.new_data.iterdir()), ["dnb", "state", "webview"])
-        self.assertEqual((self.new_data / "dnb" / "inbox" / "a.png").read_text(), "png")
+        self.assertEqual(sorted(p.name for p in self.new_data.iterdir()), ["skin", "state", "webview"])
+        self.assertEqual((self.new_data / "skin" / "inbox" / "a.png").read_text(), "png")
+        self.assertEqual(P.module_data("SKIN_DATA_UNSET", "skin"), self.new_data / "skin")
         self.assertEqual(sorted(p.name for p in self.old_data.iterdir()),
                          sorted(["crop", "photocraft-shortcut", "release-updates", P.MIGRATION_NOTE]))
         self.assertEqual(sorted(p.name for p in self.new_config.iterdir()),
@@ -84,7 +86,7 @@ class MigrationTests(unittest.TestCase):
                           "settings.json", "shp-photocraft-tools.ico"])
         self.assertEqual(sorted(p.name for p in self.old_config.iterdir()), sorted(["crop", "dnb", P.MIGRATION_NOTE]))
         config = json.loads((self.new_config / "launcher.json").read_text())
-        self.assertEqual(config["models"], str(self.new_data / "dnb" / "models"))
+        self.assertEqual(config["models"], str(self.new_data / "skin" / "models"))
         self.assertEqual(config["photocraft"]["token_file"], str(self.root / "control" / "token"))
         self.assertEqual(P.data_root(), self.new_data)
         self.assertEqual(P.global_config_dir(), self.new_config)
@@ -118,14 +120,33 @@ class MigrationTests(unittest.TestCase):
         with patch.object(P.os, "rename", side_effect=flaky):
             self.migrate()
         self.assertFalse(self.new_data.exists())
-        self.assertTrue((self.old_data / "dnb" / "presets.json").is_file())
         self.assertEqual(P.data_root(), self.old_data)
         self.assertTrue(any("Kept using" in message and "webview" in message for message in self.messages))
-        # The config folder still moved, and launcher.json still points at the data that stayed.
+        # The data stayed together in the old folder; only its Skin Tools subfolder took the new name.
+        self.assertTrue((self.old_data / "skin" / "presets.json").is_file())
         config = json.loads((self.new_config / "launcher.json").read_text())
-        self.assertEqual(config["models"], str(self.old_data / "dnb" / "models"))
-        self.assertEqual(sorted(str(p) for p in self.old_data.rglob("*")),
-                         sorted(p for p in before if p.startswith(str(self.old_data) + os.sep)))
+        self.assertEqual(config["models"], str(self.old_data / "skin" / "models"))
+        old_tree = sorted(p.replace(str(self.old_data / "dnb"), str(self.old_data / "skin"))
+                          for p in before if p.startswith(str(self.old_data) + os.sep))
+        self.assertEqual(sorted(str(p) for p in self.old_data.rglob("*")), old_tree)
+
+    def test_skin_subfolder_rename_in_an_already_renamed_install(self):
+        (self.new_data / "dnb" / "models").mkdir(parents=True)
+        self.new_config.mkdir(parents=True)
+        (self.new_config / "launcher.json").write_text(json.dumps(
+            {"models": str(self.new_data / "dnb" / "models"), "ports": {"dnb": 18765}}))
+        self.assertEqual(P.module_data("SKIN_DATA_UNSET", "skin"), self.new_data / "dnb")
+        self.migrate()
+        self.assertEqual([p.name for p in self.new_data.iterdir()], ["skin"])
+        config = json.loads((self.new_config / "launcher.json").read_text())
+        self.assertEqual(config["models"], str(self.new_data / "skin" / "models"))
+        self.assertEqual(config["ports"], {"dnb": 18765})  # launcher.read_config maps the old key
+        refused = self.new_data / "skin"
+        refused.rename(self.new_data / "dnb")
+        with patch.object(P.os, "rename", side_effect=PermissionError("in use")):
+            self.migrate()
+        self.assertTrue((self.new_data / "dnb").is_dir())
+        self.assertTrue(any("could not rename" in message for message in self.messages))
 
     def test_existing_new_folder_is_never_overwritten(self):
         self.legacy_install()

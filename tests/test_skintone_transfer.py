@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image
 
 import test_dnb_transfer as T
-from shp_portrait_tools.modules.dnb import skintone as ST
-from shp_portrait_tools.modules.dnb import frequency_separation as FS
+from shp_portrait_tools.modules.skin import skintone as ST
+from shp_portrait_tools.modules.skin import frequency_separation as FS
 from shp_portrait_tools.shared.photocraft import ControlError
 
 

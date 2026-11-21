@@ -109,7 +109,7 @@ Get the three Skin Tools ONNX models and their documented hashes from
 the model folder:
 
 ```sh
-mkdir -p "$HOME/.local/share/shp-portrait-tools/dnb/models"
+mkdir -p "$HOME/.local/share/shp-portrait-tools/skin/models"
 ```
 
 The required filenames are `yunet.onnx`, `face_landmarks.onnx` and
@@ -118,7 +118,7 @@ desktop launcher and start the app:
 
 ```sh
 uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-portrait-tools/dnb/models"
+  --models "$HOME/.local/share/shp-portrait-tools/skin/models"
 "$HOME/.local/bin/shp-photocraft-tools"
 ```
 

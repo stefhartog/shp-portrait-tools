@@ -90,11 +90,11 @@ def busy_modules(status):
 
 
 def external_lines(external):
-    dnb = external.get("photocraft_dnb")
-    if not dnb:
+    skin = external.get("photocraft_skin")
+    if not skin:
         photocraft = "PhotoCraft: Checking"
     else:
-        photocraft = "PhotoCraft: " + ("Reachable" if dnb["reachable"] else "Unreachable") + " (TCP)"
-        if dnb.get("error"):
-            photocraft += " - " + dnb["error"]
+        photocraft = "PhotoCraft: " + ("Reachable" if skin["reachable"] else "Unreachable") + " (TCP)"
+        if skin.get("error"):
+            photocraft += " - " + skin["error"]
     return (photocraft,)

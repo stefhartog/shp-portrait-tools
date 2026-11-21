@@ -6,7 +6,7 @@ frequency (cycles/mm). If skin texture has a consistent physical scale, the curv
 photos line up once the x axis is physical; if they only line up in cycles/pixel, they reflect the
 camera/lens/noise instead of the skin.
 
-Usage: uv run python -m shp_portrait_tools.modules.dnb.texture_experiment   (uses the S values listed in KNOWN below)
+Usage: uv run python -m shp_portrait_tools.modules.skin.texture_experiment   (uses the S values listed in KNOWN below)
 """
 from pathlib import Path
 

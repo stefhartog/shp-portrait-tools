@@ -15,9 +15,9 @@ from urllib.request import Request, urlopen
 import numpy as np
 import cv2
 
-from shp_portrait_tools.modules.dnb import ui_server as U, frequency_separation as FS, dodge_burn as D, progress
-from shp_portrait_tools.modules.dnb.layer_cache import LayerCache
-from shp_portrait_tools.modules.dnb.mask_precache import MaskPrecache
+from shp_portrait_tools.modules.skin import ui_server as U, frequency_separation as FS, dodge_burn as D, progress
+from shp_portrait_tools.modules.skin.layer_cache import LayerCache
+from shp_portrait_tools.modules.skin.mask_precache import MaskPrecache
 from test_dnb import PARAMS
 
 

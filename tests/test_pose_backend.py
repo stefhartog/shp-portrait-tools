@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from shp_portrait_tools.modules.dnb import (
+from shp_portrait_tools.modules.skin import (
     pose_backend as P, estimate_body_scale as B, combine_scale as C,
     directional_blur as D, opencv_zoo_pose as Z, skin_mask_compare as M, ui_server as U,
 )

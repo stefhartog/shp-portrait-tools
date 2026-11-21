@@ -14,10 +14,15 @@ falls back to an unmigrated `shp-photocraft-tools` folder and `migrate_legacy_ro
 `shp-skin-tools` and `install_desktop.py`, never at import) moves only app-owned entries. The per-module PhotoCraft
 control folders (`photocraft_config_dir()`), AI Fill's `crop` data and the Linux inbox keep the old name. Still
 unchanged: app identity strings (`shp-photocraft-tools` window class/icons/health), output filename suffixes
-(`shpdnb` etc.), the `dnb` module ID and its routes.
+(`shpdnb` etc.).
 Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything PhotoCraft relies on.
 
-- **Skin Tools** = module `dnb` (Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service)
+- **Skin Tools** = module `skin` (`modules/skin`, route `/skin/`, `SKIN_*` env vars; it was `dnb` before
+  2026-11-21). Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service. `dnb` is still the Dodge & Burn
+  *feature* name (the `dnb` mode/tab, `shpdnb` outputs, `DNB_LAYER_BACKEND`, `dnb-*` UI preferences) and the
+  PhotoCraft namespace (`detect_config("DNB", "dnb")`, `DNB_PC_*`, the `photocraft-dnb` LightCraft wrapper): keep
+  those. Old `dnb` launcher.json keys, `DNB_DATA`/`DNB_MODELS`/`DNB_WATCH_DIRECTORY`/`DNB_EXIFTOOL` and the
+  `<data>/dnb` folder still work as fallbacks; `migrate_legacy_roots()` renames that folder to `skin`.
 - **AI Fill** (former module `crop`: Crop & Expand, Patch Fill, ComfyUI) was split out to the separate
   `shp-ai-fill` repo on 2026-11-21. `launcher.read_config` still accepts and ignores legacy `crop`/`comfy`
   entries in existing `launcher.json` files; don't reintroduce AI Fill code here.
@@ -76,23 +81,23 @@ not pick up Python changes.
 
 ```
 launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy, mounted iframe)
-   │                └─► modules/dnb/ui_server.py   (owned backend 18765)
+   │                └─► modules/skin/ui_server.py   (owned backend 18765)
    └─► desktop/ (Linux: GTK3/WebKit2 controller.py; Windows: windows_controller.py, pywebview + pystray)
 ```
 
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
-  serving a single-file UI (`modules/dnb/ui/index.html`) plus shared assets from `shared/ui/`
+  serving a single-file UI (`modules/skin/ui/index.html`) plus shared assets from `shared/ui/`
   (no CDN). The shell talks to the module iframe via origin-checked `postMessage` (`shp-tools-mode` with sequence acks).
   The supervisor still has the multi-module registry (`MODULES` in `launcher.py`), now with one entry.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).
-- `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `DNB_DATA`,
-  `DNB_MODELS`, `SHP_TOOLS_DATA`, `*_WATCH_DIRECTORY`. `launcher.py` and `supervisor.py` import `fcntl`
+- `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `SKIN_DATA`,
+  `SKIN_MODELS`, `SHP_TOOLS_DATA`, `*_WATCH_DIRECTORY`. `launcher.py` and `supervisor.py` import `fcntl`
   and the Linux desktop controller imports `gi`, so those don't import on Windows.
 - `shared/local_output.py` (+ `local_output_windows.py`, `winfs.py`): exclusive, never-overwrite numbered
   output files; Windows path pins folders via handles.
-- Skin Tools (`modules/dnb/`): `ui_server.py` wires routes; `image_session.py` owns the published source and
+- Skin Tools (`modules/skin/`): `ui_server.py` wires routes; `image_session.py` owns the published source and
   its generation; `preview_service.py` handles `/api/run`; `processing_service.py` assembles full-resolution
   results; `cache_coordinator.py` / `mask_precache.py` / `layer_cache.py` handle background preparation;
   `transfer_service.py` + `photoshop_bridge.py` / `photocraft_bridge.py` handle Save/Send. Algorithms live in
@@ -117,6 +122,6 @@ launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy,
 ## Photoshop connector
 
 `plugins/photoshop/` is a UXP plugin (`main.js`, `protocol.js`, `profile_store.js`, `manifest.json`) that
-talks to the dnb service at `http://localhost:18765` (the manifest's network domain must match `BASE` in
+talks to the Skin Tools service at `http://localhost:18765` (the manifest's network domain must match `BASE` in
 `main.js`; the Node test asserts this). Packaged `.ccx` builds are tracked under
 `plugins/photoshop/releases/<version>/`.

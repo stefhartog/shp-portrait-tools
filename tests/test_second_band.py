@@ -8,7 +8,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from shp_portrait_tools.modules.dnb import dodge_burn as D, ui_server as U
+from shp_portrait_tools.modules.skin import dodge_burn as D, ui_server as U
 import test_skintone as T
 import test_dnb_transfer as DT
 
@@ -153,7 +153,7 @@ class NativeTests(unittest.TestCase):
             self.client.run("file.close",document=target["index"])
 
     def test_second_insert_failure_rolls_back_completed_band(self):
-        from shp_portrait_tools.modules.dnb.photocraft_bridge import ControlError
+        from shp_portrait_tools.modules.skin.photocraft_bridge import ControlError
         target=self.new_target("srgb")
         path,_=self.bridge.fetch(self.root/"rollback-input")
         from PIL import Image

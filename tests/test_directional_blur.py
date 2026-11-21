@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_portrait_tools.modules.dnb import directional_blur as D, ui_server as U, skintone as ST
+from shp_portrait_tools.modules.skin import directional_blur as D, ui_server as U, skintone as ST
 import test_fs_pipeline as FP
 import test_skintone as T
 import test_dnb_transfer as DT

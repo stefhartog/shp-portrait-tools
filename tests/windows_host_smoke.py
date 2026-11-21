@@ -51,8 +51,8 @@ def main():
     inbox.mkdir()
     os.environ.update(SHP_TOOLS_DATA=str(root / "data"), DNB_WATCH_DIRECTORY=str(inbox))
     config = root / "launcher.json"
-    config.write_text(json.dumps({"models": args.models, "ports": {"dnb": 18765}, "shell_port": 18760,
-                                  "startup": {"dnb": True}}))
+    config.write_text(json.dumps({"models": args.models, "ports": {"skin": 18765}, "shell_port": 18760,
+                                  "startup": {"skin": True}}))
     from shp_portrait_tools import launcher
     from shp_portrait_tools.desktop import windows_controller as wc
 
@@ -92,7 +92,7 @@ def main():
             check("shell title", True, js("document.title"))
             check("tray created", wait_for(lambda: host.tray_ready, 15))
             frame = wait_for(lambda: js("(document.querySelector('iframe')||{}).src || ''"), 30)
-            check("Skin Tools iframe", frame and "/dnb/" in frame, str(frame))
+            check("Skin Tools iframe", frame and "/skin/" in frame, str(frame))
             if frame:
                 time.sleep(4)
                 inner = js("(()=>{const f=document.querySelector('iframe');try{return f.contentDocument.title+'|'+f.contentWindow.__shpNativeFileDialog}catch(e){return 'x:'+e}})()")
@@ -111,7 +111,7 @@ def main():
             time.sleep(1)
             check("show", host.window.native.Visible is True)
             host.window.native.Close  # noqa: B018 - closing handled via on_closing
-            check("modules reported", host.modules.get("dnb", {}).get("phase") == "running", str(host.modules.get("dnb", {}).get("phase")))
+            check("modules reported", host.modules.get("skin", {}).get("phase") == "running", str(host.modules.get("skin", {}).get("phase")))
             host.request_quit()
             check("services stopped on quit", wait_for(lambda: not listening(18765) and not listening(18760), 60))
         except Exception:

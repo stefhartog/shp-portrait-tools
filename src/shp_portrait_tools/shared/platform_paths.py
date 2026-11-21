@@ -20,7 +20,9 @@ LINUX_INBOX_ROOT = Path("/home/stef/shp-photocraft-tools")
 # App-owned entries moved by the migration. Anything else stays: AI Fill's `crop` data (shp-ai-fill
 # still uses the old folder), the per-module PhotoCraft control folders under config (PhotoCraft is
 # configured against them), and files the app did not create.
-DATA_ENTRIES = frozenset({"dnb", "state", "webview", "watchfolder"})
+DATA_ENTRIES = frozenset({"skin", "dnb", "state", "webview", "watchfolder"})
+# Skin Tools' module ID was `dnb` before 2026-11-21; its data subfolder and environment variables are renamed.
+SKIN, LEGACY_SKIN = "skin", "dnb"
 CONFIG_ENTRIES = frozenset({"launcher.json", "launcher.json.lock", "settings.json", "photoshop",
                             "shp-photocraft-tools.ico", "ungoogled-chromium-profile"})
 MIGRATION_LOCK = ".migration.lock"
@@ -73,13 +75,31 @@ def photocraft_config_dir():
     return _config_base() / LEGACY_APP
 
 
-def module_data(env_name, module):
-    return Path(os.environ.get(env_name, data_root() / module)).expanduser()
+def env(name, legacy=None, default=None):
+    """An environment value, falling back to its pre-rename variable name."""
+    value = os.environ.get(name)
+    if value is None and legacy:
+        value = os.environ.get(legacy)
+    return default if value is None else value
+
+
+def module_folder(root, module):
+    """`root/module`, or the pre-rename `root/dnb` for Skin Tools while it has not been moved."""
+    folder = Path(root) / module
+    if module == SKIN and not folder.exists() and (Path(root) / LEGACY_SKIN).is_dir():
+        return Path(root) / LEGACY_SKIN
+    return folder
+
+
+def module_data(env_name, module, legacy_env=None):
+    value = env(env_name, legacy_env)
+    return Path(value).expanduser() if value else module_folder(data_root(), module)
 
 
 def watch_directory(module_env, linux_name, windows_name):
     """Inbox for one service: its own variable, then the generic WATCH_DIRECTORY, then a platform default."""
-    value = os.environ.get(module_env) or os.environ.get("WATCH_DIRECTORY")
+    legacy = "DNB_WATCH_DIRECTORY" if module_env == "SKIN_WATCH_DIRECTORY" else None
+    value = env(module_env, legacy) or os.environ.get("WATCH_DIRECTORY")
     if value:
         return Path(value).expanduser()
     if sys.platform == "win32":
@@ -139,7 +159,7 @@ def _migrate_root(base, wanted, log):
     return moved
 
 
-def _rewrite_launcher_paths(old_data, new_data, moved, log):
+def _rewrite_launcher_paths(old_data, new_data, moved, log, rename=None):
     """Point launcher.json values that named a moved data entry (e.g. the models folder) at its new place."""
     config = global_config_dir() / "launcher.json"
     if not moved or not config.is_file():
@@ -148,7 +168,8 @@ def _rewrite_launcher_paths(old_data, new_data, moved, log):
         values = json.loads(config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    prefixes = [(str(old_data / name), str(new_data / name)) for name in moved]
+    rename = rename or {}
+    prefixes = [(str(old_data / name), str(new_data / rename.get(name, name))) for name in moved]
 
     def fix(value):
         if isinstance(value, dict):
@@ -167,10 +188,27 @@ def _rewrite_launcher_paths(old_data, new_data, moved, log):
         log(f"Updated folder paths in {config}")
 
 
+def _rename_skin_folder(log):
+    """Rename data/dnb to data/skin inside the current data folder, then fix launcher.json paths."""
+    root = data_root()
+    old, new = root / LEGACY_SKIN, root / SKIN
+    if new.exists() or not old.is_dir():
+        return
+    try:
+        os.rename(old, new)
+    except OSError as error:
+        log(f"Kept using {old}: could not rename it to {new.name} ({error}). "
+            "Close every SHP Portrait Tools window and start it again.")
+        return
+    log(f"Renamed {old} to {new}")
+    _rewrite_launcher_paths(root, root, [LEGACY_SKIN], log, rename={LEGACY_SKIN: SKIN})
+
+
 def migrate_legacy_roots(log=lambda message: print(message, file=sys.stderr, flush=True)):
-    """One-time move of app-owned folders from `shp-photocraft-tools` to `shp-portrait-tools`."""
+    """One-time moves: `shp-photocraft-tools` folders to `shp-portrait-tools`, then data `dnb` to `skin`."""
     moved_data = _migrate_root(_data_base(), DATA_ENTRIES.__contains__, log)
     _migrate_root(_config_base(), _config_entry, log)
     if sys.platform != "win32":
         _migrate_root(_state_base(), lambda name: name not in (MIGRATION_LOCK, MIGRATION_NOTE), log)
     _rewrite_launcher_paths(_data_base() / LEGACY_APP, _data_base() / APP, moved_data, log)
+    _rename_skin_folder(log)

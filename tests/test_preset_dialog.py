@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from shp_portrait_tools.modules.dnb import ui_server as skin
+from shp_portrait_tools.modules.skin import ui_server as skin
 from test_dnb import PARAMS
 
 

@@ -14,7 +14,7 @@ attributes its TFLite-to-ONNX conversion to `tensorflow-onnx` and
 The exact original detector variant and conversion-tool versions were not
 independently established.
 
-`src/shp_portrait_tools/modules/dnb/opencv_zoo_pose.py` adapts the pinned
+`src/shp_portrait_tools/modules/skin/opencv_zoo_pose.py` adapts the pinned
 OpenCV Zoo wrappers' preprocessing, detector decoding, pose crop/rotation and
 coordinate restoration. It additionally matches ONNX outputs by tensor shape,
 uses XYWH rectangles for OpenCV NMS, validates model hashes and invalidates

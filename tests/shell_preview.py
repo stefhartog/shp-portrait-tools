@@ -36,7 +36,7 @@ def fixture():
         for sock in sockets:
             sock.close()
         config = {"models": str(models), "ports": ports, "shell_port": 0}
-        env = {"DNB_DATA": str(root / "dnb"), "APPDATA": str(root / "config"),
+        env = {"SKIN_DATA": str(root / "skin"), "APPDATA": str(root / "config"),
                "SHP_PC_PORT": "1", "SHP_PC_TOKEN_FILE": str(root / "token"),
                "SHP_PC_EXCHANGE": str(root / "exchange"), "SHP_PC_READ_ROOT": str(root),
                "DNB_PC_PORT": "1"}

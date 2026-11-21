@@ -229,22 +229,30 @@ class PlatformPathTests(unittest.TestCase):
     def test_env_overrides_and_defaults(self):
         from shp_portrait_tools.shared import platform_paths as P
         with patch.dict(os.environ, {"WATCH_DIRECTORY": "generic", "SHPC_WATCH_DIRECTORY": ""}, clear=False):
-            self.assertEqual(P.watch_directory("DNB_WATCH_DIRECTORY", "a", "b"), Path("generic"))
-            os.environ["DNB_WATCH_DIRECTORY"] = "specific"
-            self.assertEqual(P.watch_directory("DNB_WATCH_DIRECTORY", "a", "b"), Path("specific"))
-        with patch.dict(os.environ, {"DNB_DATA": str(Path("custom") / "d")}):
-            self.assertEqual(P.module_data("DNB_DATA", "dnb"), Path("custom") / "d")
+            for name in ("SKIN_WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
+                os.environ.pop(name, None)
+            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("generic"))
+            os.environ["DNB_WATCH_DIRECTORY"] = "legacy"  # pre-rename variable still honoured
+            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("legacy"))
+            os.environ["SKIN_WATCH_DIRECTORY"] = "specific"
+            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("specific"))
+        with patch.dict(os.environ, {"DNB_DATA": str(Path("custom") / "old")}):
+            os.environ.pop("SKIN_DATA", None)
+            self.assertEqual(P.module_data("SKIN_DATA", "skin", "DNB_DATA"), Path("custom") / "old")
+            os.environ["SKIN_DATA"] = str(Path("custom") / "d")
+            self.assertEqual(P.module_data("SKIN_DATA", "skin", "DNB_DATA"), Path("custom") / "d")
 
     @unittest.skipUnless(WINDOWS, "Windows defaults")
     def test_windows_defaults_use_localappdata(self):
         from shp_portrait_tools.shared import platform_paths as P
         env = {"LOCALAPPDATA": r"C:\Users\x\AppData\Local", "APPDATA": r"C:\Users\x\AppData\Roaming"}
         with patch.dict(os.environ, env):
-            for name in ("DNB_DATA", "WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
+            for name in ("SKIN_DATA", "DNB_DATA", "WATCH_DIRECTORY", "SKIN_WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
                 os.environ.pop(name, None)
-            self.assertEqual(P.module_data("DNB_DATA", "dnb"), Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "dnb")
+            self.assertEqual(P.module_data("SKIN_DATA", "skin", "DNB_DATA"),
+                             Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "skin")
             self.assertEqual(P.global_config_dir(), Path(env["APPDATA"]) / "shp-portrait-tools")
-            self.assertEqual(P.watch_directory("DNB_WATCH_DIRECTORY", "w", "w"),
+            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "w", "w"),
                              Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "w")
 
 if __name__ == "__main__":

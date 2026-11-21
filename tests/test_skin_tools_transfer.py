@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_portrait_tools.modules.dnb import skintone as ST, dodge_burn as D, ui_server as U, frequency_separation as FS
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.modules.skin import skintone as ST, dodge_burn as D, ui_server as U, frequency_separation as FS
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge
 from shp_portrait_tools.shared.photocraft import ControlError
 
 

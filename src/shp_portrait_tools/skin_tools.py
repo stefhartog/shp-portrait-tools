@@ -11,9 +11,9 @@ from .shared.platform_paths import migrate_legacy_roots
 
 
 def main():
-    if not os.environ.get("DNB_DATA"):
+    if not (os.environ.get("SKIN_DATA") or os.environ.get("DNB_DATA")):
         migrate_legacy_roots()
-    from .modules.dnb.ui_server import main as serve
+    from .modules.skin.ui_server import main as serve
     serve()
 
 

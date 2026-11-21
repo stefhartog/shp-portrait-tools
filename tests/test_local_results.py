@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_portrait_tools.modules.dnb import ui_server as S
+from shp_portrait_tools.modules.skin import ui_server as S
 try:
     from shp_portrait_tools import supervisor
 except ImportError:  # supervisor is Linux-only (fcntl)
@@ -237,9 +237,9 @@ class LocalResultTests(unittest.TestCase):
 @unittest.skipIf(supervisor is None, "supervisor is Linux-only")
 class NativeChooserTests(unittest.TestCase):
     def test_owned_proxy_sets_child_origin_for_guarded_result_route(self):
-        manager = SimpleNamespace(modules={"dnb": SimpleNamespace(phase="running")},
-                                  config={"ports": {"dnb": 18765}}, checked=Mock())
-        handler = SimpleNamespace(path="/dnb/api/send-result", command="POST",
+        manager = SimpleNamespace(modules={"skin": SimpleNamespace(phase="running")},
+                                  config={"ports": {"skin": 18765}}, checked=Mock())
+        handler = SimpleNamespace(path="/skin/api/send-result", command="POST",
                                   server=SimpleNamespace(modules=manager), headers={"Content-Length": "2"},
                                   rfile=io.BytesIO(b"{}"), send=Mock(), fail=Mock())
         with patch.object(supervisor.http.client, "HTTPConnection") as factory:
@@ -253,7 +253,7 @@ class NativeChooserTests(unittest.TestCase):
                 {"Content-Type": "application/json", "Origin": "http://127.0.0.1:18765"})
             handler.fail.assert_not_called()
             handler.send.assert_called_once_with(200, b'{"saved":true}', "application/json")
-            handler.path = "/dnb/api/batch"
+            handler.path = "/skin/api/batch"
             handler.rfile = io.BytesIO(b"{}")
             supervisor.ShellHandler.proxy(handler)
             factory.assert_called_with("127.0.0.1", 18765, timeout=None)

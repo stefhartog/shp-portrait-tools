@@ -26,7 +26,7 @@ class DesktopCommandTests(unittest.TestCase):
             exec(compile(ast.Module(body=[methods[name]], type_ignores=[]), "<controller-test>", "exec"), namespace)
         stopped = SimpleNamespace(is_set=lambda:False, wait=Mock(side_effect=RuntimeError("end monitor")))
         connection = SimpleNamespace(stopped=stopped, error=None, request=Mock(side_effect=[
-            {"modules":{"dnb":{"phase":"running","busy":False}}},
+            {"modules":{"skin":{"phase":"running","busy":False}}},
             {"ready":True,"token":"incoming-version-1"}]))
         app = SimpleNamespace(connection=connection,status_epoch=1,quitting=False,control_pending=False,
                               window=object(),watch_wake_tokens={},show=Mock(),update_status=Mock())
@@ -34,7 +34,7 @@ class DesktopCommandTests(unittest.TestCase):
         namespace["GLib"].idle_add = lambda fn,*args:fn(*args)
         with self.assertRaisesRegex(RuntimeError, "end monitor"):
             namespace["monitor"](app)
-        self.assertEqual(connection.request.call_args_list[1].args, ("/dnb/api/watch-folder",))
+        self.assertEqual(connection.request.call_args_list[1].args, ("/skin/api/watch-folder",))
         app.show.assert_called_once()
         app.wake_watch_folder({"ready":True,"token":"incoming-version-1"},1)
         app.show.assert_called_once()
@@ -48,7 +48,7 @@ class DesktopCommandTests(unittest.TestCase):
         app.quitting=False
         app.wake_watch_folder({"ready":True,"token":"incoming-version-2","service":"crop"},1)
         self.assertEqual(app.show.call_count,3)
-        app.wake_watch_folder({"ready":False,"service":"dnb"},1)
+        app.wake_watch_folder({"ready":False,"service":"skin"},1)
         app.wake_watch_folder({"ready":True,"token":"incoming-version-2","service":"crop"},1)
         self.assertEqual(app.show.call_count,3)
 

@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 with tempfile.TemporaryDirectory(prefix="shp-photocraft-tests-") as tmp:
-    os.environ.update(DNB_DATA=tmp + "/dnb", DNB_MODELS=tmp + "/models",
+    os.environ.update(SKIN_DATA=tmp + "/skin", SKIN_MODELS=tmp + "/models",
                       SHP_PC_PORT="1", SHP_PC_TOKEN_FILE=tmp + "/token", SHP_PC_EXCHANGE=tmp + "/exchange",
                       SHP_PC_READ_ROOT=tmp)
     for key in ("PORT", "TOKEN_FILE", "EXCHANGE", "READ_ROOT"):

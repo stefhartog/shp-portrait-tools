@@ -6,7 +6,7 @@ implies a body height from an average proportion (Drillis & Contini style fracti
 heights. The result is reported as 'H' (body height in px) and as an IPD-equivalent S, so it can be
 compared with the face-based S.  All ratios are population averages, so expect roughly +-10-15%.
 
-Usage: uv run python -m shp_portrait_tools.modules.dnb.estimate_body_scale IMAGE [IMAGE ...] [--draw] [--out DIR]
+Usage: uv run python -m shp_portrait_tools.modules.skin.estimate_body_scale IMAGE [IMAGE ...] [--draw] [--out DIR]
 """
 import sys
 from pathlib import Path

@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
 from shp_portrait_tools.shared.photocraft import Client, ControlError, detect_config
 
 
@@ -120,7 +120,7 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(any(c[0] == "app.open" for c in b.client.calls))
 
     def test_status_preserves_authentication_failure_code(self):
-        from shp_portrait_tools.modules.dnb import ui_server as skin
+        from shp_portrait_tools.modules.skin import ui_server as skin
         from shp_portrait_tools.shared.photocraft.bridge import AuthenticationError
 
         for module in (skin,):

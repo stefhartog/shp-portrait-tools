@@ -1,5 +1,5 @@
 """Check the nostril detection: crops around the nose, original | nostril mask in red | candidate region in blue.
-Usage: uv run python -m shp_portrait_tools.modules.dnb.nose_check   (writes $DNB_DATA/out17/nose_check.jpg)"""
+Usage: uv run python -m shp_portrait_tools.modules.skin.nose_check   (writes $SKIN_DATA/out17/nose_check.jpg)"""
 from pathlib import Path
 
 import cv2

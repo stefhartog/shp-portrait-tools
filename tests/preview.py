@@ -24,10 +24,10 @@ def main():
     signal.signal(signal.SIGTERM, interrupt)
     with tempfile.TemporaryDirectory(prefix="shp-photocraft-preview-") as tmp:
         root = Path(tmp)
-        os.environ.update(DNB_DATA=tmp + "/dnb", DNB_MODELS=tmp + "/models",
+        os.environ.update(SKIN_DATA=tmp + "/skin", SKIN_MODELS=tmp + "/models",
                           SHP_PC_PORT="1", SHP_PC_TOKEN_FILE=tmp + "/token", SHP_PC_EXCHANGE=tmp + "/exchange",
                           SHP_PC_READ_ROOT=tmp)
-        from shp_portrait_tools.modules.dnb import ui_server as D
+        from shp_portrait_tools.modules.skin import ui_server as D
 
         y, x = np.mgrid[:600, :800]
         wave = 0.06 * np.sin(y / 16) * np.cos(x / 20)

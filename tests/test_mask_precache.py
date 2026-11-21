@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from shp_portrait_tools.modules.dnb import ui_server as U, dodge_burn as D
-from shp_portrait_tools.modules.dnb.mask_precache import MaskPrecache
+from shp_portrait_tools.modules.skin import ui_server as U, dodge_burn as D
+from shp_portrait_tools.modules.skin.mask_precache import MaskPrecache
 
 
 class MaskPrecacheTests(unittest.TestCase):

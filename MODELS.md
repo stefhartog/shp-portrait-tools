@@ -16,7 +16,7 @@ not the frozen `docs/source/` installation notes.
 
 ## D&B: three manually supplied ONNX files
 
-Create `~/.local/share/shp-portrait-tools/dnb/models/` and download the following files there.
+Create `~/.local/share/shp-portrait-tools/skin/models/` and download the following files there.
 Use actual binary downloads, not Git LFS pointer text or a hosting site's HTML page.
 Links below pin the ONNX conversions inspected on 2026-11-05.
 
@@ -34,7 +34,7 @@ SHA-256 values below were verified against both preserved local binaries and ups
 Git LFS SHA-256 metadata. After downloading, verify before analysis:
 
 ```sh
-cd "$HOME/.local/share/shp-portrait-tools/dnb/models"
+cd "$HOME/.local/share/shp-portrait-tools/skin/models"
 sha256sum -c <<'EOF'
 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  yunet.onnx
 f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c  face_landmarks.onnx
@@ -42,8 +42,8 @@ f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c  face_landmarks
 EOF
 ```
 
-For standalone D&B, set `DNB_MODELS=/absolute/path/to/models` to use another directory.
-Otherwise it uses `$DNB_DATA/models`, with D&B data defaulting to the path above.
+For standalone D&B, set `SKIN_MODELS=/absolute/path/to/models` to use another directory.
+Otherwise it uses `$SKIN_DATA/models`, with D&B data defaulting to the path above.
 The supervised launcher instead uses the absolute `models` value in `launcher.json`;
 installer `--models /absolute/path/to/models` writes that value and requires all three files.
 No old project folder, symlink, environment or dataset is needed.
@@ -64,7 +64,7 @@ dependency; review them after upgrading rtmlib.
 
 Default cache is `~/.cache/rtmlib/hub/checkpoints/`. With `XDG_CACHE_HOME`, it is
 `$XDG_CACHE_HOME/rtmlib/hub/checkpoints/`; `TORCH_HOME` takes precedence and changes it to
-`$TORCH_HOME/hub/checkpoints/`. It is **not** `DNB_MODELS`.
+`$TORCH_HOME/hub/checkpoints/`. It is **not** `SKIN_MODELS`.
 ZIPs are extracted and the contained `end2end.onnx` is renamed to the archive basename
 with `.onnx`; successful extraction removes the ZIP and temporary extraction directory.
 Cached ONNX files are reused without a network request.
@@ -162,8 +162,8 @@ network activity.
 
 The pair is pinned to OpenCV Zoo revision
 [`48b10fa505aeb51fbd127fc60a5c660040e823b7`](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models)
-and belongs in a dedicated `opencv-zoo/` folder under `DNB_MODELS` (default
-`~/.local/share/shp-portrait-tools/dnb/models/opencv-zoo/`):
+and belongs in a dedicated `opencv-zoo/` folder under `SKIN_MODELS` (default
+`~/.local/share/shp-portrait-tools/skin/models/opencv-zoo/`):
 
 | File | Size | SHA-256 | Pinned upstream |
 |---|---:|---|---|
@@ -171,7 +171,7 @@ and belongs in a dedicated `opencv-zoo/` folder under `DNB_MODELS` (default
 | `pose_estimation_mediapipe_2023mar.onnx` | 5,557,238 bytes | `9d89c599319a18fb7d2e28451a883476164543182bafca5f09eb2cf767ed2f3f` | [pose](https://github.com/opencv/opencv_zoo/raw/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/pose_estimation_mediapipe/pose_estimation_mediapipe_2023mar.onnx) |
 
 Tools verifies both exact sizes and hashes before use. It never downloads or
-changes model files. If `DNB_MODELS` is customized, use its `opencv-zoo/`
+changes model files. If `SKIN_MODELS` is customized, use its `opencv-zoo/`
 subdirectory or select another absolute model-directory path in Settings & Info.
 An empty model-directory field defaults to that location. This pair does not
 replace the separate face detector/landmark and skin-segmentation ONNX files.

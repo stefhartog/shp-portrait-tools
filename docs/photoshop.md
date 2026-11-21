@@ -31,7 +31,7 @@ Implemented source paths:
 
 - `plugins/photoshop`: manifest v5 panel, HTTP client, validation and disposable smoke script.
 - `shared/photoshop.py`: bounded binary command broker, pairing and DPAPI credential store.
-- `modules/dnb/photoshop_bridge.py`: capture and Skin Tools layer-bundle adapter.
+- `modules/skin/photoshop_bridge.py`: capture and Skin Tools layer-bundle adapter.
 - Skin Tools **Settings & Info > Source editor**: editor choice, pairing code and revocation.
 
 These are relative to the repository; Python modules live under

@@ -8,7 +8,7 @@ B  No new model: face mesh polygon (minus eyes, lips, brows) + a colour model sa
 Writes out15/skin_masks.jpg (all photos: original | A | B, mask shown as a green tint) and out15/skin_zoom.jpg
 (larger crops of a few photos), and prints coverage numbers and timings.
 
-Usage: uv run python -m shp_portrait_tools.modules.dnb.skin_mask_compare [FOLDER]
+Usage: uv run python -m shp_portrait_tools.modules.skin.skin_mask_compare [FOLDER]
 """
 import sys
 import time

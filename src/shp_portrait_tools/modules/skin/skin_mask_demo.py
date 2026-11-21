@@ -3,7 +3,7 @@
 green = kept skin, red = removed as eyes/brows/lips (face mesh), yellow = removed for colour (tattoo, ink).
 Writes out16/skin_final.jpg (all photos) and out16/skin_final_zoom.jpg (larger crops).
 
-Usage: uv run python -m shp_portrait_tools.modules.dnb.skin_mask_demo [FOLDER]
+Usage: uv run python -m shp_portrait_tools.modules.skin.skin_mask_demo [FOLDER]
 """
 import sys
 import time

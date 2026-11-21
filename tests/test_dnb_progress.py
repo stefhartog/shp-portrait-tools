@@ -16,8 +16,8 @@ import numpy as np
 
 import test_dnb as T
 from test_photocraft import FakePhotoCraft
-from shp_portrait_tools.modules.dnb import progress, skin_mask
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.modules.skin import progress, skin_mask
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge
 from shp_portrait_tools.shared.ui import stylesheet, theme_script
 
 
@@ -236,7 +236,7 @@ const nodes=Object.fromEntries(modes.map(name=>['tab-'+name,{
   textContent:name,dataset:{},indicator:{dataset:{}},
   querySelector(){return this.indicator;},setAttribute(k,v){this[k]=v;}
 }]));
-const $=id=>nodes[id],modules={dnb:{phase:'running'}};
+const $=id=>nodes[id],modules={skin:{phase:'running'}};
 """ + helpers + tabs + r"""
 setCacheTabs({
   mask:{state:'ready',label:'Skin mask cached'},
@@ -284,7 +284,7 @@ for (const [status,cached,enabled,expected] of [
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_subject_detection_records_timings_without_changing_results(self):
-        from shp_portrait_tools.modules.dnb import combine_scale as C
+        from shp_portrait_tools.modules.skin import combine_scale as C
 
         image = np.zeros((4, 4, 3), dtype=np.uint8)
         face = (0, 0, 2, 2)
@@ -1085,7 +1085,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
           check(shell.document.documentElement.dataset.theme==='photocraft');
         })();
         """
-        for package in ("shell", "modules.dnb.ui"):
+        for package in ("shell", "modules.skin.ui"):
             page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             self.assertIn('<script src="static/theme.js"></script>', page)
         css = stylesheet().decode()
@@ -1103,7 +1103,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertNotIn(".tab:hover", css)
         self.assertNotIn("button.workflow:disabled", css)
         for package, expected in (
-            ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
+            ("modules.skin.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
         ):
             page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             workflow = set()
@@ -1119,7 +1119,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertIn(".tab { margin-bottom:-1px;", css)
         self.assertIn("flex-wrap:wrap-reverse;", css)
         self.assertNotIn("box-shadow:0 1px 0 var(--workspace)", css)
-        for page_package in ("modules.dnb.ui",):
+        for page_package in ("modules.skin.ui",):
             self.assertIn("border-top:0;", files("shp_portrait_tools."+page_package).joinpath("index.html").read_text())
         self.assertNotIn('.tab.on { border-color:var(--acc)', css)
         self.assertIn(":focus-visible", css)
@@ -1141,9 +1141,9 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         navigation_harness = """
           (() => {
             const views=['mask','frequency','dnb','combine','settings'],modes=['mask','frequency','dnb','combine'];
-            const names={dnb:'D&B'};
+            const names={skin:'Skin Tools'};
             const window={};
-            let modules={dnb:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
+            let modules={skin:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
             const tabs=views.map(view=>({dataset:{view},setAttribute(k,v){this[k]=v;}}));
             const document={querySelectorAll:()=>tabs},requestMode=()=>{};
             const $=()=>({setAttribute(){},focus(){},classList:{toggle(){}}});
@@ -1160,18 +1160,18 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             select('mask',false,true);
             if(active!=='mask')throw Error('Internal watch-load navigation was blocked');
             active='dnb';
-            skinBusy=false;modules.dnb.busy=true;syncNavigation();select('settings');
+            skinBusy=false;modules.skin.busy=true;syncNavigation();select('settings');
             if(active!=='dnb')throw Error('Backend busy navigation');
-            modules.dnb.busy=false;syncNavigation();
+            modules.skin.busy=false;syncNavigation();
             if(tabs.some(tab=>tab.disabled))throw Error('Tabs did not unlock');
             if(active!=='dnb')throw Error('Busy clicks were queued');
             select('settings');if(active!=='settings')throw Error('Normal navigation did not restore');
             select('crop');select('patch');if(active!=='settings')throw Error('Retired AI Fill view accepted');
-            modules.dnb.phase='stopped';
+            modules.skin.phase='stopped';
             select('mask');if(active!=='settings')throw Error('Hidden tab accepted selection');
             tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='settings')throw Error('Keyboard selected unloaded module');
-            modules.dnb.phase='starting';
+            modules.skin.phase='starting';
             tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='mask')throw Error('Starting tabs not available');
           })();
@@ -1206,12 +1206,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         poll_code = "async function poll() {" + shell_js.split("async function poll() {", 1)[1].split("  poll();", 1)[0]
         isolation_harness = """
           (async () => {
-            const names={dnb:'D&B'},frames=new Map(),reports=[],placeholders={dnb:{}};
+            const names={skin:'Skin Tools'},frames=new Map(),reports=[],placeholders={skin:{}};
             let skinBusy=false;const syncNavigation=()=>{};
             let modules={},pending=null,initialSelection=true,active='settings';
             const select=name=>{active=name;initialSelection=false;};
-            const tabs={dnb:{}};
-            const document={querySelectorAll:selector=>selector.includes('="dnb"')?[tabs.dnb]:Object.values(tabs),
+            const tabs={skin:{}};
+            const document={querySelectorAll:selector=>selector.includes('="skin"')?[tabs.skin]:Object.values(tabs),
               createElement:()=>({dataset:{},remove(){this.removed=true;}})};
             const panels=Object.fromEntries(Object.keys(names).map(name=>[name,
               {querySelector:()=>placeholders[name],append:frame=>{frame.appended=true;}}]));
@@ -1223,25 +1223,25 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             const setTimeout=()=>{},location={origin:'http://local'};
             const fetch=async()=>({ok:true,json:async()=>({modules})});
             const skin={dataset:{instance:'skin'},remove(){this.removed=true;}};
-            frames.set('dnb',skin);
+            frames.set('skin',skin);
             const check=ok=>{if(!ok)throw Error('Shell module isolation');};
         """ + availability + render_code + poll_code + """
-            modules={dnb:{phase:'running',instance:'skin'},crop:{phase:'running',instance:'stale'}};
-            await poll();check(active==='mask'&&!initialSelection&&frames.get('dnb')===skin&&!frames.has('crop'));
-            active='combine';await poll();check(active==='combine'&&tabs.dnb.phase==='running'&&reports.at(-1)[0]==='');
-            modules={dnb:{phase:'error',instance:'skin',error:'Child failed'}};await poll();
-            check(skin.removed&&!frames.has('dnb')&&placeholders.dnb.textContent.includes('Child failed'));
-            modules.dnb={phase:'running',instance:'skin-new'};await poll();
-            check(frames.get('dnb').dataset.instance==='skin-new'&&placeholders.dnb.hidden);
-            const reloaded=frames.get('dnb');
-            modules.dnb={phase:'stopped',instance:'skin-new'};await poll();
-            check(reloaded.removed&&active==='settings'&&placeholders.dnb.textContent.includes('share this service'));
-            initialSelection=true;modules.dnb={phase:'stopped',startup_enabled:false};await poll();
-            check(active==='settings'&&!placeholders.dnb.hidden&&placeholders.dnb.textContent.includes('startup is disabled'));
-            modules.dnb={phase:'starting',startup_enabled:true};await poll();
+            modules={skin:{phase:'running',instance:'skin'},crop:{phase:'running',instance:'stale'}};
+            await poll();check(active==='mask'&&!initialSelection&&frames.get('skin')===skin&&!frames.has('crop'));
+            active='combine';await poll();check(active==='combine'&&tabs.skin.phase==='running'&&reports.at(-1)[0]==='');
+            modules={skin:{phase:'error',instance:'skin',error:'Child failed'}};await poll();
+            check(skin.removed&&!frames.has('skin')&&placeholders.skin.textContent.includes('Child failed'));
+            modules.skin={phase:'running',instance:'skin-new'};await poll();
+            check(frames.get('skin').dataset.instance==='skin-new'&&placeholders.skin.hidden);
+            const reloaded=frames.get('skin');
+            modules.skin={phase:'stopped',instance:'skin-new'};await poll();
+            check(reloaded.removed&&active==='settings'&&placeholders.skin.textContent.includes('share this service'));
+            initialSelection=true;modules.skin={phase:'stopped',startup_enabled:false};await poll();
+            check(active==='settings'&&!placeholders.skin.hidden&&placeholders.skin.textContent.includes('startup is disabled'));
+            modules.skin={phase:'starting',startup_enabled:true};await poll();
             check(active==='settings');
-            modules.dnb={phase:'running',instance:'skin-reloaded'};await poll();
-            check(active==='settings'&&frames.get('dnb').dataset.instance==='skin-reloaded');
+            modules.skin={phase:'running',instance:'skin-reloaded'};await poll();
+            check(active==='settings'&&frames.get('skin').dataset.instance==='skin-reloaded');
             initialSelection=true;await poll();check(active==='mask');
           })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
         """

@@ -21,11 +21,11 @@
     tab.setAttribute('aria-label', tab.textContent.trim()+': '+tab.title);
     tab.setAttribute('aria-busy', String(busy));
   }
-  const names = {dnb: 'Skin Tools'};
+  const names = {skin: 'Skin Tools'};
   const views = ['mask', 'frequency', 'dnb', 'combine', 'settings'];
   const modes = ['mask', 'frequency', 'dnb', 'combine'];
   function viewAvailable(name) {
-    return name === 'settings' || modules.dnb?.phase !== 'stopped';
+    return name === 'settings' || modules.skin?.phase !== 'stopped';
   }
   const $ = id => document.getElementById(id);
   const frames = new Map();
@@ -44,13 +44,13 @@
           typeof status.label !== 'string' || status.label.length > 300) continue;
       indicator.dataset.state = status.state;
       tab.dataset.cacheLabel = status.label;
-      renderTabStatus(tab, modules.dnb || {phase:'unknown'});
+      renderTabStatus(tab, modules.skin || {phase:'unknown'});
     }
   }
   function clearCacheTabs() {
     setCacheTabs(Object.fromEntries(modes.map(mode => [mode,{state:'idle',label:'Cache not checked'}])));
   }
-  function navigationLocked() { return skinBusy || !!modules.dnb?.busy; }
+  function navigationLocked() { return skinBusy || !!modules.skin?.busy; }
   function syncNavigation() {
     const locked = navigationLocked();
     window.__shpNavigationLocked = locked;
@@ -61,7 +61,7 @@
   }
 
   function requestMode() {
-    const frame = frames.get('dnb');
+    const frame = frames.get('skin');
     if (!frame || !ready.has(frame)) return;
     pending = ++sequence;
     frame.contentWindow.postMessage({type:'shp-tools-mode', mode:skinMode, request:pending}, location.origin);
@@ -83,7 +83,7 @@
       $(`tab-${key}`).tabIndex = selected ? 0 : -1;
     }
     for (const key of [...Object.keys(names), 'settings']) {
-      const selected = key === (active === 'settings' ? 'settings' : 'dnb');
+      const selected = key === (active === 'settings' ? 'settings' : 'skin');
       const panel = $(`panel-${key}`);
       panel.classList.toggle('inactive', !selected);
       panel.setAttribute('aria-hidden', String(!selected));
@@ -103,7 +103,7 @@
     $('settingsAvailability').hidden = true;
   }
   window.addEventListener('message', event => {
-    const frame = frames.get('dnb'), data = event.data;
+    const frame = frames.get('skin'), data = event.data;
     if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin ||
         !data || typeof data !== 'object') return;
     if (data.type === 'shp-skin-ready') {
@@ -144,7 +144,7 @@
     };
   });
   function render() {
-    if (modules.dnb?.phase !== 'running') skinBusy = false;
+    if (modules.skin?.phase !== 'running') skinBusy = false;
     syncNavigation();
     if (initialSelection || !viewAvailable(active)) {
       select(['mask', 'settings'].find(viewAvailable), true, true);
@@ -162,7 +162,7 @@
           + ' Skin Mask, FS & Tone, Dodge & Burn and Combine share this service.'
         : `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
       const frame = frames.get(name);
-      if (name === 'dnb') {
+      if (name === 'skin') {
         const available = state.phase === 'running' && frame?.dataset.instance === state.instance && ready.has(frame);
         $('settingsAvailability').hidden = available;
         $('generalSettingsHost').hidden = !available;

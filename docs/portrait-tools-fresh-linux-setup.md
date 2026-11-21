@@ -165,7 +165,7 @@ Models are **not bundled**, and the desktop installer does not download them.
 Create this folder:
 
 ```sh
-mkdir -p "$HOME/.local/share/shp-portrait-tools/dnb/models"
+mkdir -p "$HOME/.local/share/shp-portrait-tools/skin/models"
 ```
 
 Use the pinned download links in [MODELS](../MODELS.md#db-three-manually-supplied-onnx-files).
@@ -181,7 +181,7 @@ The links point to specific conversions: similarly named models are not substitu
 Check the downloads with the documented hashes:
 
 ```sh
-cd "$HOME/.local/share/shp-portrait-tools/dnb/models"
+cd "$HOME/.local/share/shp-portrait-tools/skin/models"
 sha256sum -c <<'EOF'
 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  yunet.onnx
 f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c  face_landmarks.onnx
@@ -201,7 +201,7 @@ Go back to Tools and install its **per-user** launcher:
 ```sh
 cd "$HOME/shp-photocraft-tools"
 uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-portrait-tools/dnb/models"
+  --models "$HOME/.local/share/shp-portrait-tools/skin/models"
 ```
 
 This creates the Tools shortcut, icons and `launcher.json`, using existing models.

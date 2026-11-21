@@ -25,6 +25,7 @@ from .shared.lifecycle import BrowserHandler, BrowserServer, script
 from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
                                    require_session_stopped, spawn_options)
 from .shared.photocraft.bridge import detect_config
+from .shared.platform_paths import module_folder
 from .shared.supervision import ControlError
 from .shared.ui import stylesheet, theme_script
 
@@ -66,7 +67,7 @@ class Modules:
         logs.mkdir(parents=True, exist_ok=True)
 
     def expected(self, name):
-        return identity(name, self.data / name, self.config["models"] if name == "dnb" else None)
+        return identity(name, module_folder(self.data, name), self.config["models"] if name == "skin" else None)
 
     def checked(self, name):
         module = self.modules[name]
@@ -112,13 +113,13 @@ class Modules:
                                   "finish its work and stop it yourself, or configure a different port.")
             module.instance, module.token = uuid.uuid4().hex, secrets.token_hex(32)
             env = dict(photocraft_environment(self.config, os.environ),
-                       DNB_DATA=str(self.data / "dnb"),
-                       DNB_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
+                       SKIN_DATA=str(module_folder(self.data, "skin")),
+                       SKIN_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
                        SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=module.token,
                        SHP_SUPERVISOR_PID=str(os.getpid()),
                        SHP_SUPERVISOR_CREATED=str(process_identity(os.getpid())[1]))
             if self.config.get("exiftool"):
-                env["DNB_EXIFTOOL"] = self.config["exiftool"]
+                env["SKIN_EXIFTOOL"] = self.config["exiftool"]
             log_path = self.logs / f"{name}.log"
             with log_path.open("ab") as log:
                 module.process = subprocess.Popen(
@@ -308,7 +309,8 @@ class Modules:
 
 def external_status(environ=None):
     """TCP reachability only: no authentication, document access or service management."""
-    targets = {"photocraft_dnb": lambda: ("127.0.0.1", detect_config("DNB", "dnb", environ)["port"])}
+    # PhotoCraft settings keep the pre-rename DNB/dnb namespace (PhotoCraft is configured against it).
+    targets = {"photocraft_skin": lambda: ("127.0.0.1", detect_config("DNB", "dnb", environ)["port"])}
     result = {}
     probes = {}
     for name, address in targets.items():
@@ -429,7 +431,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path == "/static/lifecycle.js":
             return self.send(200, script(), "text/javascript; charset=utf-8")
-        if path == "/dnb":
+        if path == "/skin":
             self.send_response(308)
             self.send_header("Location", path + "/")
             self.send_header("Content-Length", "0")
@@ -547,7 +549,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                 raise LaunchError(f"{name} is not ready. Use its Start control.")
             modules.checked(name)
             connection = http.client.HTTPConnection("127.0.0.1", modules.config["ports"][name],
-                                                   timeout=None if name == "dnb" and path == "/api/batch" else 900)
+                                                   timeout=None if name == "skin" and path == "/api/batch" else 900)
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))) if self.command == "POST" else None
             connection.request(self.command, path, body, {"Content-Type": "application/json",
                                "Origin": f"http://127.0.0.1:{modules.config['ports'][name]}"})

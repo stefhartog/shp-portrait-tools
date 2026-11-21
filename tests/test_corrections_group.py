@@ -8,8 +8,8 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from shp_portrait_tools.modules.dnb import skintone as ST
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.modules.skin import skintone as ST
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge
 
 
 class RecordingClient:

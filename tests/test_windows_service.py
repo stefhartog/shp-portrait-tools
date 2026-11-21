@@ -16,7 +16,7 @@ def start(port, data, inbox):
     env = dict(os.environ, DNB_DATA=data, DNB_WATCH_DIRECTORY=inbox, PYTHONIOENCODING="utf-8",
                APPDATA=str(Path(data).parent / "config"))
     env.pop("SHP_SUPERVISOR_TOKEN", None)
-    return subprocess.Popen([sys.executable, "-m", "shp_portrait_tools.modules.dnb.ui_server", "--port", str(port)],
+    return subprocess.Popen([sys.executable, "-m", "shp_portrait_tools.modules.skin.ui_server", "--port", str(port)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             env=env, text=True, encoding="utf-8")
 

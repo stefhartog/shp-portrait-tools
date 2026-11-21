@@ -13,9 +13,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
-from shp_portrait_tools.modules.dnb import frequency_separation as F
-from shp_portrait_tools.modules.dnb import skintone as ST
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge
+from shp_portrait_tools.modules.skin import frequency_separation as F
+from shp_portrait_tools.modules.skin import skintone as ST
 from shp_portrait_tools.shared.photocraft import ControlError
 
 

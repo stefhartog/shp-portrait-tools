@@ -13,7 +13,7 @@ import numpy as np
 
 def main():
     name = sys.argv.pop(1)
-    root = Path(os.environ["DNB_DATA"]).parent
+    root = Path(os.environ["SKIN_DATA"]).parent
     source = root / "synthetic.png"
     doc = {"index": 1, "name": source.name, "width": 800, "height": 600}
 
@@ -45,7 +45,7 @@ def main():
             assert set(settings) == {"hue_center","hue_width","hue_softness","hue_amount"}
             return {"layer": 12, "document": document["name"]}
 
-    from shp_portrait_tools.modules.dnb import ui_server as module
+    from shp_portrait_tools.modules.skin import ui_server as module
     import cv2
 
     for hue in (18,43):

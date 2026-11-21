@@ -15,7 +15,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.modules.skin.photocraft_bridge import Bridge
 from shp_portrait_tools.shared.photocraft import ControlError
 from shp_portrait_tools.shared.photocraft.bridge import AuthenticationError
 
@@ -157,8 +157,8 @@ class WindowsPhotoCraftIntegration(unittest.TestCase):
             for sock in reservations:
                 sock.close()
         config = root / "launcher.json"
-        config.write_text(json.dumps({"models": str(models), "ports": {"dnb": ports[0]},
-            "shell_port": ports[2], "startup": {"dnb": True},
+        config.write_text(json.dumps({"models": str(models), "ports": {"skin": ports[0]},
+            "shell_port": ports[2], "startup": {"skin": True},
             "photocraft": {"port": port, "token_file": str(token), "exchange": str(exchange),
                 "read_root": str(exchange), "executable": str(executable), "editor_config": str(root / "config")}}))
         code = """
@@ -170,8 +170,8 @@ config = read_config(Path(sys.argv[1])); apply_photocraft_env(config)
 root = Path(sys.argv[2])
 modules = Modules(config, root / 'service-data', root / 'service-logs', 'test-instance')
 try:
-    modules.start('dnb')
-    url = 'http://127.0.0.1:' + str(config['ports']['dnb'])
+    modules.start('skin')
+    url = 'http://127.0.0.1:' + str(config['ports']['skin'])
     request = urllib.request.Request(url + '/api/pc/launch', data=b'{}', method='POST',
         headers={'Origin':url,'Content-Type':'application/json'})
     with urllib.request.urlopen(request, timeout=20) as response:

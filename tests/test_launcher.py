@@ -126,7 +126,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(health["instance"], status[module]["instance"])
             self.assertEqual(health["owner_protocol"], 1)
             self.assertEqual(health["ui_lifecycle"], 0)
-            if module == "dnb":
+            if module == "skin":
                 self.assertEqual(health["models"], str(self.models))
                 with urlopen(f"http://127.0.0.1:{port}/api/presets") as response:
                     self.assertEqual(json.load(response), {"default": None, "presets": {}})
@@ -152,12 +152,12 @@ class LauncherTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
             try:
-                self.ports["dnb"] = server.server_port
+                self.ports["skin"] = server.server_port
                 self.write_config()
                 self.launch()
                 status = self.status()
-                self.assertEqual(status["dnb"]["phase"], "error")
-                self.assertIn("occupied", status["dnb"]["error"])
+                self.assertEqual(status["skin"]["phase"], "error")
+                self.assertIn("occupied", status["skin"]["error"])
                 self.assertTrue(thread.is_alive())
             finally:
                 server.shutdown()
@@ -176,7 +176,7 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(L.LaunchError, "Missing or unreadable"):
             L.read_config(self.config)
         (self.models / L.MODEL_FILES[0]).write_bytes(b"fixture")
-        self.shell_port = self.ports["dnb"]
+        self.shell_port = self.ports["skin"]
         self.write_config()
         with self.assertRaisesRegex(L.LaunchError, "shell_port"):
             L.read_config(self.config)

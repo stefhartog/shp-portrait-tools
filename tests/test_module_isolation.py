@@ -23,13 +23,13 @@ class ModuleIsolationTests(unittest.TestCase):
         manager = object.__new__(S.Modules)
         manager.modules = {
             name: S.Module(process=Mock(), instance=name + "-one", phase="running")
-            for name in ("dnb",)}
+            for name in ("skin",)}
         for module in manager.modules.values():
             module.process.poll.return_value = None
         manager.finished = threading.Event()
         manager.cache_lock = threading.Lock()
         manager.cache = {"external": {}}
-        manager.config = {"ports": {"dnb": 19002}}
+        manager.config = {"ports": {"skin": 19002}}
         manager.preferences_lock = threading.Lock()
         manager.config_path = Path("/unused")
         manager.owner = Mock(return_value={
@@ -44,17 +44,17 @@ class ModuleIsolationTests(unittest.TestCase):
             path = root / "launcher.json"
             original = {"models": str(root), "custom": "keep"}
             path.write_text(json.dumps(original))
-            self.assertEqual(L.read_config(path)["startup"], {"dnb": True})
-            L.set_startup(path, "dnb", False)
-            self.assertEqual(L.read_config(path)["startup"], {"dnb": False})
+            self.assertEqual(L.read_config(path)["startup"], {"skin": True})
+            L.set_startup(path, "skin", False)
+            self.assertEqual(L.read_config(path)["startup"], {"skin": False})
             self.assertEqual(json.loads(path.read_text())["custom"], "keep")
             before = path.read_bytes()
             with patch.object(L.os, "fsync", side_effect=OSError("disk failure")):
                 with self.assertRaises(OSError):
-                    L.set_startup(path, "dnb", False)
+                    L.set_startup(path, "skin", False)
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(sorted(p.name for p in root.glob("launcher.json.*")), ["launcher.json.lock"])
-            for invalid in (False, {"dnb": 1}, {"unknown": True}):
+            for invalid in (False, {"skin": 1}, {"unknown": True}):
                 path.write_text(json.dumps(dict(original, startup=invalid)))
                 with self.subTest(invalid=invalid), self.assertRaises(L.LaunchError):
                     L.read_config(path)
@@ -71,26 +71,26 @@ class ModuleIsolationTests(unittest.TestCase):
                                         "startup": {"crop": False, "dnb": True},
                                         "comfy": {"directory": str(root), "port": 18788}}))
             config = L.read_config(path)
-            self.assertEqual(config["ports"], {"dnb": 18765})
-            self.assertEqual(config["startup"], {"dnb": True})
+            self.assertEqual(config["ports"], {"skin": 18765})
+            self.assertEqual(config["startup"], {"skin": True})
             self.assertNotIn("comfy", config)
 
     def test_startup_toggle_changes_only_persisted_preference_not_work(self):
         manager = self.manager()
-        skin = manager.modules["dnb"]
-        with patch.object(S, "set_startup", return_value={"dnb": False}) as save, \
+        skin = manager.modules["skin"]
+        with patch.object(S, "set_startup", return_value={"skin": False}) as save, \
                 patch.object(manager, "stop") as stop, patch.object(manager, "start") as start:
-            result = manager.control("dnb", "startup", {"enabled": False})
-            save.assert_called_once_with(manager.config_path, "dnb", False)
+            result = manager.control("skin", "startup", {"enabled": False})
+            save.assert_called_once_with(manager.config_path, "skin", False)
             self.assertFalse(result["startup_enabled"])
             self.assertEqual(skin.phase, "running")
             stop.assert_not_called()
             start.assert_not_called()
         with patch.object(S, "set_startup", side_effect=OSError("read-only")):
             with self.assertRaises(OSError):
-                manager.control("dnb", "startup", {"enabled": True})
-        self.assertFalse(manager.config["startup"]["dnb"])
-        handler = self.handler(manager, "/api/modules/dnb/startup", "POST")
+                manager.control("skin", "startup", {"enabled": True})
+        self.assertFalse(manager.config["startup"]["skin"])
+        handler = self.handler(manager, "/api/modules/skin/startup", "POST")
         handler.rfile = io.BytesIO(b'{"enabled":true}')
         handler.headers["Content-Length"] = str(len(handler.rfile.getvalue()))
         with patch.object(S, "set_startup", side_effect=OSError("read-only")):
@@ -98,14 +98,14 @@ class ModuleIsolationTests(unittest.TestCase):
         self.assertEqual(handler.send.call_args.args[0], 503)
         self.assertIn("read-only", json.loads(handler.send.call_args.args[1])["error"])
         self.assertIsNone(skin.error)
-        with patch.object(S, "set_startup", return_value={"dnb": True}):
+        with patch.object(S, "set_startup", return_value={"skin": True}):
             handler.rfile.seek(0)
             handler.do_api_POST()
         self.assertEqual(handler.send.call_args.args[0], 200)
         self.assertTrue(json.loads(handler.send.call_args.args[1])["startup_enabled"])
 
     def test_start_all_honors_startup_preference(self):
-        for enabled, expected in (({}, ["dnb"]), ({"dnb": True}, ["dnb"]), ({"dnb": False}, [])):
+        for enabled, expected in (({}, ["skin"]), ({"skin": True}, ["skin"]), ({"skin": False}, [])):
             manager = self.manager()
             manager.config["startup"] = enabled
             with self.subTest(enabled=enabled), patch.object(manager, "control") as control:
@@ -114,12 +114,12 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_manual_start_does_not_change_startup_preference(self):
         manager = self.manager()
-        manager.modules["dnb"].process.poll.return_value = 0
-        manager.config["startup"] = {"dnb": False}
+        manager.modules["skin"].process.poll.return_value = 0
+        manager.config["startup"] = {"skin": False}
         with patch.object(S, "probe", side_effect=LaunchError("test stop")):
             with self.assertRaises(LaunchError):
-                manager.start("dnb")
-        self.assertFalse(manager.config["startup"]["dnb"])
+                manager.start("skin")
+        self.assertFalse(manager.config["startup"]["skin"])
 
     def test_native_notifications_are_allocated_above_webview_not_overlaid(self):
         source = Path(S.__file__).parent / "desktop/controller.py"
@@ -139,15 +139,15 @@ class ModuleIsolationTests(unittest.TestCase):
         exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
         host = SimpleNamespace(message_bar=Mock(), notice_frame=Mock(), reload_available=False,
             notice_key=None, cancel_notice_timer=Mock(), expire_notice=Mock(), notice_generation=0,
-            quitting=False, module_items={"dnb": Mock()}, modules={"dnb": {"phase": "stopped", "startup_enabled": False}},
+            quitting=False, module_items={"skin": Mock()}, modules={"skin": {"phase": "stopped", "startup_enabled": False}},
             control_pending=False, pending_module=None, dialog_open=False,
-            module_actions={"dnb": {"startup": Mock(), "start": Mock(), "stop": Mock(), "restart": Mock()}})
+            module_actions={"skin": {"startup": Mock(), "start": Mock(), "stop": Mock(), "restart": Mock()}})
         for text in ("Skin Tools stopped.", "Skin Tools ready.", "Skin Tools error"):
             namespace["message"](host, text)
             host.notice_frame.set_visible.assert_called_with(True)
         namespace["render_modules"](host)
-        host.module_actions["dnb"]["startup"].set_active.assert_called_with(False)
-        host.module_actions["dnb"]["start"].set_sensitive.assert_called_with(True)
+        host.module_actions["skin"]["startup"].set_active.assert_called_with(False)
+        host.module_actions["skin"]["start"].set_sensitive.assert_called_with(True)
 
     def test_notice_timers_replace_safely_preserve_recovery_and_cancel_on_destroy(self):
         source = Path(S.__file__).parent / "desktop/controller.py"
@@ -201,31 +201,31 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_stop_keeps_supervisor_alive_then_start_recovers(self):
         manager = self.manager()
-        skin = manager.modules["dnb"]
+        skin = manager.modules["skin"]
         skin.process.wait.side_effect = lambda **_: setattr(skin.process.poll, "return_value", 0)
-        stopped = manager.control("dnb", "stop", {"instance": skin.instance, "confirm": True, "revision": 7})
+        stopped = manager.control("skin", "stop", {"instance": skin.instance, "confirm": True, "revision": 7})
         self.assertEqual(stopped["phase"], "stopped")
         self.assertFalse(stopped["loaded"])
         self.assertFalse(stopped["busy"])
-        manager.owner.assert_called_once_with("dnb", "stop", {"confirm": True, "revision": 7})
+        manager.owner.assert_called_once_with("skin", "stop", {"confirm": True, "revision": 7})
         self.assertFalse(manager.finished.is_set())
         def start(name):
             module = manager.modules[name]
-            module.phase, module.instance = "running", "dnb-two"
+            module.phase, module.instance = "running", "skin-two"
             module.process.poll.return_value = None
         with patch.object(manager, "start", side_effect=start):
-            result = manager.control("dnb", "start", {})
+            result = manager.control("skin", "start", {})
         self.assertEqual(result["phase"], "running")
-        self.assertEqual(result["instance"], "dnb-two")
+        self.assertEqual(result["instance"], "skin-two")
 
     def test_late_stop_completion_becomes_unloaded_not_permanently_busy(self):
         manager = self.manager()
-        skin = manager.modules["dnb"]
+        skin = manager.modules["skin"]
         skin.phase, skin.error = "stopping", "still stopping"
         manager.owner.reset_mock()
-        self.assertTrue(manager.snapshot("dnb")["busy"])
+        self.assertTrue(manager.snapshot("skin")["busy"])
         skin.process.poll.return_value = 0
-        state = manager.snapshot("dnb")
+        state = manager.snapshot("skin")
         self.assertEqual(state["phase"], "stopped")
         self.assertIsNone(state["error"])
         self.assertFalse(state["busy"])
@@ -236,20 +236,20 @@ class ModuleIsolationTests(unittest.TestCase):
         manager = self.manager()
         manager.owner.side_effect = LaunchError("Skin Tools unavailable")
         state = manager.status()["modules"]
-        self.assertEqual(state["dnb"]["phase"], "unavailable")
-        self.assertIn("Skin Tools unavailable", state["dnb"]["error"])
+        self.assertEqual(state["skin"]["phase"], "unavailable")
+        self.assertIn("Skin Tools unavailable", state["skin"]["error"])
         self.assertFalse(manager.finished.is_set())
-        manager.modules["dnb"].process.poll.return_value = 1
-        self.assertEqual(manager.snapshot("dnb")["phase"], "error")
+        manager.modules["skin"].process.poll.return_value = 1
+        self.assertEqual(manager.snapshot("skin")["phase"], "error")
 
     def test_busy_or_unconfirmed_stop_is_rejected(self):
         for code in ("busy", "confirmation", "changed"):
             manager = self.manager()
             manager.owner.side_effect = ControlError("Cannot stop", code)
             with self.subTest(code=code), self.assertRaises(ControlError):
-                manager.control("dnb", "stop", {"instance": "dnb-one"})
-            self.assertEqual(manager.modules["dnb"].phase, "running")
-            manager.modules["dnb"].process.wait.assert_not_called()
+                manager.control("skin", "stop", {"instance": "skin-one"})
+            self.assertEqual(manager.modules["skin"].phase, "running")
+            manager.modules["skin"].process.wait.assert_not_called()
 
     def handler(self, manager, path, command="GET"):
         handler = object.__new__(S.ShellHandler)
@@ -262,9 +262,9 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_stopped_routes_are_explicit_and_close_beacons_are_benign(self):
         manager = self.manager()
-        manager.modules["dnb"].phase = "stopped"
-        for path, method in (("/dnb/", "GET"), ("/dnb/api/run", "POST"),
-                             ("/dnb/api/ui/close", "POST"), ("/dnb/api/ui/heartbeat", "POST")):
+        manager.modules["skin"].phase = "stopped"
+        for path, method in (("/skin/", "GET"), ("/skin/api/run", "POST"),
+                             ("/skin/api/ui/close", "POST"), ("/skin/api/ui/heartbeat", "POST")):
             handler = self.handler(manager, path, method)
             with self.subTest(path=path), patch.object(S.http.client, "HTTPConnection") as connect:
                 handler.proxy()
@@ -276,8 +276,8 @@ class ModuleIsolationTests(unittest.TestCase):
                     self.assertEqual(code, 409)
                     self.assertEqual(json.loads(body)["code"], "module_stopped")
                 connect.assert_not_called()
-        manager.modules["dnb"].phase = "running"
-        handler = self.handler(manager, "/dnb/api/job", "POST")
+        manager.modules["skin"].phase = "running"
+        handler = self.handler(manager, "/skin/api/job", "POST")
         manager.checked = Mock()
         with patch.object(S.http.client, "HTTPConnection") as connect:
             response = connect.return_value.getresponse.return_value
@@ -289,8 +289,8 @@ class ModuleIsolationTests(unittest.TestCase):
     def test_supervisor_health_and_status_stay_available_with_unloaded_module(self):
         manager = self.manager()
         manager.data = Path("/unused")
-        manager.config = {"models": "/unused", "ports": {"dnb": 2}}
-        manager.modules["dnb"].phase = "stopped"
+        manager.config = {"models": "/unused", "ports": {"skin": 2}}
+        manager.modules["skin"].phase = "stopped"
         for path in ("/api/health", "/api/status"):
             handler = self.handler(manager, path)
             handler.headers["Host"] = "127.0.0.1:19000"
@@ -299,13 +299,13 @@ class ModuleIsolationTests(unittest.TestCase):
             self.assertEqual(code, 200)
             data = json.loads(body)
             if path.endswith("status"):
-                self.assertEqual(data["modules"]["dnb"]["phase"], "stopped")
+                self.assertEqual(data["modules"]["skin"]["phase"], "stopped")
             else:
                 self.assertFalse(data["draining"])
 
     def test_shutdown_gate_blocks_module_start_before_cleanup_worker_runs(self):
         manager = self.manager()
-        handler = self.handler(manager, "/api/modules/dnb/start", "POST")
+        handler = self.handler(manager, "/api/modules/skin/start", "POST")
         handler.server.lifetime.stopping = True
         with patch.object(manager, "control") as control:
             handler.do_api_POST()
@@ -314,4 +314,4 @@ class ModuleIsolationTests(unittest.TestCase):
             control.assert_not_called()
         manager.finished.set()
         with self.assertRaises(ControlError):
-            manager.control("dnb", "start", {})
+            manager.control("skin", "start", {})

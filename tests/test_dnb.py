@@ -19,9 +19,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_portrait_tools.modules.dnb import dodge_burn as D, ui_server as S
-from shp_portrait_tools.modules.dnb import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
-from shp_portrait_tools.modules.dnb.skin_mask_compare import pick_target
+from shp_portrait_tools.modules.skin import dodge_burn as D, ui_server as S
+from shp_portrait_tools.modules.skin import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
+from shp_portrait_tools.modules.skin.skin_mask_compare import pick_target
 from shp_portrait_tools.shared.ui import stylesheet
 
 PARAMS = {"S": 63, "bands": [[1.5, 40, 1, 0.5]], "strength": 1.2, "edge": 0.12, "tau": 1, "max_ev": 1,
@@ -541,7 +541,7 @@ class DnbTests(unittest.TestCase):
 
     def test_missing_models_are_lazy_and_actionable(self):
         with patch.object(paths, "MODELS", self.root / "no-models"):
-            with self.assertRaisesRegex(FileNotFoundError, "DNB_MODELS"):
+            with self.assertRaisesRegex(FileNotFoundError, "SKIN_MODELS"):
                 estimate_scale.detect(np.zeros((48, 64, 3), np.uint8))
             for module, attribute, fn in ((skin_mask, "_SEG", skin_mask.seg),
                                           (skin_mask_compare, "_SEG", skin_mask_compare.segmenter)):
@@ -712,9 +712,9 @@ class EngineTests(unittest.TestCase):
 
     def test_entrypoints_outside_checkout_without_models(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, DNB_DATA=tmp + "/dnb",
+            env = dict(os.environ, SKIN_DATA=tmp + "/skin",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
-            for module in ("dnb.ui_server", "dnb.dodge_burn"):
+            for module in ("skin.ui_server", "skin.dodge_burn"):
                 result = subprocess.run([sys.executable, "-m", "shp_portrait_tools.modules." + module, "--help"],
                                         env=env, cwd=tmp, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -723,9 +723,9 @@ class EngineTests(unittest.TestCase):
 
     def test_servers_print_bound_port_and_serve_without_models(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, DNB_DATA=tmp + "/dnb",
+            env = dict(os.environ, SKIN_DATA=tmp + "/skin",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
-            for module in ("dnb.ui_server",):
+            for module in ("skin.ui_server",):
                 process = subprocess.Popen([sys.executable, "-u", "-m", "shp_portrait_tools.modules." + module, "--port", "0"],
                                            env=env, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 lines = queue.Queue()
@@ -748,7 +748,7 @@ class EngineTests(unittest.TestCase):
                         self.fail(output)
                     self.assertGreater(int(match[1]), 0)
                     with urlopen(match[0], timeout=10) as response:
-                        self.assertIn(b"SHP PhotoCraft", response.read())
+                        self.assertIn(b"SHP Portrait Tools", response.read())
                     with urlopen(match[0] + "/static/shp-ui.css", timeout=10) as response:
                         self.assertEqual(response.read(), stylesheet())
                 finally:

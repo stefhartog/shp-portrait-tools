@@ -128,7 +128,7 @@ class EscalationTests(unittest.TestCase):
 
     def test_new_session_member_after_pinning_prevents_restart_success(self):
         process = Mock(pid=123)
-        modules = SimpleNamespace(modules={"dnb": SimpleNamespace(process=process, process_identity=(123, 7))},
+        modules = SimpleNamespace(modules={"skin": SimpleNamespace(process=process, process_identity=(123, 7))},
                                   owner=Mock())
         with patch.object(S, "pin_session", return_value=[321]), \
                 patch.object(S, "drain_pinned"), \
@@ -166,7 +166,7 @@ class RestartTests(unittest.TestCase):
         life = BrowserLifetime()
         life.touch("desktop-one")
         modules = Mock()
-        modules.status.return_value = {"modules": {"dnb": {"instance": "c", "revision": 3, "loaded": True}}}
+        modules.status.return_value = {"modules": {"skin": {"instance": "c", "revision": 3, "loaded": True}}}
         modules.busy.return_value = False
         server = SimpleNamespace(lifetime=life, modules=modules, force_shutdown=False, shutdown_lock=threading.Lock(),
                                  shutdown_error=None, drain_thread=None, drain_client=None, native_drain=Mock())
@@ -189,12 +189,12 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(invalid.fail.call_args.args[0].code, "changed")
             self.assertFalse(life.stopping)
             thread.assert_not_called()
-            handler = request({"dnb": ["c", 3, True]})
+            handler = request({"skin": ["c", 3, True]})
             self.assertTrue(life.stopping)
             self.assertEqual(events[-1], 200)
             thread.assert_called_once()
             thread.return_value.start.assert_called_once()
-            handler = request({"dnb": ["c", 3, True]})
+            handler = request({"skin": ["c", 3, True]})
             self.assertEqual(handler.fail.call_args.args[0].code, "stopping")
             self.assertEqual(thread.call_count, 1)
             server.shutdown_error = "normal shutdown timed out"
@@ -206,7 +206,7 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(thread.call_count, 2)
 
     def test_launcher_waits_for_draining_identity_before_starting_anything(self):
-        config = {"shell_port": 1234, "ports": {"dnb": 1236}, "models": "/models"}
+        config = {"shell_port": 1234, "ports": {"skin": 1236}, "models": "/models"}
         found = {"pid": 99, "draining": True, "process_identity": [99, 7],
                  "shell_protocol": 1, "ports": config["ports"]}
         with patch.object(L, "probe", side_effect=[found, L.LaunchError("stop after wait")]), \
@@ -220,7 +220,7 @@ class RestartTests(unittest.TestCase):
             spawn.assert_not_called()
 
     def test_reserve_race_waits_then_starts_fresh_supervisor(self):
-        config = {"shell_port": 1234, "ports": {"dnb": 1236}, "models": "/models"}
+        config = {"shell_port": 1234, "ports": {"skin": 1236}, "models": "/models"}
         old = {"pid": 99, "process_identity": [99, 7], "shell_protocol": 1, "ports": config["ports"]}
         fresh = {**old, "pid": 100, "instance": "fresh"}
         process = Mock(pid=100)
@@ -241,7 +241,7 @@ class RestartTests(unittest.TestCase):
 
     def test_late_busy_normal_cleanup_times_out_without_force(self):
         modules = SimpleNamespace(finished=threading.Event(),
-            modules={"dnb": SimpleNamespace(lock=threading.Lock(), process=None)},
+            modules={"skin": SimpleNamespace(lock=threading.Lock(), process=None)},
             stop=Mock(side_effect=ControlError("busy", "busy")))
         with patch.object(S.time, "monotonic", side_effect=[0, 31]), \
                 patch.object(S, "pin_session") as pin:
@@ -253,11 +253,11 @@ class RestartTests(unittest.TestCase):
     def test_partial_force_failure_is_reported_without_relaunch_or_unrelated_targets(self):
         process = Mock(pid=123)
         process.poll.return_value = None
-        modules = SimpleNamespace(modules={"dnb": SimpleNamespace(process=process, process_identity=(123, 7))},
+        modules = SimpleNamespace(modules={"skin": SimpleNamespace(process=process, process_identity=(123, 7))},
                                   owner=Mock())
         with patch.object(S, "pin_session", return_value=[321]) as pin, \
                 patch.object(S, "drain_pinned", side_effect=RuntimeError("not exited")) as drain:
-            with self.assertRaisesRegex(RuntimeError, "dnb: not exited"):
+            with self.assertRaisesRegex(RuntimeError, "skin: not exited"):
                 S.Modules.force_close(modules)
             pin.assert_called_once_with(process, (123, 7))
             drain.assert_called_once()

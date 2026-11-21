@@ -104,13 +104,13 @@ def busy_modules(status):
     return busy
 
 def external_lines(external):
-    dnb = external.get("photocraft_dnb")
-    if not dnb:
+    skin = external.get("photocraft_skin")
+    if not skin:
         photocraft = "PhotoCraft: Checking"
     else:
-        photocraft = "PhotoCraft: " + ("Reachable" if dnb["reachable"] else "Unreachable") + " (TCP)"
-        if dnb.get("error"):
-            photocraft += " - " + dnb["error"]
+        photocraft = "PhotoCraft: " + ("Reachable" if skin["reachable"] else "Unreachable") + " (TCP)"
+        if skin.get("error"):
+            photocraft += " - " + skin["error"]
     return (photocraft,)
 
 
@@ -279,7 +279,7 @@ class Desktop(Gtk.Application):
             item.set_sensitive(False)
             menu.append(item)
             self.external_items.append(item)
-        for name, label in (("dnb", "Skin Tools"),):
+        for name, label in (("skin", "Skin Tools"),):
             item = Gtk.MenuItem(label=f"{label} - Connecting")
             submenu = Gtk.Menu()
             self.module_items[name] = item
@@ -382,7 +382,7 @@ class Desktop(Gtk.Application):
                 GLib.idle_add(self.update_status, summary, status, epoch)
                 states = status.get("modules", {})
                 if not any(state.get("busy") for state in states.values()):
-                    for name in ("dnb",):
+                    for name in ("skin",):
                         if states.get(name, {}).get("phase") == "running":
                             inbox = self.connection.request(f"/{name}/api/watch-folder")
                             inbox["service"] = name
@@ -394,7 +394,7 @@ class Desktop(Gtk.Application):
     def wake_watch_folder(self, inbox, epoch):
         if self.quitting or self.control_pending or epoch != self.status_epoch or self.window is None:
             return GLib.SOURCE_REMOVE
-        service = inbox.get("service", "dnb")
+        service = inbox.get("service", "skin")
         token = inbox.get("token") if inbox.get("ready") else None
         if token is None:
             self.watch_wake_tokens.pop(service, None)
