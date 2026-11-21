@@ -35,7 +35,7 @@ from shp_portrait_tools.shared.ui import stylesheet, theme_script
 from shp_portrait_tools.shared.health import identity
 from shp_portrait_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
 from shp_portrait_tools.shared.local_output import write_local_result, batch_output
-from shp_portrait_tools.shared.platform_paths import global_config_dir, watch_directory
+from shp_portrait_tools.shared.platform_paths import global_config_dir
 
 from . import dodge_burn as D
 from . import skin_mask as K
@@ -53,7 +53,6 @@ from . import image_session, preview_service, processing_service, progress, tran
 from .cache_coordinator import CacheCoordinator
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE, memory_rejection
 from .mask_precache import Skipped, Superseded
-from shp_portrait_tools.shared.watch_folder import WatchFolder, capture_target
 from .paths import DATA, MODELS
 
 ROOT = DATA
@@ -79,7 +78,7 @@ def apply_request_policy(path, request):
         return
     if path == "/api/run":
         request.update(precache_mask=True, precache_layers=True)
-    if path in ("/api/load", "/api/pc/fetch", "/api/watch-folder/load"):
+    if path in ("/api/load", "/api/pc/fetch"):
         request["scale_estimator"] = "body-priority"
     if path == "/api/pc/fetch":
         request["photoshop_capture"] = "raw"
@@ -104,7 +103,6 @@ def configure_processing_backends(settings):
     else:
         DNB_LAYER_BACKEND = processing_service.dnb_backend_settings(settings)
         SKIN_MASK_BACKEND = K.backend_setting(settings)
-WATCH_DIRECTORY = watch_directory("SKIN_WATCH_DIRECTORY", "watchfolder", "watchfolder")
 IMG_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 FULL_MASK_LOCK = threading.RLock()
 FULL_MASK_CACHE_LIMIT = 256 * 1024 * 1024
@@ -1827,33 +1825,6 @@ def api_pc_fetch(req):
     return res
 
 
-def watch_target():
-    if EDITOR["selected"] != "photocraft":
-        raise ValueError("Watch-folder editor handoff is PhotoCraft-only; select PhotoCraft first")
-    return capture_target(bridge())
-
-
-def load_watch_image(path, target):
-    if watch_target() != target:
-        raise ValueError("PhotoCraft document changed; export again from the intended document")
-    with Image.open(path) as image:
-        if (target["identity"]["width"], target["identity"]["height"]) != image.size:
-            raise ValueError("export size does not match the active PhotoCraft document")
-    started = time.perf_counter()
-    begin_image_replacement()
-    loaded = progress.call("Loading image / preparing profile", prepare_loaded_image,
-                           {"path": str(path)}, set_colour=False)
-    state, info = finish_loaded_image(*loaded, *loaded[1].shape[:2], started, publish=False)
-    h, w = state["img"].shape[:2]
-    if (target["identity"]["width"], target["identity"]["height"]) != (w, h):
-        raise ValueError("export size does not match the confirmed PhotoCraft document")
-    if watch_target() != target:
-        raise ValueError("PhotoCraft document changed during image analysis; export again")
-    generation = publish_loaded_source(state, loaded[4], kind="photocraft", document=target["document"])
-    return {**info, "source_kind": "photocraft", "generation": generation, "pc_doc": BRIDGE["doc"],
-            "directional_pose": directional_availability()}
-
-
 def api_pc_send_layers(req):
     with PSB.layer_preparation() if EDITOR["selected"] == "photoshop" else nullcontext():
         return _send_editor_layers(req)
@@ -2135,14 +2106,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def load_watch_image(self, req):
-        watcher = getattr(self.server, "watch_folder", None)
-        if watcher is None:
-            raise ValueError("watch folder is not available in this service")
-        target = watch_target()
-        return watcher.load(req.get("token"), lambda path: load_watch_image(path, target),
-                            retry_key=target)
-
     def send(self, code, body, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -2163,10 +2126,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
         if path == "/api/progress":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             result = progress.snapshot(query.get("token", [""])[0], query.get("consume") == ["1"])
-            return self.send(200, json.dumps(result).encode(), "application/json")
-        if path == "/api/watch-folder":
-            watcher = getattr(self.server, "watch_folder", None)
-            result = watcher.status() if watcher is not None else {"ready": False}
             return self.send(200, json.dumps(result).encode(), "application/json")
         if path == "/api/health":
             return self.send(200, json.dumps({**identity("skin", ROOT, MODELS),
@@ -2218,7 +2177,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
         try:
             if (self.path == "/api/layer-precache/cancel" or self.path.startswith("/api/editor")
                     or (EDITOR["selected"] == "photoshop" and self.path.startswith("/api/pc/"))
-                    or self.path in ("/api/send-result", "/api/pc/send_layers", "/api/pc/launch", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings", "/api/watch-folder/load", "/api/watch-folder/prepare")) and (
+                    or self.path in ("/api/send-result", "/api/pc/send_layers", "/api/pc/launch", "/api/batch", "/api/batch/images", "/api/batch/cancel", "/api/global-settings")) and (
                     self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
                     or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
                 return self.send(403, b'{"error":"Same-origin JSON requests required"}', "application/json")
@@ -2238,7 +2197,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
                   "/api/editor": api_editor, "/api/editor/pair": api_photoshop_pair, "/api/editor/revoke": api_photoshop_revoke,
                   "/api/send-result": api_send_result,
                   "/api/batch": api_batch, "/api/batch/images": api_batch_images,
-                  "/api/watch-folder/load": self.load_watch_image,
                   "/api/global-settings": api_global_settings,
                   "/api/presets/save": api_preset_save, "/api/presets/default": api_preset_default, "/api/presets/delete": api_preset_delete}.get(self.path)
             if fn is None:
@@ -2249,7 +2207,7 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             else:
                 if not chart_request:
                     CACHE_COORDINATOR.layer_jobs.reset(preview_service.STOPPED)
-                    if self.path in ("/api/load", "/api/pc/fetch", "/api/watch-folder/load"):
+                    if self.path in ("/api/load", "/api/pc/fetch"):
                         CACHE_COORDINATOR.mask_jobs.reset()
                 token = req.pop("_progress", None)
                 with progress.operation(token), (nullcontext() if chart_request else foreground_lock(full_resolution=True)):
@@ -2269,9 +2227,6 @@ class Handler(BrowserHandler, BaseHTTPRequestHandler):
             self.send(200, json.dumps(res).encode(), "application/json")
         except Exception as e:  # report to the page instead of crashing the server
             result = {"error": f"{type(e).__name__}: {e}"}
-            if self.path.startswith("/api/watch-folder/") and getattr(self.server, "watch_last_error", None) != result["error"]:
-                print(f"Watch-folder {self.path.rsplit('/', 1)[-1]} failed: {result['error']}", flush=True)
-                self.server.watch_last_error = result["error"]
             if isinstance(token, str):
                 result["_progress"] = progress.snapshot(token, consume=True)
             self.send(400, json.dumps(result).encode(), "application/json")
@@ -2291,14 +2246,12 @@ def main():
     configure_processing_backends(settings)
     srv = BrowserServer(("127.0.0.1", a.port), Handler, close_with_ui=a.close_with_ui,
                         loaded=lambda: STATE["img"] is not None)
-    srv.watch_folder = WatchFolder(WATCH_DIRECTORY, ROOT / "inbox")
     print(f"SHP Portrait Tools — Skin Tools: http://127.0.0.1:{srv.server_port}  (Ctrl+C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        srv.watch_folder.close()
         srv.server_close()
         CACHE_COORDINATOR.close()
 

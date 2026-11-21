@@ -161,11 +161,11 @@ OS may retain freed memory in the process working set.
 
 ## Automatic S estimator
 
-**Torso + head** is the default for Open/Get, batch, and watch-folder.
+**Torso + head** is the default for Open/Get and batch.
 Interactive Analysis reports the Torso + head estimate and the face-led
 baseline for the same subject when available. Typing a value in **px / 63 mm**
-overrides the automatic estimate for the current image. Batch and watch-folder
-estimate scale independently for each image; they do not inherit that override.
+overrides the automatic estimate for the current image. Batch
+estimates scale independently for each image; they do not inherit that override.
 The baseline estimator is retained for development but is no longer selectable
 in the desktop UI.
 

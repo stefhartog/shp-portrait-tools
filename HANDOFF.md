@@ -12,6 +12,16 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## Watch folder removed (2026-11-21)
+
+The PhotoCraft export inbox ("watch folder") is gone: `shared/watch_folder.py`, the Skin Tools routes
+`/api/watch-folder` and `/api/watch-folder/load`, the page's 3 s poll and auto-load, the desktop hosts'
+wake-to-show poll (`DesktopHost` and the GTK controller), `platform_paths.watch_directory()`,
+`LINUX_INBOX_ROOT` and the `SKIN_WATCH_DIRECTORY`/`DNB_WATCH_DIRECTORY`/`WATCH_DIRECTORY` variables, with
+their tests. Images come in only through Get Image (editor or local file), the Image analysis list/path box,
+and Standalone batches. The folder migration still moves an old `watchfolder` data entry so the old folder
+empties, but nothing reads it. `ROOT/inbox` stays: it is the PhotoCraft Get exchange folder.
+
 ## Connection: Photoshop / PhotoCraft / Standalone (2026-11-21)
 
 Settings & Info's **connection** select (`source_editor` in global settings, `/api/editor`) is now
@@ -23,7 +33,7 @@ window and reports an error otherwise (no local-file fallback, no PhotoCraft/lau
 remains for the live test). Standalone Get Image opens a local file through the desktop picker; Batch
 Processing (Combine tab) is shown only in Standalone. In Standalone the server has no editor bridge:
 `/api/pc/status` reports `code: "standalone"`, and `/api/pc/fetch`/`launch` refuse before touching the
-loaded image. Watch-folder handoff stays PhotoCraft-only.
+loaded image.
 
 ## AI Fill split (2026-11-21)
 
@@ -86,7 +96,7 @@ into Settings & Info; removing the proxy belongs with the Phase 3 desktop-host r
 
 The module formerly called `dnb` is `skin`: package `modules/skin`, shell route `/skin/`, launcher.json
 keys, health identity, tray/status names (`photocraft_skin`), data subfolder `<data>/skin` and
-`SKIN_DATA`/`SKIN_MODELS`/`SKIN_WATCH_DIRECTORY`/`SKIN_EXIFTOOL`. Fallbacks: launcher.json `dnb` keys
+`SKIN_DATA`/`SKIN_MODELS`/`SKIN_EXIFTOOL` (`SKIN_WATCH_DIRECTORY` was removed with the watch folder). Fallbacks: launcher.json `dnb` keys
 are read as `skin`, the `DNB_*` variables are honoured when the new ones are unset, and `<data>/dnb` is
 used until `migrate_legacy_roots()` renames it (and rewrites launcher.json paths). Unchanged on purpose:
 the Dodge & Burn feature name (`dnb` mode/tab, `shpdnb` outputs, `DNB_LAYER_BACKEND`, `dnb-*` UI
@@ -110,7 +120,8 @@ Tools did not create. If any entry is in use the move is undone and the old fold
 > Tools shell (its tabs, iframe, `postMessage` and the `/dnb/` or `/skin/` proxy routes), AI Fill/`crop`/
 > ComfyUI, the module ID `dnb`, the `shp-photocraft-*` package/commands/folders, prompt-based native
 > pickers, the PhotoCraft launch button, the "source editor" choice, the flattened Send Result to an
-> editor, or Batch Processing outside Standalone, the dated sections above are what is current.
+> editor, Batch Processing outside Standalone, or the watch folder / PhotoCraft export inbox (removed), the
+> dated sections above are what is current.
 
 ## Scope, ownership and activation
 

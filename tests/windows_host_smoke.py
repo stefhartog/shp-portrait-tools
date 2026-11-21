@@ -47,10 +47,8 @@ def main():
     parser.add_argument("--models", required=True)
     args = parser.parse_args()
     root = Path(tempfile.mkdtemp(prefix="shp-smoke-"))
-    inbox = root / "inbox"
-    inbox.mkdir()
-    # Every Tools folder in the temp tree: data/state, global settings and the inbox.
-    os.environ.update(SHP_TOOLS_DATA=str(root / "data"), SKIN_WATCH_DIRECTORY=str(inbox),
+    # Every Tools folder in the temp tree: data/state and global settings.
+    os.environ.update(SHP_TOOLS_DATA=str(root / "data"),
                       LOCALAPPDATA=str(root / "local"), APPDATA=str(root / "roaming"))
     config = root / "launcher.json"
     config.write_text(json.dumps({"models": args.models, "ports": {"skin": 18765}, "shell_port": 18760,

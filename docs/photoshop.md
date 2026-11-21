@@ -115,7 +115,7 @@ restart Photoshop.
 - Connector 0.1.10 allows repeated Sends from the original Get, appending groups
   that can stack. Photoshop content edits may not be detected; Get again to use
   the current composite. A reconnect requires a new Get.
-- Native FS diagnostic and watch-folder editor handoff remain PhotoCraft-only.
+- The native FS diagnostic remains PhotoCraft-only.
   Files and supported PhotoCraft transfers use lossless PNG; Photoshop uses
   raw lossless binary tiles for editable layers. Processing math is shared and unchanged.
 

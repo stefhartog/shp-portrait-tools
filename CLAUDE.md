@@ -12,7 +12,7 @@ on 2026-11-21). An internal rename to Portrait/Skin Tools names is in progress, 
 aliases for one release). Data/config/state folders are `shp-portrait-tools`; `shared/platform_paths.py`
 falls back to an unmigrated `shp-photocraft-tools` folder and `migrate_legacy_roots()` (run by the launcher,
 `shp-skin-tools` and `install_desktop.py`, never at import) moves only app-owned entries. The per-module PhotoCraft
-control folders (`photocraft_config_dir()`), AI Fill's `crop` data and the Linux inbox keep the old name. Still
+control folders (`photocraft_config_dir()`) and AI Fill's `crop` data keep the old name. Still
 unchanged: app identity strings (`shp-photocraft-tools` window class/icons/health), output filename suffixes
 (`shpdnb` etc.).
 Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything PhotoCraft relies on.
@@ -21,7 +21,7 @@ Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything 
   it was `dnb` before 2026-11-21). Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service. `dnb` is still the Dodge & Burn
   *feature* name (the `dnb` mode/tab, `shpdnb` outputs, `DNB_LAYER_BACKEND`, `dnb-*` UI preferences) and the
   PhotoCraft namespace (`detect_config("DNB", "dnb")`, `DNB_PC_*`, the `photocraft-dnb` LightCraft wrapper): keep
-  those. Old `dnb` launcher.json keys, `DNB_DATA`/`DNB_MODELS`/`DNB_WATCH_DIRECTORY`/`DNB_EXIFTOOL` and the
+  those. Old `dnb` launcher.json keys, `DNB_DATA`/`DNB_MODELS`/`DNB_EXIFTOOL` and the
   `<data>/dnb` folder still work as fallbacks; `migrate_legacy_roots()` renames that folder to `skin`.
 - **AI Fill** (former module `crop`: Crop & Expand, Patch Fill, ComfyUI) was split out to the separate
   `shp-ai-fill` repo on 2026-11-21. `launcher.read_config` still accepts and ignores legacy `crop`/`comfy`
@@ -55,7 +55,7 @@ python -m uv run --no-sync python -m unittest test_combine -q
 python -m uv run --no-sync python -m unittest test_local_results.LocalResultTests.test_one_full_resolution_file_per_mode_with_profile_and_precision
 ```
 
-- Known-good Windows subset: `test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results test_watch_folder test_windows_output test_windows_service`.
+- Known-good Windows subset: `test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results test_windows_output test_windows_service`.
   Some tests skip on Windows (need `photocraft-cli`, Linux-only `supervisor`, or symlink privilege).
 - `SHP_TEST_DNB_CUDA=1` enables CUDA hardware parity checks in `test_cuda_bands`.
 - Photoshop connector mock tests (Node): `node tests\photoshop_plugin.cjs`
@@ -101,7 +101,7 @@ launcher.py ─► supervisor.py (port 18760: status page at /, health/status/co
   supervisor's `/api/health` `ports.skin`, allows navigation to both origins (`trusted_origin`), and shows the
   status page again when Skin Tools stops or restarts (`follow_worker`). Platform hosts subclass it and add only
   dialogs/pickers, webview hooks, the tray widget and process helpers (`own_identity`, `process_alive`,
-  `spawn_detached`). It polls the watch folder on the worker origin, not the supervisor. Covered by `tests/test_desktop_host.py` with a fake platform.
+  `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
   File pickers: `PickerApi` (only `pick_image`/`pick_images`/`pick_folder`) is the window's pywebview `js_api`;
   the Skin Tools page reaches it as `window.top.pywebview.api` and asks Folder-or-Images
   in its own `#batchSourceDialog`. Without the bridge (Linux GTK host) the page falls back to the old
@@ -111,7 +111,7 @@ launcher.py ─► supervisor.py (port 18760: status page at /, health/status/co
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).
 - `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `SKIN_DATA`,
-  `SKIN_MODELS`, `SHP_TOOLS_DATA`, `*_WATCH_DIRECTORY`. `launcher.py` and `supervisor.py` import `fcntl`
+  `SKIN_MODELS`, `SHP_TOOLS_DATA`. `launcher.py` and `supervisor.py` import `fcntl`
   and the Linux desktop controller imports `gi`, so those don't import on Windows.
 - `shared/local_output.py` (+ `local_output_windows.py`, `winfs.py`): exclusive, never-overwrite numbered
   output files; Windows path pins folders via handles.

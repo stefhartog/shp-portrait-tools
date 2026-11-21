@@ -835,44 +835,6 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             await pcSend();check(statuses.at(-1)==='cannot decode'&&!state.busy);
           })().then(()=>globalThis.localTransferCheck='ok',e=>globalThis.localTransferCheck=e.message);
         """
-        watcher_code = "let watchFolderErrors = '';" + html.split("let watchFolderErrors = '';", 1)[1].split("function renderBatch", 1)[0]
-        variation_harness += """
-          (async () => {
-            const state={busy:false},uiReady=true,document={hidden:false},calls=[],notes=[],statuses=[],prompts=[];
-            let ready=true,token='watch-1',failure=null,applied=0,hues=0,loaded=0;
-            const setBusy=value=>state.busy=value,logNote=text=>notes.push(text),setStatus=text=>statuses.push(text);
-            const modes=[],location={origin:'http://local'};
-            let settingsOpen=true;
-            const switchMode=mode=>modes.push(mode);
-            const setTimeout=()=>0,beginLoadTimings=()=>{},restoreAfterFailedLoad=()=>{},recordLoadStage=()=>{};
-            const window={confirm:()=>{throw Error('Watch imports must not prompt');}};
-            const applyLoaded=result=>{state.imageInfo=result;loaded++;};
-            const initializeHueCenter=async()=>hues++,apply=async()=>applied++;
-            const api=async(path,body)=>{
-              calls.push(path);
-              if(path==='/api/watch-folder')return {ready,token};
-              throw Error('Unexpected watcher request');
-            };
-            const operationApi=async(path,body)=>{
-              calls.push(path);
-              if(body.token!==token || 'confirmation' in body)throw Error('Unexpected import request');
-              if(failure)throw Error(failure);
-              ready=false;
-              return {watch_name:'incoming.png',watch_cleanup:true,source_kind:'photocraft'};
-            };
-            function check(ok){if(!ok)throw Error('Watch-folder UI flow');}
-        """ + watcher_code + """
-            state.busy=true;await pollWatchFolder();check(calls.length===0);state.busy=false;
-            await pollWatchFolder();
-            check(calls.includes('/api/watch-folder/load') && loaded===1 && hues===1 && applied===1 && !state.busy);
-            check(modes.join(',')==='mask' && settingsOpen===false);
-            check(!calls.includes('/api/watch-folder/prepare'));
-            check(notes.some(text=>text.includes('Inbox file removed')));
-            ready=true;token='watch-3';failure='document changed';await pollWatchFolder();
-            check(loaded===1 && notes.some(text=>text.includes('input retained: document changed')) && !state.busy);
-            check(modes.length===1);
-          })().then(()=>globalThis.watchFolderCheck='ok',e=>globalThis.watchFolderCheck=e.message);
-        """
         batch_display = "const display = snapshot => {" + html.split("const display = snapshot => {", 1)[1].split(
             "const completed = {'Loading image", 1)[0] + "};"
         variation_harness += """
@@ -1140,7 +1102,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
                 send.assert_called_once_with(200, theme_script(), "text/javascript; charset=utf-8")
         context = js.JSGlobalContextCreate(None)
         try:
-            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
+            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.batchCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
             for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) + [harness, theme_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, startup_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()

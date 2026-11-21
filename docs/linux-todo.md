@@ -15,9 +15,8 @@ not from a sandbox that redirects `$HOME`.
 **Goal: ignore the existing install and set up a fresh clone with fresh settings.** The old checkout
 (`~/shp-photocraft-tools`) and the old data/config/state folders (`shp-photocraft-tools` under
 `~/.local/share`, `~/.config`, `~/.local/state`) are left untouched; nothing is migrated from them except
-copying the model files. The user deletes the old install later. The watch folder is ignored: the user
-plans to remove that feature, and its hard-coded inbox (`/home/stef/shp-photocraft-tools/watchfolder`) only
-reports "not ready" if missing.
+copying the model files. The user deletes the old install later. The watch folder no longer exists
+(removed 2026-11-21), so the old checkout's `watchfolder` is not used.
 
 1. **Quit the old Tools.** Ask the user to quit it from the tray and save any work first. Check nothing is
    left: `pgrep -af 'shp_photocraft_tools|shp_portrait_tools'`, `ss -ltnp | grep -E ':(18760|18765|18768)\b'`.
@@ -88,7 +87,7 @@ reports "not ready" if missing.
    (port 18765, a different origin) once Skin Tools is running. Tabs and Settings & Info now live in the
    Skin Tools page itself.
 2. **Desktop host core.** `desktop/host.py` `DesktopHost` holds everything platform-neutral (geometry,
-   status polling, watch-folder wake, tray model, module controls, quit/restart/reload, the 90 s drain,
+   status polling, tray model, module controls, quit/restart/reload, the 90 s drain,
    following the worker to the status page after stop/restart, the page address via `/api/health`).
    `windows_controller.Host` is the only subclass so far.
 3. **File pickers use pywebview's JS API.** The page calls `window.top.pywebview.api.pick_image()` /
@@ -115,9 +114,8 @@ reports "not ready" if missing.
 - injects `__shpNativeFileDialog` only for `self.base`, so the Skin Tools page (worker origin) would not
   offer local Open even if navigation were allowed;
 - answers `prompt('SHP_OPEN_*')` only for `self.base`;
-- has its own copy of the status/tray/quit logic that `DesktopHost` now owns, including the watch-folder poll
-  to the supervisor's removed `/skin/api/watch-folder` route (a 404 that shows "Tools connection lost" and
-  empties the tray status; `DesktopHost` asks the worker origin instead).
+- has its own copy of the status/tray/quit logic that `DesktopHost` now owns (its watch-folder wake was
+  removed with the feature; `test_desktop.py` lost the matching test).
 
 Until the Qt host lands, use Tools on Linux without the native window: `shp-portrait-tools --no-browser`, then
 open `http://127.0.0.1:18760/` in a normal browser (the status page moves on to Skin Tools). File pickers are not
@@ -199,8 +197,8 @@ desktop changes, i.e. these **pre-existing** failures remain:
   when the new folder is missing.
 - PhotoCraft control folders stay at `~/.config/shp-photocraft-tools/<module>` by design (`detect_config`),
   as do the `photocraft-dnb` LightCraft wrapper and `DNB_PC_*`.
-- `shared/platform_paths.LINUX_INBOX_ROOT` is still hard-coded to `/home/stef/shp-photocraft-tools` (the
-  old checkout). The user plans to remove the watch-folder feature altogether, which removes this too.
+- The watch folder and its hard-coded Linux inbox (`LINUX_INBOX_ROOT`) are removed; nothing on Linux
+  depends on the checkout path any more.
 - App identity strings (`.desktop` name, `StartupWMClass`, icon names `shp-photocraft-tools*`) are
   unchanged; rename them together with the Qt host if wanted.
 

@@ -1,4 +1,4 @@
-"""Per-user data, config and inbox locations, and the one-time move from the pre-rename folder names.
+"""Per-user data and config locations, and the one-time move from the pre-rename folder names.
 
 Folders are named `shp-portrait-tools`. Installs from before the rename used `shp-photocraft-tools`;
 every lookup prefers the new folder and falls back to the old one, so an install that has not been
@@ -14,8 +14,6 @@ from pathlib import Path
 
 APP = "shp-portrait-tools"
 LEGACY_APP = "shp-photocraft-tools"
-# Linux inbox under the developer's checkout; unrelated to the data-folder rename.
-LINUX_INBOX_ROOT = Path("/home/stef/shp-photocraft-tools")
 
 # App-owned entries moved by the migration. Anything else stays: AI Fill's `crop` data (shp-ai-fill
 # still uses the old folder), the per-module PhotoCraft control folders under config (PhotoCraft is
@@ -94,17 +92,6 @@ def module_folder(root, module):
 def module_data(env_name, module, legacy_env=None):
     value = env(env_name, legacy_env)
     return Path(value).expanduser() if value else module_folder(data_root(), module)
-
-
-def watch_directory(module_env, linux_name, windows_name):
-    """Inbox for one service: its own variable, then the generic WATCH_DIRECTORY, then a platform default."""
-    legacy = "DNB_WATCH_DIRECTORY" if module_env == "SKIN_WATCH_DIRECTORY" else None
-    value = env(module_env, legacy) or os.environ.get("WATCH_DIRECTORY")
-    if value:
-        return Path(value).expanduser()
-    if sys.platform == "win32":
-        return data_root() / windows_name
-    return LINUX_INBOX_ROOT / linux_name
 
 
 def legacy_config_path(path):

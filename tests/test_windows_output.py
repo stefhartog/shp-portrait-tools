@@ -2,27 +2,17 @@
 
 import json
 import os
-import struct
 import subprocess
 import sys
 import tempfile
 import unittest
-import zlib
 from pathlib import Path
 from unittest.mock import patch
 
 from shp_portrait_tools.shared import local_output, winfs
-from shp_portrait_tools.shared.watch_folder import WatchFolder, verify_png
 
 WINDOWS = sys.platform == "win32"
 
-
-def make_png():
-    def chunk(kind, body):
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
-    header = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
-    pixels = zlib.compress(b"".join(b"\x00" + bytes(6) for _ in range(2)))
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
 
 def junction(link, target):
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
@@ -153,89 +143,9 @@ class WindowsLocalOutputTests(unittest.TestCase):
                 pass
 
 
-@unittest.skipUnless(WINDOWS, "Windows filesystem semantics")
-class WindowsWatchFolderTests(unittest.TestCase):
-    PNG = make_png()
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory(prefix="shp inbox ü ")
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.inbox = self.root / "inbox"
-        self.inbox.mkdir()
-        self.now = [0]
-        self.watch = WatchFolder(self.inbox, self.root / "retained", clock=lambda: self.now[0])
-        self.addCleanup(self.watch.close)
-
-    def test_png_fixture_is_valid(self):
-        (self.inbox / "a.png").write_bytes(self.PNG)
-        verify_png(self.inbox / "a.png")
-
-    def test_file_held_exclusively_by_exporter_is_retried_not_failed(self):
-        import ctypes
-        from ctypes import wintypes
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
-                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-        kernel32.CreateFileW.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        target = self.inbox / "export.png"
-        handle = kernel32.CreateFileW(str(target), 0x40000000, 0, None, 2, 0x80, None)  # GENERIC_WRITE, no sharing
-        self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
-        try:
-            self.watch.status()
-            self.now[0] = 3
-            status = self.watch.status()
-            self.assertFalse(status["ready"])
-            self.assertEqual(status["errors"], [])
-        finally:
-            kernel32.CloseHandle(handle)
-        target.write_bytes(self.PNG)
-        self.watch.status()
-        self.now[0] = 6
-        self.assertTrue(self.watch.status()["ready"])
-
-    def test_inbox_that_is_a_junction_is_rejected(self):
-        real = self.root / "real"
-        real.mkdir()
-        link = self.root / "link"
-        junction(link, real)
-        status = WatchFolder(link, self.root / "retained").status()
-        self.assertFalse(status["ready"])
-        self.assertIn("link", status["error"])
-
-    def test_file_symlink_is_not_imported_when_privileged(self):
-        target = self.root / "target.png"
-        target.write_bytes(self.PNG)
-        try:
-            (self.inbox / "linked.png").symlink_to(target)
-        except OSError:
-            self.skipTest("this account cannot create symlinks (needs Developer Mode or elevation)")
-        self.watch.status()
-        self.now[0] = 3
-        status = self.watch.status()
-        self.assertFalse(status["ready"])
-        self.assertEqual(len(status["errors"]), 1)
-        self.assertEqual(target.read_bytes(), self.PNG)
-
-    def test_missing_inbox_is_reported_not_created(self):
-        missing = self.root / "absent"
-        status = WatchFolder(missing, self.root / "retained").status()
-        self.assertFalse(status["ready"])
-        self.assertIn("does not exist", status["error"])
-        self.assertFalse(missing.exists())
-
-
 class PlatformPathTests(unittest.TestCase):
     def test_env_overrides_and_defaults(self):
         from shp_portrait_tools.shared import platform_paths as P
-        with patch.dict(os.environ, {"WATCH_DIRECTORY": "generic", "SHPC_WATCH_DIRECTORY": ""}, clear=False):
-            for name in ("SKIN_WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
-                os.environ.pop(name, None)
-            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("generic"))
-            os.environ["DNB_WATCH_DIRECTORY"] = "legacy"  # pre-rename variable still honoured
-            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("legacy"))
-            os.environ["SKIN_WATCH_DIRECTORY"] = "specific"
-            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "a", "b"), Path("specific"))
         with patch.dict(os.environ, {"DNB_DATA": str(Path("custom") / "old")}):
             os.environ.pop("SKIN_DATA", None)
             self.assertEqual(P.module_data("SKIN_DATA", "skin", "DNB_DATA"), Path("custom") / "old")
@@ -247,13 +157,11 @@ class PlatformPathTests(unittest.TestCase):
         from shp_portrait_tools.shared import platform_paths as P
         env = {"LOCALAPPDATA": r"C:\Users\x\AppData\Local", "APPDATA": r"C:\Users\x\AppData\Roaming"}
         with patch.dict(os.environ, env):
-            for name in ("SKIN_DATA", "DNB_DATA", "WATCH_DIRECTORY", "SKIN_WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
+            for name in ("SKIN_DATA", "DNB_DATA"):
                 os.environ.pop(name, None)
             self.assertEqual(P.module_data("SKIN_DATA", "skin", "DNB_DATA"),
                              Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "skin")
             self.assertEqual(P.global_config_dir(), Path(env["APPDATA"]) / "shp-portrait-tools")
-            self.assertEqual(P.watch_directory("SKIN_WATCH_DIRECTORY", "w", "w"),
-                             Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "w")
 
 if __name__ == "__main__":
     unittest.main()

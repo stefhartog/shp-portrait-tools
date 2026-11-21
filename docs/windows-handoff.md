@@ -117,9 +117,8 @@ overrides and dependency checks still report that requirement as missing.
     list + path box + Load; the desktop window hides them. Verified with headless Edge and
     `/api/load` on a synthetic copy of the scikit-image astronaut.- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
   `%LOCALAPPDATA%\shp-portrait-tools\<module>`, models to `...\dnb\models`, global settings
-  to `%APPDATA%\shp-portrait-tools`, inbox to a folder under the data directory. Overrides:
-  `SKIN_DATA`, `SHPC_DATA`, `SKIN_MODELS`, `SKIN_WATCH_DIRECTORY`/`SHPC_WATCH_DIRECTORY`, and
-  generic `WATCH_DIRECTORY`. Linux defaults (including the fixed inbox) are unchanged.
+  to `%APPDATA%\shp-portrait-tools`. Overrides: `SKIN_DATA`, `SHPC_DATA`, `SKIN_MODELS`. (The inbox
+  and its `*_WATCH_DIRECTORY` overrides were removed with the watch folder on 2026-11-21.)
 - **Output safety** (`shared/winfs.py`, `shared/local_output_windows.py`, dispatched from
   `local_output.py`): `CREATE_NEW` no-overwrite allocation, reserved-name/ADS/trailing dot
   rejection, `\\?\` extended paths for long names, reparse-point refusal, atomic
@@ -128,8 +127,7 @@ overrides and dependency checks still report that requirement as missing.
   during a write is refused by the OS instead of detected afterwards. This is the Windows
   analogue of `dir_fd` and is weaker in one respect: identity is verified on the handle, not
   inherited by every later call.
-- **Inbox** (`shared/watch_folder.py`): no `/proc/self/fd`; folder pinned the same way,
-  sharing violations are retried not recorded, reparse-point or non-directory inboxes are rejected.
+- **Inbox**: removed with the watch folder on 2026-11-21.
 - **Port ownership** (`shared/lifecycle.py`): on Windows `BrowserServer` binds with
   `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`. A negative control showed that plain
   `ThreadingHTTPServer` lets a second process share a live port on Windows. Ownership here
@@ -152,14 +150,14 @@ overrides and dependency checks still report that requirement as missing.
 
 ```powershell
 $env:PYTHONPATH = "tests"
-python -m uv run --no-sync python -m unittest test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results test_watch_folder -q
+python -m uv run --no-sync python -m unittest test_combine test_transfer_options test_fs_pipeline test_combine_batch test_local_results -q
 python -m uv run --no-sync python -m unittest test_windows_output test_windows_service -q
 ```
 
 ### Verified end to end with real models (2026-11-16)
 
 Standalone service on 8765 with the three ONNX models in `%LOCALAPPDATA%\shp-portrait-tools\skin\models`
-(SHA-256 checked) and a disposable `SKIN_DATA`/`SKIN_WATCH_DIRECTORY`. Test image: scikit-image's
+(SHA-256 checked) and a disposable `SKIN_DATA`. Test image: scikit-image's
 `astronaut.png` (public domain NASA photo, 512x512; a real face, not a user photo). Same-origin
 JSON calls to `/api/load`, `/api/run` (Skin Mask, FS & Tone, Dodge & Burn, Combine) and `/api/save`
 (Dodge & Burn, Combine) all succeeded with no Windows-specific errors:
@@ -206,8 +204,7 @@ Code:
 
 - `desktop/host.py` `DesktopHost` — platform-neutral: window geometry, status polling, tray model, module
   controls (Start/Stop/Restart, Load on startup), quit/restart/reload confirmations with the 90 s drain wait,
-  the page origin from `/api/health` `ports.skin`, `trusted_origin()` for both origins, and the watch-folder
-  poll on the **worker** origin (`/api/watch-folder`; a failure there never clears the tray status).
+  the page origin from `/api/health` `ports.skin` and `trusted_origin()` for both origins.
 - `desktop/windows_controller.py` `Host(DesktopHost)` — WebView2 hooks (injects `__shpOwnedDesktop` in the top
   frame and `__shpNativeFileDialog` for the worker origin; navigation allowed only to the two origins and their
   `blob:` URLs), `MessageBox` for `alert`/`confirm`, the pystray menu built from the shared model, named
@@ -258,7 +255,7 @@ tree. Logs: `<data>\state\*.log` and `desktop.log`. Requires the Edge WebView2 R
   the tray is created, the page reaches the JS picker bridge and all three pickers round-trip with a fake
   picker, the old prompt is cancelled, hide/show work, and Quit leaves nothing listening on 18760/18765.
 - Unit tests: `tests/test_desktop_host.py` (shared host with a fake platform: tray model, confirmations, drain
-  and restart, page origin and following the worker, watch-folder poll), `tests/test_windows_host.py` (file
+  and restart, page origin and following the worker), `tests/test_windows_host.py` (file
   lock, job adoption/termination, identity mismatch, editor breakaway from the job, single instance).
 - Live, by the user on 2026-11-21: status page hand-over, tabs and Settings & Info, theme carry-over, real
   Open/Batch pickers, tray Stop/Start/Restart/Reload, and Quit/Restart with PhotoCraft open.
@@ -266,13 +263,13 @@ tree. Logs: `<data>\state\*.log` and `desktop.log`. Requires the Edge WebView2 R
 #### Not verified
 
 Window geometry persistence across monitors, download Save-As, the second-launch wake from a Start Menu
-shortcut, inbox wake-to-show on a real watch folder, and GPU inference started through the host on a machine
+shortcut, and GPU inference started through the host on a machine
 other than the development one.
 
 ## Committed feature state
 
 - Skin Tools includes Skin Mask, FS & Tone, Dodge & Burn and Combine, with shared source
-  and global settings and a PhotoCraft PNG inbox. The connection (Photoshop / PhotoCraft /
+  and global settings. The connection (Photoshop / PhotoCraft /
   Standalone) decides the buttons: Get Image + Send Layers for editors, Get Image + Send Result
   for Standalone, which is also the only place local Combine batches are offered. In the desktop
   window the page starts on Skin Mask and preserves later user selection.
@@ -296,15 +293,10 @@ other than the development one.
 | Native desktop | Windows: `desktop/host.py` + `windows_controller.py` (pywebview/pystray), implemented and verified. Linux: the GTK3/WebKit2 `controller.py`, broken since the shell removal | Linux gets a Qt host on `DesktopHost`; see [linux-todo](linux-todo.md). |
 | Launcher/install/lifetime | `launcher.py` imports `fcntl`, uses file locks and `/usr/bin/python3`; `scripts/install_desktop.py` creates shell wrappers, XDG `.desktop` files and icons. Supervisor/process ownership uses `/proc`, Linux pidfds/signals and session semantics | Replace locks, platform paths, launch/install assets and verified process identity/termination. Standalone module commands avoid launcher import but do not provide equivalent owned-shell/tray management. |
 | Output/file safety | `shared/local_output.py` uses directory descriptors, `dir_fd`, `O_DIRECTORY`, `O_NOFOLLOW`, exclusive allocation, directory fsync and atomic manifest replacement | Provide Windows equivalents with no-overwrite and replacement/symlink/reparse-point safety. Test case-insensitive collisions, reserved names, Unicode/spaces, long paths, locked files and cross-volume behavior. Do not remove safety checks just to make writes succeed. |
-| Inbox imports | `shared/watch_folder.py` pins directories/files and validates PNG completion/CRC; uses `/proc/self/fd`, POSIX descriptor operations. Both server `WATCH_DIRECTORY` constants currently point to fixed Linux paths | Make inbox locations portable/configurable before enabling Windows imports. Use disposable configured directories, never a developer's real inbox. Retain stable-file detection, association checks, deduplication and cleanup only after unchanged successful import. Missing inboxes currently are not auto-created. |
+| Inbox imports | Removed with the watch folder on 2026-11-21. | — |
 | Settings/data | `SKIN_DATA`, `SHPC_DATA`, `SKIN_MODELS`, XDG global config and PhotoCraft config defaults are Unix-oriented | Define Windows config/data/state defaults and migration explicitly; preserve global-vs-preset separation and environment overrides. Use portable user-local placeholders, not copied machine paths. |
 | PhotoCraft | `shared/photocraft/bridge.py` uses authenticated localhost JSON-lines TCP and exchange files. `SHP_PC_*` overrides are shared; `DNB_PC_*`/`SHPC_PC_*` take precedence. One spawn path already guards `start_new_session` on win32. Optional `flatpak_peer.py` uses Linux `/proc`, pidfds and Flatpak identity | Verify a Windows PhotoCraft build exposes the same control/automation APIs, path permissions and export capabilities. That single spawn guard is not Windows support. Do not copy Linux Flatpak guard configuration or disable authentication to make a connection succeed; define the Windows trust/process-identity mechanism separately. Configure token/exchange/read-root locally; never copy or commit credentials. |
 | LightCraft handoff | `editor_handoff.py` validates input paths against the read root and sends one-shot acknowledged `app.open`; `scripts/install_editor_handoff.py` writes Linux shell wrappers/XDG desktop and native LightCraft settings | Windows needs its own executable/helper discovery, launcher and permission setup. An open acknowledgement is not proof of same-file save-back. Verify that an alongside-original edit can be reopened and saved in place without moving it or granting blanket drive access. |
-
-PNG inboxes have no origin identity. Automatic association deliberately uses the active
-PhotoCraft document at processing time, checks available identity/revision/dimensions
-around load, and retains files on failure. It cannot prove a same-sized active document
-is the one that exported the PNG. Preserve this limitation in Windows UX/docs.
 
 ## PhotoCraft/LightCraft integration boundary
 
@@ -475,9 +467,8 @@ Linux portal paths are not Windows solutions and are not shipped here as Windows
    Browser tests use platform tooling and may require adaptation rather than assuming
    their Linux JavaScriptCore/Firefox harness works unchanged.
 4. Port safe filesystem operations with temporary-directory tests. Then run
-   `test_combine_batch`, `test_local_results` and `test_watch_folder`; verify mixed
-   failures/cancellation, collisions/no-overwrite, file replacement, partial PNG
-   retention, successful cleanup, independent inbox routing and active-document changes.
+   `test_combine_batch` and `test_local_results`; verify mixed failures/cancellation,
+   collisions/no-overwrite and file replacement.
 5. Validate real NVIDIA analysis and an external ComfyUI with the selected method's
    models/nodes, then an explicitly configured Windows PhotoCraft instance. Use disposable
    documents to verify Get Image, Send Layers, authentication failure, root rejection,
@@ -487,7 +478,7 @@ Linux portal paths are not Windows solutions and are not shipped here as Windows
    user setup.
 6. Only then choose/implement a Windows desktop host and installation. Preserve one
    controller/supervisor, hide-to-tray, explicit service controls, busy/unsent guards,
-   native single/multiple/folder pickers, and wake/show/import from both inboxes.
+   and native single/multiple/folder pickers.
    A browser alone has no native picker bridge or tray wake controller; batch source
    selection currently requires the desktop's `SHP_OPEN_BATCH_SOURCE_V1` bridge.
 

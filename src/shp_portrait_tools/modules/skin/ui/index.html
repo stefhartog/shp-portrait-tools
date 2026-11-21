@@ -1683,53 +1683,6 @@ $('photoshopRevoke').onclick = async () => {
 api('/api/editor', {}).then(r => {
   setEditorUi(r);
 }).catch(e => setStatus(e.message, true));
-let watchFolderErrors = '';
-let watchFolderLoadError = '';
-async function pollWatchFolder() {
-  try {
-    if (!uiReady || state.busy || document.hidden) return;
-    const inbox = await api('/api/watch-folder');
-    const errors = [inbox.error, ...(inbox.errors || [])].filter(Boolean).join('\n');
-    if (errors && errors !== watchFolderErrors) {
-      logNote('Watch folder: '+errors);
-      setStatus('Watch-folder import needs attention. See Log.', true);
-    }
-    watchFolderErrors = errors;
-    if (!inbox.ready || state.busy) return;
-    setBusy(true);
-    let loaded = false;
-    try {
-      const message = 'Loading watch-folder image...';
-      beginLoadTimings(message); setStatus(message);
-      const result = await operationApi('/api/watch-folder/load', {token:inbox.token});
-      if (result.skipped) {
-        restoreAfterFailedLoad(); recordLoadStage('Watch-folder image was no longer ready.');
-        loadProgress.finished = true; setStatus('Watch-folder image was no longer ready.'); return;
-      }
-      applyLoaded(result);
-      loaded = true;
-      settingsOpen = false;
-      switchMode('mask');
-      watchFolderLoadError = '';
-      logNote(`Watch folder: loaded ${result.watch_name}. ${result.watch_cleanup ? 'Inbox file removed.' : result.watch_error}`);
-      await initializeHueCenter();
-      if (result.watch_error) setStatus(result.watch_error, true);
-    } catch (e) {
-      restoreAfterFailedLoad();
-      if (watchFolderLoadError !== e.message) logNote('Watch-folder load failed; input retained: '+e.message);
-      watchFolderLoadError = e.message;
-      setStatus('Watch-folder load failed. See Log.', true);
-    } finally { setBusy(false); }
-    if (loaded) {
-      await apply();
-      if (state.imageInfo?.watch_error) setStatus(state.imageInfo.watch_error, true);
-    }
-  } catch (e) {
-    const message = 'Watch-folder status unavailable: '+e.message;
-    if (message !== watchFolderErrors) logNote(message);
-    watchFolderErrors = message;
-  } finally { pollWatchFolder.timer = setTimeout(pollWatchFolder, 3000); }
-}
 function renderBatch(batch) {
   const done = batch.items.filter(item => ['success','failed'].includes(item.status)).length;
   const cancelled = batch.items.filter(item => item.status==='cancelled').length;
@@ -2496,8 +2449,6 @@ $('presetRemove').onclick = async () => {
 if (window === window.top && (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible)) { try { resizeTo(1347, 994); } catch (e) {} }
 /* ---------- start ---------- */
 setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets(); loadList().catch(e => setStatus(e.message, true));
-pollWatchFolder.timer = setTimeout(pollWatchFolder, 1000);
-window.addEventListener('pagehide', () => clearTimeout(pollWatchFolder.timer));
 </script>
 </body>
 </html>

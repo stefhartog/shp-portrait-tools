@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 WINDOWS = sys.platform == "win32"
 
 
-def start(port, data, inbox):
-    env = dict(os.environ, DNB_DATA=data, DNB_WATCH_DIRECTORY=inbox, PYTHONIOENCODING="utf-8",
+def start(port, data):
+    env = dict(os.environ, DNB_DATA=data, PYTHONIOENCODING="utf-8",
                APPDATA=str(Path(data).parent / "config"))
     env.pop("SHP_SUPERVISOR_TOKEN", None)
     return subprocess.Popen([sys.executable, "-m", "shp_portrait_tools.modules.skin.ui_server", "--port", str(port)],
@@ -25,12 +25,12 @@ def start(port, data, inbox):
 class StandaloneServiceTests(unittest.TestCase):
     def test_port_is_exclusive_and_service_stops_cleanly(self):
         with tempfile.TemporaryDirectory(prefix="shp svc ") as temp:
-            data, inbox = str(Path(temp) / "data"), str(Path(temp) / "inbox")
+            data = str(Path(temp) / "data")
             settings = Path(temp) / "config" / "shp-portrait-tools" / "settings.json"
             settings.parent.mkdir(parents=True)
             settings.write_text('{"source_editor": "photoshop", "custom": "keep"}')
             before = settings.read_bytes()
-            first = start(0, data, inbox)
+            first = start(0, data)
             def cleanup():
                 if first.poll() is None:
                     first.kill()
@@ -51,7 +51,7 @@ class StandaloneServiceTests(unittest.TestCase):
             with urlopen(request, timeout=10) as response:
                 self.assertEqual(json.load(response), {"editor": "photoshop", "photoshop_hue_native": True, "photoshop_png_capture": True})
             self.assertEqual(settings.read_bytes(), before)
-            second = start(port, data, inbox)
+            second = start(port, data)
             try:
                 output, _ = second.communicate(timeout=60)
             except subprocess.TimeoutExpired:

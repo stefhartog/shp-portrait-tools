@@ -148,7 +148,6 @@ class Desktop(Gtk.Application):
         self.status_epoch = 0
         self.geometry_timer = None
         self.geometry = {}
-        self.watch_wake_tokens = {}
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -380,28 +379,9 @@ class Desktop(Gtk.Application):
                 if self.connection.error:
                     summary += " | Desktop connection: " + self.connection.error
                 GLib.idle_add(self.update_status, summary, status, epoch)
-                states = status.get("modules", {})
-                if not any(state.get("busy") for state in states.values()):
-                    for name in ("skin",):
-                        if states.get(name, {}).get("phase") == "running":
-                            inbox = self.connection.request(f"/{name}/api/watch-folder")
-                            inbox["service"] = name
-                            GLib.idle_add(self.wake_watch_folder, inbox, epoch)
             except (OSError, ValueError, KeyError) as error:
                 GLib.idle_add(self.update_status, "Tools connection lost: " + str(error), None, epoch)
             self.connection.stopped.wait(3)
-
-    def wake_watch_folder(self, inbox, epoch):
-        if self.quitting or self.control_pending or epoch != self.status_epoch or self.window is None:
-            return GLib.SOURCE_REMOVE
-        service = inbox.get("service", "skin")
-        token = inbox.get("token") if inbox.get("ready") else None
-        if token is None:
-            self.watch_wake_tokens.pop(service, None)
-        elif token != self.watch_wake_tokens.get(service):
-            self.watch_wake_tokens[service] = token
-            self.show()
-        return GLib.SOURCE_REMOVE
 
     def update_status(self, summary, status=None, epoch=None):
         if self.quitting or self.control_pending or (epoch is not None and epoch != self.status_epoch):

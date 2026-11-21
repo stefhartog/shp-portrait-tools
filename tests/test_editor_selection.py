@@ -117,7 +117,7 @@ class EditorSelectionTests(unittest.TestCase):
 
         with patch("sys.argv", ["shp-photocraft-dnb", "--port", "18765"]), \
                 patch.object(U, "BrowserServer", side_effect=create_server), \
-                patch.object(U, "WatchFolder"), patch.object(U.CACHE_COORDINATOR, "mask_jobs"), \
+                patch.object(U.CACHE_COORDINATOR, "mask_jobs"), \
                 patch("builtins.print"):
             U.main()
         server.serve_forever.assert_called_once()

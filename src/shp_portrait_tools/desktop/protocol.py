@@ -42,11 +42,6 @@ class Connection:
             with error:
                 raise ValueError(json.load(error).get("error", str(error))) from error
 
-    def fetch(self, url, timeout=5):
-        """GET JSON from another loopback origin (the Skin Tools worker), without the supervisor's Origin."""
-        with self.opener.open(Request(url), timeout=timeout) as response:
-            return json.load(response)
-
     def heartbeat(self):
         while not self.stopped.is_set():
             try:

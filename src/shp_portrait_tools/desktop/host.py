@@ -91,7 +91,6 @@ class DesktopHost:
         self.status_epoch = 0
         self.modules = {}
         self.external_lines = external_lines({})
-        self.watch_wake_tokens = {}
         self.geometry = {}
         self.geometry_timer = None
         self.last_notice = None
@@ -301,33 +300,7 @@ class DesktopHost:
                 self.update_status(status, epoch)
             except (OSError, ValueError, KeyError) as error:
                 self.update_status(None, epoch, "Tools connection lost: " + str(error))
-            else:
-                self.poll_watch_folder(status.get("modules", {}), epoch)
             self.connection.stopped.wait(3)
-
-    def poll_watch_folder(self, states, epoch):
-        """Ask the worker (not the supervisor) for a new watch-folder image; a failure here never touches status."""
-        state = states.get("skin", {})
-        if self.page is None or state.get("phase") != "running" or any(s.get("busy") for s in states.values()):
-            return
-        try:
-            inbox = self.connection.fetch(self.page + "/api/watch-folder")
-        except (OSError, ValueError) as error:
-            print(f"Watch folder check failed: {error}", file=sys.stderr, flush=True)
-            return
-        inbox["service"] = "skin"
-        self.wake_watch_folder(inbox, epoch)
-
-    def wake_watch_folder(self, inbox, epoch):
-        if self.quitting or self.control_pending or epoch != self.status_epoch or self.window is None:
-            return
-        service = inbox.get("service", "skin")
-        token = inbox.get("token") if inbox.get("ready") else None
-        if token is None:
-            self.watch_wake_tokens.pop(service, None)
-        elif token != self.watch_wake_tokens.get(service):
-            self.watch_wake_tokens[service] = token
-            self.show()
 
     def update_status(self, status, epoch, problem=None):
         if self.quitting or self.control_pending or epoch != self.status_epoch:
