@@ -1,6 +1,5 @@
-"""Local-source exports and native chooser integration without GUI or live services."""
+"""Local-source exports without GUI or live services."""
 
-import ast
 from concurrent.futures import ThreadPoolExecutor
 import io
 import itertools
@@ -9,9 +8,8 @@ import tempfile
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -234,74 +232,3 @@ class LocalResultTests(unittest.TestCase):
         self.assertEqual(list(other.iterdir()), [])
 
 
-@unittest.skipIf(supervisor is None, "supervisor is Linux-only")
-class NativeChooserTests(unittest.TestCase):
-    def test_native_dialog_selection_cancel_and_frame_capability_without_gtk(self):
-        source = Path(S.__file__).parents[2] / "desktop/controller.py"
-        tree = ast.parse(source.read_text())
-        desktop = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Desktop")
-        method = next(node for node in desktop.body if isinstance(node, ast.FunctionDef) and node.name == "script_dialog")
-        chooser = Mock()
-        gtk = SimpleNamespace(FileChooserDialog=Mock(return_value=chooser), FileFilter=Mock(),
-                              ResponseType=SimpleNamespace(CANCEL=0, ACCEPT=1),
-                              FileChooserAction=SimpleNamespace(OPEN=1, SELECT_FOLDER=2))
-        namespace = {"Gtk": gtk, "json": json, "WebKit2": SimpleNamespace(ScriptDialogType=SimpleNamespace(PROMPT=1))}
-        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
-        host = SimpleNamespace(base="http://127.0.0.1:1234", window=object(), dialog_open=False)
-        view = Mock()
-        view.get_uri.return_value = host.base + "/"
-        for response in (0, 1):
-            chooser.reset_mock()
-            chooser.run.return_value = response
-            chooser.get_filename.return_value = "/chosen/portrait.png"
-            script = Mock()
-            script.get_dialog_type.return_value = 1
-            script.get_message.return_value = "SHP_OPEN_IMAGE_V1"
-            self.assertTrue(namespace["script_dialog"](host, view, script))
-            if response:
-                script.prompt_set_text.assert_called_once_with("/chosen/portrait.png")
-            else:
-                script.prompt_set_text.assert_not_called()
-            chooser.destroy.assert_called_once()
-            self.assertFalse(host.dialog_open)
-        for request in ("SHP_OPEN_BATCH_FOLDER_V1", "SHP_OPEN_BATCH_IMAGES_V1"):
-            chooser.reset_mock()
-            gtk.FileChooserDialog.reset_mock()
-            chooser.run.return_value = 1
-            chooser.get_filenames.return_value = ["/chosen/a.jpg", "/chosen/b.png"]
-            script = Mock()
-            script.get_dialog_type.return_value = 1
-            script.get_message.return_value = request
-            self.assertTrue(namespace["script_dialog"](host, view, script))
-            if request == "SHP_OPEN_BATCH_FOLDER_V1":
-                self.assertEqual(gtk.FileChooserDialog.call_args.kwargs["action"], 2)
-                chooser.set_select_multiple.assert_not_called()
-                script.prompt_set_text.assert_called_once_with("/chosen/portrait.png")
-            else:
-                chooser.set_select_multiple.assert_called_once_with(True)
-                script.prompt_set_text.assert_called_once_with(json.dumps(["/chosen/a.jpg", "/chosen/b.png"]))
-            chooser.destroy.assert_called_once()
-            self.assertFalse(host.dialog_open)
-        mode = Mock()
-        gtk.MessageDialog = Mock(return_value=mode)
-        gtk.MessageType = SimpleNamespace(QUESTION=1)
-        for response in (0, 1, 2):
-            mode.reset_mock()
-            chooser.reset_mock()
-            mode.run.return_value = response
-            chooser.run.return_value = 1
-            script = Mock()
-            script.get_dialog_type.return_value = 1
-            script.get_message.return_value = "SHP_OPEN_BATCH_SOURCE_V1"
-            self.assertTrue(namespace["script_dialog"](host, view, script))
-            mode.destroy.assert_called_once()
-            if response == 0:
-                chooser.run.assert_not_called()
-                script.prompt_set_text.assert_not_called()
-            else:
-                expected = {"folder": "/chosen/portrait.png"} if response == 1 else {"paths": ["/chosen/a.jpg", "/chosen/b.png"]}
-                script.prompt_set_text.assert_called_once_with(json.dumps(expected))
-                chooser.destroy.assert_called_once()
-            self.assertFalse(host.dialog_open)
-        self.assertIn("WebKit2.UserContentInjectedFrames.ALL_FRAMES", source.read_text())
-        self.assertIn("location.origin ===", source.read_text())

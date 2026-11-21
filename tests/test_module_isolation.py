@@ -1,11 +1,9 @@
 """Intentional module stops, restarts and startup preferences; no processes or external services are used."""
 
 import io
-import ast
 import json
 import tempfile
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -119,84 +117,6 @@ class ModuleIsolationTests(unittest.TestCase):
             with self.assertRaises(LaunchError):
                 manager.start()
         self.assertFalse(manager.config["startup"]["skin"])
-
-    def test_native_notifications_are_allocated_above_webview_not_overlaid(self):
-        source = Path(S.__file__).parent / "desktop/controller.py"
-        tree = ast.parse(source.read_text())
-        desktop = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Desktop")
-        window = next(node for node in desktop.body if isinstance(node, ast.FunctionDef) and node.name == "create_window")
-        code = ast.unparse(window)
-        self.assertNotIn("Gtk.Overlay", code)
-        self.assertNotIn("add_overlay", code)
-        self.assertIn("layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)", code)
-        self.assertIn("layout.pack_start(self.notice_frame, False, False, 0)", code)
-        self.assertIn("layout.pack_start(self.view, True, True, 0)", code)
-        self.assertLess(code.index("layout.pack_start(self.notice_frame"), code.index("layout.pack_start(self.view"))
-        methods = [node for node in desktop.body if isinstance(node, ast.FunctionDef)
-                   and node.name in ("message", "render_modules")]
-        namespace = {"GLib": Mock(SOURCE_REMOVE=False), "sys": __import__("sys"), "time": time}
-        exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
-        host = SimpleNamespace(message_bar=Mock(), notice_frame=Mock(), reload_available=False,
-            notice_key=None, cancel_notice_timer=Mock(), expire_notice=Mock(), notice_generation=0,
-            quitting=False, module_items={"skin": Mock()}, modules={"skin": {"phase": "stopped", "startup_enabled": False}},
-            control_pending=False, pending_module=None, dialog_open=False,
-            module_actions={"skin": {"startup": Mock(), "start": Mock(), "stop": Mock(), "restart": Mock()}})
-        for text in ("Skin Tools stopped.", "Skin Tools ready.", "Skin Tools error"):
-            namespace["message"](host, text)
-            host.notice_frame.set_visible.assert_called_with(True)
-        namespace["render_modules"](host)
-        host.module_actions["skin"]["startup"].set_active.assert_called_with(False)
-        host.module_actions["skin"]["start"].set_sensitive.assert_called_with(True)
-
-    def test_notice_timers_replace_safely_preserve_recovery_and_cancel_on_destroy(self):
-        source = Path(S.__file__).parent / "desktop/controller.py"
-        desktop = next(node for node in ast.parse(source.read_text()).body
-                       if isinstance(node, ast.ClassDef) and node.name == "Desktop")
-        wanted = ("message", "cancel_notice_timer", "expire_notice", "destroy_after_quit")
-        methods = [node for node in desktop.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
-        glib = Mock(SOURCE_REMOVE=False)
-        glib.timeout_add.side_effect = [11, 12, 13, 14]
-        namespace = {"GLib": glib, "time": time, "sys": __import__("sys")}
-        exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
-        host = SimpleNamespace(message_bar=Mock(), notice_frame=Mock(), reload_available=False,
-            notice_key=None, notice_timer=None, notice_generation=0, quitting=False,
-            indicator=None, window=Mock(), release=Mock(), quit=Mock())
-        for name in wanted:
-            setattr(host, name, lambda *args, _name=name, **kwargs: namespace[_name](host, *args, **kwargs))
-        with patch("sys.stderr", new_callable=io.StringIO) as log:
-            host.message("Crop stopped.")
-            generation = host.notice_generation
-            glib.timeout_add.assert_called_with(1000, host.expire_notice, generation)
-            host.message("Crop error")
-            glib.source_remove.assert_called_with(11)
-            host.message_bar.reset_mock()
-            host.expire_notice(generation)
-            host.message_bar.set_text.assert_not_called()
-            host.expire_notice(host.notice_generation)
-            host.message_bar.set_text.assert_called_once_with("")
-            host.notice_frame.set_visible.assert_called_with(False)
-            self.assertIsNone(host.notice_timer)
-            count = glib.timeout_add.call_count
-            host.message("Crop error")
-            self.assertEqual(glib.timeout_add.call_count, count, "Do not repeatedly flash the same monitor notice")
-            self.assertRegex(log.getvalue(), r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d.*Crop error")
-            host.reload_available = True
-            host.message("Reload UI required")
-            self.assertIsNone(host.notice_timer)
-            host.notice_frame.set_visible.assert_called_with(True)
-            host.reload_available = False
-            host.message("Shutdown failed; retry", persistent=True)
-            self.assertIsNone(host.notice_timer)
-            host.message("ordinary info")
-            generation = host.notice_generation
-            host.destroy_after_quit()
-            glib.source_remove.assert_called_with(13)
-            host.message_bar.reset_mock()
-            host.expire_notice(generation)
-            host.message_bar.set_text.assert_not_called()
-            host.window.destroy.assert_called_once()
-        shutdown = next(node for node in desktop.body if isinstance(node, ast.FunctionDef) and node.name == "do_shutdown")
-        self.assertIn("self.cancel_notice_timer()", ast.unparse(shutdown))
 
     def test_stop_keeps_supervisor_alive_then_start_recovers(self):
         manager = self.manager()

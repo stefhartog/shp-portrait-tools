@@ -4,7 +4,7 @@ The window first shows the supervisor's status page (`base`), which moves on to 
 directly by the worker (`page`) once it is running; after a stop or restart the host shows the status page
 again.
 
-A platform host (today `windows_controller.Host`; later the Linux Qt host) subclasses `DesktopHost` and
+A platform host (`windows_controller.Host` on Windows, `qt_controller.Host` on Linux) subclasses `DesktopHost` and
 supplies only what differs per platform: native dialogs and file pickers, webview engine hooks, the tray
 widget, bringing the window to the front, single-instance handling, starting the GUI loop, and the
 process-identity helpers used to wait for a drained supervisor before a restart. The loopback shell

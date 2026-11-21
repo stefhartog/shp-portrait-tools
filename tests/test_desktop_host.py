@@ -189,7 +189,7 @@ const window = {get top(){ return top; }, prompt: request => (prompts.push(reque
   dialogChoice = 'cancel'; assert.equal(await chooseBatchSource(), null);
   assert.deepEqual(calls, ['image', 'folder', 'images']);
   assert.deepEqual(prompts, []);
-  top = {};  // a host without the bridge (Linux GTK) answers the old prompts
+  top = {};  // a host without the bridge answers the old prompts
   assert.equal(await chooseImage(), '/p.png');
   assert.deepEqual(await chooseBatchSource(), {folder:'/x'});
   assert.deepEqual(prompts, ['SHP_OPEN_IMAGE_V1', 'SHP_OPEN_BATCH_SOURCE_V1']);

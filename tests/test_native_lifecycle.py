@@ -1,6 +1,5 @@
 """Deterministic native quit/restart tests: no GUI, real signals or user services."""
 
-import ast
 import io
 import json
 from pathlib import Path
@@ -278,60 +277,3 @@ class RestartTests(unittest.TestCase):
         self.assertFalse(server.native_cleaned)
         server.shutdown.assert_not_called()
 
-    def test_native_controller_pending_failure_and_restart_handoff(self):
-        source = Path(S.__file__).parent / "desktop/controller.py"
-        tree = ast.parse(source.read_text())
-        desktop = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Desktop")
-        methods = [node for node in desktop.body if isinstance(node, ast.FunctionDef)
-                   and node.name in ("native_shutdown", "request_quit")]
-        glib = Mock()
-        namespace = {"GLib": glib, "Path": Path, "os": SimpleNamespace(getpid=lambda: 123),
-                     "subprocess": Mock(), "threading": Mock()}
-        exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
-        host = SimpleNamespace(quitting=False, dialog_open=True, control_pending=False, message=Mock())
-        namespace["request_quit"](host)
-        self.assertIn("pending", host.message.call_args.args[0])
-        connection = SimpleNamespace(lease_lock=threading.Lock(), stopped=threading.Event(),
-                                     client="desktop-test", request=Mock())
-        connection.request.return_value = {"draining": True, "pid": 555, "process_identity": [555, 77]}
-        host = SimpleNamespace(pending_action="restart", connection=connection, quit_signature={},
-            restart_command=["python", "-m", "shp_portrait_tools.launcher"], data=Path("/fake"),
-            destroy_after_quit=Mock(), shutdown_failed=Mock(), wait_for_shutdown=Mock(), message=Mock())
-        with patch.object(Path, "read_text", return_value="123 (name) "+" ".join(["0"]*19+["88"])), \
-                patch.object(Path, "open", return_value=io.BytesIO()):
-            namespace["native_shutdown"](host)
-        command = namespace["subprocess"].Popen.call_args.args[0]
-        self.assertEqual(command[-6:], ["--wait-for-exit", "555", "77", "--wait-for-exit", "123", "88"])
-        self.assertTrue(connection.stopped.is_set())
-        glib.idle_add.assert_called_with(host.destroy_after_quit)
-        connection.request.side_effect = ValueError("other windows")
-        namespace["native_shutdown"](host)
-        self.assertEqual(glib.idle_add.call_args.args[0], host.shutdown_failed)
-
-    def test_controller_wait_surfaces_cleanup_failure_and_closes_pid_descriptor(self):
-        source = Path(S.__file__).parent / "desktop/controller.py"
-        desktop = next(node for node in ast.parse(source.read_text()).body
-                       if isinstance(node, ast.ClassDef) and node.name == "Desktop")
-        method = next(node for node in desktop.body if isinstance(node, ast.FunctionDef)
-                      and node.name == "wait_for_shutdown")
-        os = SimpleNamespace(pidfd_open=Mock(return_value=10), close=Mock())
-        namespace = {"Path": Path, "os": os, "select": Mock(), "time": Mock()}
-        namespace["select"].select.return_value = ([], [], [])
-        namespace["time"].monotonic.return_value = 0
-        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
-        host = SimpleNamespace(connection=Mock())
-        host.connection.request.return_value = {"shutdown_error": "identity changed"}
-        with patch.object(Path, "read_text", return_value="123 (name) "+" ".join(["0"]*19+["88"])):
-            with self.assertRaisesRegex(ValueError, "identity changed"):
-                namespace["wait_for_shutdown"](host, {"pid": 123, "process_identity": [123, 88]})
-        os.close.assert_called_once_with(10)
-        os.close.reset_mock()
-        with patch.object(Path, "read_text", return_value="123 (name) "+" ".join(["0"]*19+["99"])):
-            namespace["wait_for_shutdown"](host, {"pid": 123, "process_identity": [123, 88]})
-        os.close.assert_called_once_with(10)
-        self.assertEqual(host.connection.request.call_count, 1, "Must not poll a reused PID's server")
-        host.connection.request.return_value = {}
-        namespace["time"].monotonic.side_effect = [0, 91]
-        with patch.object(Path, "read_text", return_value="123 (name) "+" ".join(["0"]*19+["88"])):
-            with self.assertRaisesRegex(ValueError, "no duplicate restart"):
-                namespace["wait_for_shutdown"](host, {"pid": 123, "process_identity": [123, 88]})

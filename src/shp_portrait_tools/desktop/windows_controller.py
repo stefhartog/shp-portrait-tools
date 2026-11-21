@@ -1,7 +1,7 @@
 """Windows desktop host: a pywebview (WebView2) window and a pystray tray icon for SHP Portrait Tools.
 
 Run with the project's Python (`python -m shp_portrait_tools.desktop.windows_controller`, normally
-started by the launcher). It speaks the same loopback shell protocol as the GTK controller; the
+started by the launcher). It speaks the same loopback shell protocol as the Linux Qt host; the
 supervisor, not this process, owns and stops the services. Shared behaviour (geometry, status, tray
 model, module controls, quit/restart flow) is in `host.DesktopHost`; this module adds only the Win32
 dialogs, WebView2 hooks, pystray widget and Windows process helpers.

@@ -1696,8 +1696,8 @@ function renderBatch(batch) {
   }));
 }
 // Native pickers. The desktop host exposes them through pywebview's JS API on the top window, which
-// shares this page's origin. A host without that bridge (the Linux GTK controller) still answers the
-// SHP_OPEN_* prompts, so those remain the fallback.
+// shares this page's origin. Without that bridge the page falls back to the old SHP_OPEN_* prompts,
+// which no current host answers (the GTK controller that did was removed).
 function desktopPicker() {
   try {
     const api = window.top && window.top.pywebview && window.top.pywebview.api;
