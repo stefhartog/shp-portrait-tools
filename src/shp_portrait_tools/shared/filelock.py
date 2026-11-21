@@ -26,7 +26,15 @@ else:
     import fcntl
 
     def _acquire(handle, timeout):
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for another Tools launcher to finish") from None
+                time.sleep(0.05)
 
     def _release(handle):
         fcntl.flock(handle, fcntl.LOCK_UN)
