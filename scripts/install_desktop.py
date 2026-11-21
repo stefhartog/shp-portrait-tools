@@ -59,7 +59,6 @@ def main():
                         help="update installed shortcut display names only; leave launcher/config/icons unchanged")
     parser.add_argument("--exiftool", type=Path, help="optional existing Perl ExifTool executable (not copied)")
     parser.add_argument("--desktop-dir", type=Path, help="override xdg-user-dir DESKTOP")
-    parser.add_argument("--comfy-dir", type=Path, help="existing ComfyUI checkout for Tools-owned instance on port 18788")
     args = parser.parse_args()
     if args.update_display_only:
         home = Path.home()
@@ -101,17 +100,9 @@ def main():
         desktop = Path(result.stdout.strip())
     if not desktop.is_absolute() or desktop == home:
         parser.error("A distinct absolute desktop folder is required (use --desktop-dir)")
-    config = {"models": str(models), "ports": {"crop": 18768, "dnb": 18765}}
+    config = {"models": str(models), "ports": {"dnb": 18765}}
     if args.exiftool:
         config["exiftool"] = str(args.exiftool.resolve())
-    if args.comfy_dir:
-        from shp_photocraft_tools.comfy import runtime
-        directory = args.comfy_dir.expanduser().resolve()
-        try:
-            runtime(directory)
-        except ValueError as error:
-            parser.error(str(error))
-        config["comfy"] = {"directory": str(directory), "port": 18788}
     wrapper = ("#!/bin/sh\n# Managed by SHP PhotoCraft Tools scripts/install_desktop.py\n"
                f"exec {shlex.quote(str(python))} -m shp_photocraft_tools.launcher "
                f"--config {shlex.quote(str(config_path))} \"$@\"\n")

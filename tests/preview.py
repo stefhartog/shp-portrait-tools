@@ -1,7 +1,7 @@
-"""Safe synthetic browser fixture. No PhotoCraft, ComfyUI, model downloads or GPU inference.
+"""Safe synthetic Skin Tools browser fixture. No PhotoCraft, model downloads or GPU inference.
 
 Run with the new environment: uv run python tests/preview.py
-Uses temporary data, a stub ComfyUI, and ephemeral ports; prints the two URLs as JSON.
+Uses temporary data and an ephemeral port; prints the URL as JSON.
 """
 
 import json
@@ -24,11 +24,9 @@ def main():
     signal.signal(signal.SIGTERM, interrupt)
     with tempfile.TemporaryDirectory(prefix="shp-photocraft-preview-") as tmp:
         root = Path(tmp)
-        os.environ.update(SHPC_DATA=tmp + "/crop", DNB_DATA=tmp + "/dnb", DNB_MODELS=tmp + "/models",
+        os.environ.update(DNB_DATA=tmp + "/dnb", DNB_MODELS=tmp + "/models",
                           SHP_PC_PORT="1", SHP_PC_TOKEN_FILE=tmp + "/token", SHP_PC_EXCHANGE=tmp + "/exchange",
                           SHP_PC_READ_ROOT=tmp)
-        from test_expand import StubComfy
-        from shp_photocraft_tools.modules.crop import server as C
         from shp_photocraft_tools.modules.dnb import ui_server as D
 
         y, x = np.mgrid[:600, :800]
@@ -46,18 +44,13 @@ def main():
                 shutil.copyfile(source, target)
                 return target, doc
 
-            def send_expand(self, layer, document, margins):
-                return {"layer": 9, "document": document["name"], "width": layer.shape[1], "height": layer.shape[0]}
-
             def send(self, layer, mask, document, *, source_icc=None):
                 return {"layer": 9, "document": document["name"]}
 
             def status(self):
                 return {"connected": True, "doc": doc, "headless": True}
 
-        C.BRIDGE["b"] = FakeBridge()
         D.BRIDGE["b"] = FakeBridge()
-        C.DIRS.append(str(root))
         D.DIRS.append(str(root))
         D.M.pick_target = lambda *a: {"S": 180, "conf": "fixture", "desc": "Synthetic test image",
                                      "centre": (400, 300), "face_info": None, "seen": None}
@@ -69,14 +62,11 @@ def main():
             return {"A": mask, "skin": mask, "features": np.zeros_like(mask), "colour": np.ones_like(mask)}
 
         D.K.skin_mask = fake_mask
-        StubComfy.state = {}
-        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in (C.Handler, D.Handler, StubComfy)]
-        C.X.COMFY_URL = f"http://127.0.0.1:{servers[2].server_port}"
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), D.Handler)]
         threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in servers]
         for thread in threads:
             thread.start()
-        print(json.dumps({"crop": f"http://127.0.0.1:{servers[0].server_port}",
-                          "dnb": f"http://127.0.0.1:{servers[1].server_port}", "data": tmp}), flush=True)
+        print(json.dumps({"dnb": f"http://127.0.0.1:{servers[0].server_port}", "data": tmp}), flush=True)
         try:
             threading.Event().wait()
         except KeyboardInterrupt:

@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from shp_photocraft_tools.modules.crop import server as crop
 from shp_photocraft_tools.modules.dnb import ui_server as skin
 from test_dnb import PARAMS
 
@@ -39,14 +38,11 @@ class PresetDialogTests(unittest.TestCase):
             root = Path(folder)
             for module, files in (
                 (skin, {"PRESETS": root / "skin.json", "GLOBAL_SETTINGS": root / "global.json"}),
-                (crop, {"SETTINGS_FILE": root / "settings.json", "PRESETS_FILE": root / "crop.json"}),
             ):
                 for key, path in files.items():
                     stack.enter_context(patch.object(module, key, path))
             for module, mode, path in (
                 (skin, "skin", skin.PRESETS),
-                (crop, "expand", crop.PRESETS_FILE),
-                (crop, "patch", root / "patch-presets.json"),
             ):
                 with self.subTest(mode=mode), ExitStack() as server_stack:
                     server = server_stack.enter_context(ThreadingHTTPServer(("127.0.0.1", 0), module.Handler))

@@ -1,5 +1,9 @@
 # SHP Portrait Tools
 
+> **AI Fill has moved.** Crop & Expand and Patch Fill are now the separate
+> [SHP AI Fill](https://github.com/stefhartog/shp-ai-fill) web app. AI Fill and ComfyUI
+> sections below describe the older combined app.
+
 **Portrait retouching with a shared sense of scale, selection and control.**
 
 ## Skin Tools

@@ -101,32 +101,17 @@ def work_signature(status):
 def busy_modules(status):
     busy = [name for name, state in status["modules"].items()
             if state.get("busy") or state.get("phase") in ("starting", "stopping", "unavailable")]
-    comfy = status.get("external", {}).get("comfy", {})
-    if comfy.get("phase") in ("running", "unavailable") and comfy.get("busy"):
-        busy.append("Tools ComfyUI")
     return busy
 
 def external_lines(external):
-    crop, dnb = (external.get(key) for key in ("photocraft_crop", "photocraft_dnb"))
-    if not crop or not dnb:
+    dnb = external.get("photocraft_dnb")
+    if not dnb:
         photocraft = "PhotoCraft: Checking"
-    elif crop["address"] != dnb["address"]:
-        photocraft = "PhotoCraft: configuration mismatch (align SHPC_PC_PORT / DNB_PC_PORT with SHP_PC_PORT)"
     else:
-        photocraft = "PhotoCraft: " + ("Reachable" if crop["reachable"] and dnb["reachable"] else "Unreachable") + " (TCP)"
-        errors = list(dict.fromkeys(state["error"] for state in (crop, dnb) if state.get("error")))
-        if errors:
-            photocraft += " - " + "; ".join(errors)
-    comfy = external.get("comfy")
-    comfy_line = "ComfyUI: Checking" if not comfy else (
-        "ComfyUI: " + ("Reachable" if comfy["reachable"] else "Unreachable") + " (TCP)"
-        + (" - " + comfy["error"] if comfy.get("error") else ""))
-    if comfy and "phase" in comfy:
-        phase = "busy" if comfy.get("busy") and comfy["phase"] == "running" else comfy["phase"]
-        comfy_line = f"ComfyUI (Tools): {phase.capitalize()}"
-        if comfy.get("error"):
-            comfy_line += " - " + comfy["error"]
-    return photocraft, comfy_line
+        photocraft = "PhotoCraft: " + ("Reachable" if dnb["reachable"] else "Unreachable") + " (TCP)"
+        if dnb.get("error"):
+            photocraft += " - " + dnb["error"]
+    return (photocraft,)
 
 
 class Desktop(Gtk.Application):
@@ -294,7 +279,7 @@ class Desktop(Gtk.Application):
             item.set_sensitive(False)
             menu.append(item)
             self.external_items.append(item)
-        for name, label in (("crop", "AI Fill"), ("dnb", "Skin Tools")):
+        for name, label in (("dnb", "Skin Tools"),):
             item = Gtk.MenuItem(label=f"{label} - Connecting")
             submenu = Gtk.Menu()
             self.module_items[name] = item
@@ -398,7 +383,7 @@ class Desktop(Gtk.Application):
                 GLib.idle_add(self.update_status, summary, status, epoch)
                 states = status.get("modules", {})
                 if not any(state.get("busy") for state in states.values()):
-                    for name in ("dnb", "crop"):
+                    for name in ("dnb",):
                         if states.get(name, {}).get("phase") == "running":
                             inbox = self.connection.request(f"/{name}/api/watch-folder")
                             inbox["service"] = name
@@ -424,8 +409,7 @@ class Desktop(Gtk.Application):
             return GLib.SOURCE_REMOVE
         self.status_text = summary
         self.modules = status["modules"] if status else {}
-        lines = external_lines(status.get("external", {})) if status else (
-            "PhotoCraft: Status unavailable", "ComfyUI: Status unavailable")
+        lines = external_lines(status.get("external", {})) if status else ("PhotoCraft: Status unavailable",)
         for item, text in zip(self.external_items, lines):
             item.set_label(text)
         self.render_modules()
@@ -439,7 +423,7 @@ class Desktop(Gtk.Application):
         for name, item in self.module_items.items():
             state = self.modules.get(name, {})
             phase = state.get("phase", "disconnected")
-            label = "AI Fill" if name == "crop" else "Skin Tools"
+            label = "Skin Tools"
             status = "busy" if phase == "running" and state.get("busy") else phase
             if (self.control_pending and self.pending_module and self.pending_module[0] == name
                     and self.pending_module[1] != "startup"):
@@ -490,7 +474,7 @@ class Desktop(Gtk.Application):
     def module_result(self, name, action, body, accepted, result):
         if self.quitting:
             return GLib.SOURCE_REMOVE
-        label = "AI Fill" if name == "crop" else "Skin Tools"
+        label = "Skin Tools"
         if not accepted and result.get("code") == "confirmation" and not body["confirm"]:
             self.dialog_open = True
             self.show()

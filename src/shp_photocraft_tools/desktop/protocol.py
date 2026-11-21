@@ -86,30 +86,15 @@ def work_signature(status):
 def busy_modules(status):
     busy = [name for name, state in status["modules"].items()
             if state.get("busy") or state.get("phase") in ("starting", "stopping", "unavailable")]
-    comfy = status.get("external", {}).get("comfy", {})
-    if comfy.get("phase") in ("running", "unavailable") and comfy.get("busy"):
-        busy.append("Tools ComfyUI")
     return busy
 
 
 def external_lines(external):
-    crop, dnb = (external.get(key) for key in ("photocraft_crop", "photocraft_dnb"))
-    if not crop or not dnb:
+    dnb = external.get("photocraft_dnb")
+    if not dnb:
         photocraft = "PhotoCraft: Checking"
-    elif crop["address"] != dnb["address"]:
-        photocraft = "PhotoCraft: configuration mismatch (align SHPC_PC_PORT / DNB_PC_PORT with SHP_PC_PORT)"
     else:
-        photocraft = "PhotoCraft: " + ("Reachable" if crop["reachable"] and dnb["reachable"] else "Unreachable") + " (TCP)"
-        errors = list(dict.fromkeys(state["error"] for state in (crop, dnb) if state.get("error")))
-        if errors:
-            photocraft += " - " + "; ".join(errors)
-    comfy = external.get("comfy")
-    comfy_line = "ComfyUI: Checking" if not comfy else (
-        "ComfyUI: " + ("Reachable" if comfy["reachable"] else "Unreachable") + " (TCP)"
-        + (" - " + comfy["error"] if comfy.get("error") else ""))
-    if comfy and "phase" in comfy:
-        phase = "busy" if comfy.get("busy") and comfy["phase"] == "running" else comfy["phase"]
-        comfy_line = f"ComfyUI (Tools): {phase.capitalize()}"
-        if comfy.get("error"):
-            comfy_line += " - " + comfy["error"]
-    return photocraft, comfy_line
+        photocraft = "PhotoCraft: " + ("Reachable" if dnb["reachable"] else "Unreachable") + " (TCP)"
+        if dnb.get("error"):
+            photocraft += " - " + dnb["error"]
+    return (photocraft,)

@@ -6,7 +6,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from shp_photocraft_tools.modules.crop.server import Handler
+from shp_photocraft_tools.modules.dnb.ui_server import Handler
 from shp_photocraft_tools.shared.lifecycle import BrowserLifetime, BrowserServer
 
 

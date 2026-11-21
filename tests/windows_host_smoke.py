@@ -51,8 +51,8 @@ def main():
     inbox.mkdir()
     os.environ.update(SHP_TOOLS_DATA=str(root / "data"), DNB_WATCH_DIRECTORY=str(inbox))
     config = root / "launcher.json"
-    config.write_text(json.dumps({"models": args.models, "ports": {"crop": 18768, "dnb": 18765}, "shell_port": 18760,
-                                  "startup": {"crop": False, "dnb": True}}))
+    config.write_text(json.dumps({"models": args.models, "ports": {"dnb": 18765}, "shell_port": 18760,
+                                  "startup": {"dnb": True}}))
     from shp_photocraft_tools import launcher
     from shp_photocraft_tools.desktop import windows_controller as wc
 

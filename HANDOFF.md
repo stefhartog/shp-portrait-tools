@@ -10,6 +10,20 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## AI Fill split (2026-11-21)
+
+AI Fill (`modules/crop`, Crop & Expand and Patch Fill), `comfy.py` (Tools-managed ComfyUI) and
+the `seam-color-correct` ComfyUI node moved to the separate **shp-ai-fill** repository as a
+standalone web app (`shp-photocraft-crop`). Its internal IDs, `SHPC_*` variables, ports and data
+folder (`shp-photocraft-tools/crop`) are unchanged there, so existing AI Fill data keeps working.
+
+Here, `crop` is gone from the launcher, supervisor, shell tabs, desktop tray menus and
+`install_desktop.py` (no `--comfy-dir`). Existing `launcher.json` files that still list `crop`
+ports/startup or a `comfy` block load normally; those entries are ignored. The tray shows only
+PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the sections below
+describe the pre-split app and are kept as history. The editor handoff still resolves its
+PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
+
 ## Scope, ownership and activation
 
 The public monorepo is [`stefhartog/shp-portrait-tools`](https://github.com/stefhartog/shp-portrait-tools)

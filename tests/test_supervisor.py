@@ -22,13 +22,13 @@ from shp_photocraft_tools.shared.photocraft.bridge import detect_config
 
 
 class GateTests(unittest.TestCase):
-    def test_saved_photocraft_config_reaches_both_children_and_status(self):
+    def test_saved_photocraft_config_reaches_child_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pc = {"port": 17878, "token_file": str(root / "private" / "control.token"),
                   "exchange": str(root / "private" / "exchange"), "read_root": str(root / "private" / "exchange"),
                   "executable": str(root / "photocraft.exe"), "editor_config": str(root / "private" / "editor")}
-            config = {"photocraft": pc, "models": str(root), "ports": {"crop": 18001, "dnb": 18002}}
+            config = {"photocraft": pc, "models": str(root), "ports": {"dnb": 18002}}
             clean_env = {key: value for key, value in os.environ.items()
                          if not key.startswith(("SHP_PC_", "DNB_PC_", "SHPC_PC_", "PHOTOCRAFT_"))}
             children = []
@@ -43,9 +43,9 @@ class GateTests(unittest.TestCase):
                  patch.object(Modules, "checked"), \
                  patch("shp_photocraft_tools.supervisor.socket.create_connection") as connect:
                 modules = Modules(config, root / "data", root / "logs", "test")
-                modules.start("crop")
                 modules.start("dnb")
-                for child, prefix, module in zip(children, ("SHPC", "DNB"), ("crop", "dnb")):
+                self.assertEqual(len(children), 1)
+                for child, prefix, module in zip(children, ("DNB",), ("dnb",)):
                     actual = detect_config(prefix, module, child)
                     self.assertEqual(actual["port"], pc["port"])
                     for key in ("token_file", "exchange", "read_root"):
@@ -54,37 +54,33 @@ class GateTests(unittest.TestCase):
                     self.assertEqual(child["PHOTOCRAFT_CONFIG_DIR"], pc["editor_config"])
                 status = external_status(environ=children[0])
                 self.assertEqual(status["photocraft_dnb"]["address"], "127.0.0.1:17878")
-                self.assertEqual(status["photocraft_crop"]["address"], "127.0.0.1:17878")
-                self.assertEqual(connect.call_count, 2)
+                self.assertEqual(connect.call_count, 1)
 
     def test_explicit_photocraft_environment_overrides_saved_config(self):
         from shp_photocraft_tools.supervisor import photocraft_environment
         pc = dict(port=7878, token_file="/saved/token", exchange="/saved/exchange",
                   read_root="/saved/exchange", executable="/saved/photocraft", editor_config="/saved/editor")
         env = photocraft_environment({"photocraft": pc}, {"SHP_PC_PORT": "9000", "DNB_PC_PORT": "9001"})
-        self.assertEqual(detect_config("SHPC", "crop", env)["port"], 9000)
+        self.assertEqual(detect_config("DNB", "dnb", {k: v for k, v in env.items() if k != "DNB_PC_PORT"})["port"], 9000)
         self.assertEqual(detect_config("DNB", "dnb", env)["port"], 9001)
         self.assertEqual(env["SHP_PC_TOKEN_FILE"], pc["token_file"])
 
-    def test_shared_photocraft_endpoint_is_probed_once(self):
-        with patch.dict(os.environ, {"SHPC_PC_PORT": "7878", "DNB_PC_PORT": "7878",
-                                    "SHPC_COMFY": "http://127.0.0.1:8188"}):
+    def test_photocraft_endpoint_is_probed_once(self):
+        with patch.dict(os.environ, {"DNB_PC_PORT": "7878"}):
             with patch("shp_photocraft_tools.supervisor.socket.create_connection") as connect:
                 status = external_status()
-            self.assertEqual(connect.call_count, 2)
-            self.assertEqual(status["photocraft_crop"], status["photocraft_dnb"])
+            self.assertEqual(connect.call_count, 1)
+            self.assertEqual(status, {"photocraft_dnb": {"reachable": True, "address": "127.0.0.1:7878"}})
             with patch("shp_photocraft_tools.supervisor.socket.create_connection", side_effect=OSError("offline")) as connect:
                 status = external_status()
-            self.assertEqual(connect.call_count, 2)
-            self.assertFalse(status["photocraft_crop"]["reachable"])
-            self.assertEqual(status["photocraft_crop"], status["photocraft_dnb"])
+            self.assertEqual(connect.call_count, 1)
+            self.assertFalse(status["photocraft_dnb"]["reachable"])
 
-    def test_bad_external_configuration_is_reported_without_losing_other_indicators(self):
-        with patch.dict(os.environ, {"SHPC_COMFY": "not-a-url", "SHPC_PC_PORT": "invalid", "DNB_PC_PORT": "1"}):
+    def test_bad_external_configuration_is_reported(self):
+        with patch.dict(os.environ, {"DNB_PC_PORT": "invalid"}):
             status = external_status()
-        self.assertIn("HTTP(S)", status["comfy"]["error"])
-        self.assertIn("error", status["photocraft_crop"])
-        self.assertEqual(status["photocraft_dnb"]["address"], "127.0.0.1:1")
+        self.assertFalse(status["photocraft_dnb"]["reachable"])
+        self.assertIn("error", status["photocraft_dnb"])
 
     def test_busy_loaded_confirmation_revision_and_atomic_stop(self):
         busy, loaded = [False], [True]
@@ -153,38 +149,36 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(b"SHP Portrait Tools", self.request("/"))
         for path in ("/static/shell.js", "/static/shell.css", "/static/lifecycle.js", "/static/shp-ui.css"):
             self.assertTrue(self.request(path))
-        for name in ("crop", "dnb"):
+        for name in ("dnb",):
             page = self.request(f"/{name}/")
             self.assertIn(b'href="static/shp-ui.css"', page)
             self.assertEqual(self.request(f"/{name}/api/health")["module"], name)
             self.assertEqual(self.request(f"/{name}/static/shp-ui.css"), self.request("/static/shp-ui.css"))
             self.assert_error(403, f"/{name}/api/owner/status", {})
-        self.request("/crop/api/fetch", {})
-        self.assertTrue(self.request("/crop/img/xorig?v=1").startswith(b"\xff\xd8"))
-        for path in ("/crop/static/../pyproject.toml", "/crop/%61pi/owner/status"):
+        self.assert_error(404, "/crop/")
+        for path in ("/dnb/static/../pyproject.toml", "/dnb/%61pi/owner/status"):
             self.assert_error(403, path)
         self.assert_error(404, "/http://example.test/")
 
-    def test_stop_restart_loaded_guard_and_other_module_untouched(self):
-        self.request("/crop/api/fetch", {})
+    def test_stop_restart_loaded_guard(self):
+        self.request("/dnb/api/pc/fetch", {})
         before = self.wait_ready()
-        error = self.assert_error(409, "/api/modules/crop/restart", {"instance": before["crop"]["instance"]})
+        error = self.assert_error(409, "/api/modules/dnb/restart", {"instance": before["dnb"]["instance"]})
         self.assertEqual(error["code"], "confirmation")
-        self.assertEqual(self.wait_ready()["crop"]["instance"], before["crop"]["instance"])
+        self.assertEqual(self.wait_ready()["dnb"]["instance"], before["dnb"]["instance"])
         # Another shell changes work while the first confirmation is open.
-        self.request("/crop/api/fetch", {})
-        changed = self.assert_error(409, "/api/modules/crop/restart",
-                                    {"instance": before["crop"]["instance"], "confirm": True,
+        self.request("/dnb/api/pc/fetch", {})
+        changed = self.assert_error(409, "/api/modules/dnb/restart",
+                                    {"instance": before["dnb"]["instance"], "confirm": True,
                                      "revision": error["revision"]})
         self.assertEqual(changed["code"], "changed")
-        restarted = self.control("crop", "restart", confirm=True, revision=changed["revision"])
-        self.assertNotEqual(restarted["instance"], before["crop"]["instance"])
-        self.assertEqual(self.wait_ready()["dnb"]["instance"], before["dnb"]["instance"])
+        restarted = self.control("dnb", "restart", confirm=True, revision=changed["revision"])
+        self.assertNotEqual(restarted["instance"], before["dnb"]["instance"])
         self.assertFalse(restarted["loaded"])
-        self.assertEqual(self.control("crop", "stop")["phase"], "stopped")
-        error = self.assert_error(409, "/crop/")
+        self.assertEqual(self.control("dnb", "stop")["phase"], "stopped")
+        error = self.assert_error(409, "/dnb/")
         self.assertEqual(error["code"], "module_stopped")
-        self.assertEqual(self.control("crop", "start")["phase"], "running")
+        self.assertEqual(self.control("dnb", "start")["phase"], "running")
 
     def test_hue_center_real_proxy_and_direct_child_route(self):
         loaded=self.request("/dnb/api/pc/fetch",{})
@@ -222,22 +216,18 @@ class SupervisorTests(unittest.TestCase):
                                       {"instance": self.manager.modules["dnb"].instance, "confirm": True})
             self.assertEqual(result["code"], "busy")
             self.assertTrue(work.result()["done"])
-        self.request("/crop/api/test/job", {"seconds": 1})
-        result = self.assert_error(409, "/api/modules/crop/restart",
-                                  {"instance": self.manager.modules["crop"].instance, "confirm": True})
-        self.assertEqual(result["code"], "busy")
 
     def test_identity_change_and_missing_owner_capability_refused(self):
-        module = self.manager.modules["crop"]
+        module = self.manager.modules["dnb"]
         instance = module.instance
         module.instance = "not-the-owned-instance"
         try:
             with self.assertRaisesRegex(LaunchError, "ownership changed"):
-                self.manager.stop("crop", True)
+                self.manager.stop("dnb", True)
             self.assertIsNone(module.process.poll())
         finally:
             module.instance = instance
-        connection = http.client.HTTPConnection("127.0.0.1", self.manager.config["ports"]["crop"])
+        connection = http.client.HTTPConnection("127.0.0.1", self.manager.config["ports"]["dnb"])
         try:
             connection.request("POST", "/api/owner/stop", "{}")
             response = connection.getresponse()
@@ -249,12 +239,13 @@ class SupervisorTests(unittest.TestCase):
     def test_origin_host_payload_and_fixed_action_checks(self):
         for headers in ({"Origin": "https://evil.test"}, {"Origin": "null"},
                         {"Content-Type": "text/plain"}, {"X-SHP-Control": "0"}):
-            self.assert_error(403, "/api/modules/crop/stop", {}, headers)
+            self.assert_error(403, "/api/modules/dnb/stop", {}, headers)
         self.assert_error(403, "/api/status", headers={"Host": "rebound.example.test"})
-        self.assert_error(400, "/api/modules/crop/exec", {})
-        self.assert_error(400, "/api/modules/crop/stop", {"confirm": "yes"})
-        self.assert_error(400, "/api/modules/crop/stop", {"revision": True})
-        self.assert_error(409, "/api/modules/crop/stop", {"instance": "stale-window"})
+        self.assert_error(400, "/api/modules/dnb/exec", {})
+        self.assert_error(400, "/api/modules/crop/stop", {})
+        self.assert_error(400, "/api/modules/dnb/stop", {"confirm": "yes"})
+        self.assert_error(400, "/api/modules/dnb/stop", {"revision": True})
+        self.assert_error(409, "/api/modules/dnb/stop", {"instance": "stale-window"})
 
     def test_last_shell_refresh_multiwindow_and_busy_completion_shutdown(self):
         life = self.server.lifetime = BrowserLifetime(grace=.1, startup=.1, lease=90)
@@ -266,10 +257,15 @@ class SupervisorTests(unittest.TestCase):
         life.close("second")
         life.touch("refreshed")
         self.assertFalse(life.should_stop(self.manager.busy))
-        self.request("/crop/api/test/job", {"seconds": 1.2})
-        life.close("refreshed")
-        time.sleep(.2)
-        self.assertFalse(life.should_stop(self.manager.busy))
+        with ThreadPoolExecutor() as pool:
+            work = pool.submit(self.request, "/dnb/api/test/work", {})
+            deadline = time.monotonic() + 2
+            while not self.manager.snapshot("dnb")["busy"] and time.monotonic() < deadline:
+                time.sleep(.02)
+            life.close("refreshed")
+            time.sleep(.2)
+            self.assertFalse(life.should_stop(self.manager.busy))
+            self.assertTrue(work.result()["done"])
         self.server.finished.wait(5)
         self.assertTrue(self.server.finished.is_set())
         self.manager.close()

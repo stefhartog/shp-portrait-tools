@@ -18,7 +18,7 @@ from shp_photocraft_tools import launcher, supervisor
 
 
 @contextlib.contextmanager
-def fixture(comfy=None):
+def fixture():
     with tempfile.TemporaryDirectory(prefix="shp-shell-preview-") as tmp:
         root = Path(tmp)
         y, x = np.mgrid[:600, :800]
@@ -29,21 +29,17 @@ def fixture(comfy=None):
         models.mkdir()
         for filename in launcher.MODEL_FILES:
             (models / filename).write_bytes(b"fixture only - never loaded")
-        sockets = [socket.socket() for _ in range(2)]
+        sockets = [socket.socket() for _ in launcher.MODULES]
         for sock in sockets:
             sock.bind(("127.0.0.1", 0))
         ports = {name: sock.getsockname()[1] for name, sock in zip(launcher.MODULES, sockets)}
         for sock in sockets:
             sock.close()
         config = {"models": str(models), "ports": ports, "shell_port": 0}
-        if comfy:
-            config["comfy"] = comfy
-        env = {"SHPC_DATA": str(root / "crop"), "DNB_DATA": str(root / "dnb"),
-               "APPDATA": str(root / "config"),
+        env = {"DNB_DATA": str(root / "dnb"), "APPDATA": str(root / "config"),
                "SHP_PC_PORT": "1", "SHP_PC_TOKEN_FILE": str(root / "token"),
                "SHP_PC_EXCHANGE": str(root / "exchange"), "SHP_PC_READ_ROOT": str(root),
-               "SHPC_COMFY": "http://127.0.0.1:1"}
-        env.update({f"{prefix}_PC_PORT": "1" for prefix in ("SHPC", "DNB")})
+               "DNB_PC_PORT": "1"}
         spawn = supervisor.subprocess.Popen
 
         def child(command, **kwargs):

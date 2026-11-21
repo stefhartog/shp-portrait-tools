@@ -20,7 +20,7 @@ from .icons import icon_image, write_icon
 from .protocol import (IMAGE_EXTENSIONS, OPEN_PROMPTS, Connection, busy_modules, external_lines, validate_url,
                        work_signature)
 
-MODULE_LABELS = {"crop": "AI Fill", "dnb": "Skin Tools"}
+MODULE_LABELS = {"dnb": "Skin Tools"}
 WEBVIEW2_CLIENT = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 MB_OK, MB_OKCANCEL, MB_YESNOCANCEL, MB_YESNO = 0, 1, 3, 4
 MB_ICONERROR, MB_ICONQUESTION, MB_ICONWARNING, MB_DEFBUTTON2, MB_SETFOREGROUND = 0x10, 0x20, 0x30, 0x100, 0x10000
@@ -356,8 +356,7 @@ class Host:
 
         menu = Menu(
             Item(lambda item: self.external_lines[0], None, enabled=False),
-            Item(lambda item: self.external_lines[1], None, enabled=False),
-            module_menu("crop"), module_menu("dnb"),
+            module_menu("dnb"),
             Item("Show Tools", lambda *_: self.show(), default=True),
             Item("Hide Tools", lambda *_: self.hide()),
             Item("Reload UI...", lambda *_: self.request_quit("reload")),
@@ -388,7 +387,7 @@ class Host:
                 self.update_status(status, epoch)
                 states = status.get("modules", {})
                 if not any(state.get("busy") for state in states.values()):
-                    for name in ("dnb", "crop"):
+                    for name in ("dnb",):
                         if states.get(name, {}).get("phase") == "running":
                             inbox = self.connection.request(f"/{name}/api/watch-folder")
                             inbox["service"] = name
@@ -412,8 +411,7 @@ class Host:
         if self.quitting or self.control_pending or epoch != self.status_epoch:
             return
         self.modules = status["modules"] if status else {}
-        self.external_lines = external_lines(status.get("external", {})) if status else (
-            "PhotoCraft: Status unavailable", "ComfyUI: Status unavailable")
+        self.external_lines = external_lines(status.get("external", {})) if status else ("PhotoCraft: Status unavailable",)
         self.refresh_tray()
         if problem:
             self.message(problem)

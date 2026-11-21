@@ -157,8 +157,8 @@ class WindowsPhotoCraftIntegration(unittest.TestCase):
             for sock in reservations:
                 sock.close()
         config = root / "launcher.json"
-        config.write_text(json.dumps({"models": str(models), "ports": {"dnb": ports[0], "crop": ports[1]},
-            "shell_port": ports[2], "startup": {"dnb": True, "crop": False},
+        config.write_text(json.dumps({"models": str(models), "ports": {"dnb": ports[0]},
+            "shell_port": ports[2], "startup": {"dnb": True},
             "photocraft": {"port": port, "token_file": str(token), "exchange": str(exchange),
                 "read_root": str(exchange), "executable": str(executable), "editor_config": str(root / "config")}}))
         code = """

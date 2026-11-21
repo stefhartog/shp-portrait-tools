@@ -2,8 +2,7 @@
 
 SHP Portrait Tools is a desktop companion for portrait photography on Linux and
 Windows. It provides local skin retouching and editable results for PhotoCraft or
-Photoshop, plus AI-assisted canvas expansion and fill on Linux. Skin analysis runs
-locally; image generation uses your own ComfyUI installation and models.
+Photoshop. Skin analysis runs locally.
 
 The tools estimate each subject's scale (S, in pixels per 63 mm), so size-based
 controls adapt to the subject instead of relying on fixed pixel dimensions—helping
@@ -15,7 +14,7 @@ needed, since automatic detection can miss or include areas.
 <p align="center">
   <a href="docs/images/readme/skin-mask.png"><img src="docs/images/readme/skin-mask.png" alt="Skin Mask workspace" width="31%"></a>
   <a href="docs/images/readme/fs-and-tone.png"><img src="docs/images/readme/fs-and-tone.png" alt="FS &amp; Tone retouching workspace" width="31%"></a>
-  <a href="docs/images/readme/crop-and-expand.png"><img src="docs/images/readme/crop-and-expand.png" alt="Crop &amp; Expand workspace" width="31%"></a>
+  <a href="docs/images/readme/dodge-and-burn.png"><img src="docs/images/readme/dodge-and-burn.png" alt="Dodge &amp; Burn controls" width="31%"></a>
 </p>
 
 ## What’s included
@@ -47,24 +46,12 @@ The skin tools share a source image, analysis and mask settings.
 
 </details>
 
-### AI Fill
+### AI Fill (now a separate app)
 
-- **Crop & Expand** — reframe a picture and generate the surroundings with FLUX.2 dev,
-  FLUX.1 Fill or FLUX.2 Klein. Klein has separate settings, a soft seam blend and
-  optional compatible LoRA support.
-- **Patch Fill** — paint an area to replace with FLUX.1 Fill while retaining surrounding context.
-
-<details>
-<summary>View AI Fill screenshots (2)</summary>
-
-![Crop & Expand generation controls](docs/images/readme/crop-and-expand.png)
-
-![Patch Fill mask-painting view](docs/images/readme/patch-fill.png)
-
-</details>
-
-These features need an independently installed ComfyUI, compatible models and nodes.
-See [MODELS.md](MODELS.md) for exact requirements.
+Crop & Expand and Patch Fill moved to their own project,
+[SHP AI Fill](https://github.com/stefhartog/shp-ai-fill), which runs as a local web app on
+your own ComfyUI. Its settings, presets and results stay in the same data folder, so
+existing AI Fill data keeps working there.
 
 ### Using results
 
@@ -90,11 +77,6 @@ these models during installation. See [MODELS.md](MODELS.md#db-three-manually-su
 bindings and a tray host; Windows needs the Edge WebView2 Runtime. Standalone web
 commands do not require these desktop components.
 
-**For AI Fill on Linux:** ComfyUI with its own supported GPU/PyTorch environment,
-the models for the selected method, and any required custom nodes. ComfyUI and its
-models are not installed by this project. A neural upscaler is optional; Lanczos resizing is
-available without one.
-
 **Optional:** PhotoCraft or a licensed Photoshop installation for editor integration;
 ExifTool and Perl for Sony autofocus-point subject selection.
 
@@ -111,7 +93,7 @@ uv sync --locked --extra gpu
 ```
 
 The `gpu` extra supplies CUDA/cuDNN user-space libraries; it does not install a
-graphics driver. Keep ComfyUI in its own Python environment. For package details
+graphics driver. For package details
 and other dependency options, see [pyproject.toml](pyproject.toml).
 
 If updating an existing environment that had both OpenCV wheels, repair their
@@ -145,22 +127,19 @@ needed then unless you prepare the cache in advance.
 
 ### Optional standalone commands
 
-Run either service as a local web app without the native desktop window:
+Run Skin Tools as a local web app without the native desktop window:
 
 ```sh
 uv run --no-sync shp-photocraft-dnb --dir "$HOME/Pictures"
-uv run --no-sync shp-photocraft-crop --dir "$HOME/Pictures" \
-  --comfy http://127.0.0.1:8188
 ```
 
-Open the local address printed at startup. The Skin Tools command requires the
-NVIDIA GPU dependencies and model files above. The Crop & Expand command requires
-ComfyUI and the selected generation models.
+Open the local address printed at startup. It requires the NVIDIA GPU dependencies
+and model files above.
 
 ## Guides
 
 - [Fresh Linux setup](docs/portrait-tools-fresh-linux-setup.md) — step-by-step installation.
-- [Model and ComfyUI requirements](MODELS.md) — model files, nodes and licenses.
+- [Model requirements](MODELS.md) — model files and licenses.
 - [Detailed feature notes](docs/portrait-tools-for-dummies-draft.md) — controls and workflows.
 - [Skin Tools developer guide](docs/skin-tools-architecture.md) — module boundaries, request flows, and focused tests.
 - [Source provenance](PROVENANCE.md) — upstream project and model references.

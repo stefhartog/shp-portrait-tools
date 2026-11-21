@@ -1,5 +1,9 @@
 # Get SHP Portrait Tools running on a fresh Linux computer
 
+> **AI Fill has moved.** Crop & Expand and Patch Fill are now the separate
+> [SHP AI Fill](https://github.com/stefhartog/shp-ai-fill) web app. AI Fill and ComfyUI
+> sections below describe the older combined app.
+
 **Beginner setup guide - 11 November 2026**
 
 We will build this in small pieces: get **Skin Tools** working, then add

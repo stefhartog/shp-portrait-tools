@@ -16,7 +16,6 @@ import cv2
 import test_dnb as T
 from shp_photocraft_tools.modules.dnb import ui_server as U
 from shp_photocraft_tools.shared.watch_folder import WatchFolder
-from shp_photocraft_tools.modules.crop import server as C
 
 
 class WatchFolderTests(unittest.TestCase):
@@ -201,44 +200,6 @@ class WatchFolderTests(unittest.TestCase):
         self.assertIn("changed", self.watch.status()["error"])
         self.watch.close()
         self.assertEqual(self.watch.status(), {"ready": False})
-
-
-class CropWatchTests(unittest.TestCase):
-    def test_crop_inbox_separation_target_failure_retry_and_cleanup(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            skin, crop = root / "watchfolder", root / "watchfolder_crop"
-            skin.mkdir(); crop.mkdir()
-            pixels = cv2.imencode(".png", U.u8(T.synthetic_image()))[1].tobytes()
-            (skin / "skin.png").write_bytes(pixels)
-            source = crop / "crop.png"
-            source.write_bytes(pixels)
-            now = [0]
-            watcher = WatchFolder(crop, root / "retained", clock=lambda:now[0])
-            self.addCleanup(watcher.close)
-            watcher.status(); now[0] = 3
-            token = watcher.status()["token"]
-            handler = object.__new__(C.Handler)
-            handler.server = SimpleNamespace(watch_folder=watcher)
-            state = {"img":None,"seq":0,"job":C.X.Job(),"thread":None,"imgs":{}}
-            target = {"document":{"name":"Crop.psd","index":1}, "identity":{
-                "id":"crop-doc","revision":1,"width":999,"height":96}}
-            with patch.object(C,"STATE",state), patch.object(C,"capture_target",return_value=target):
-                with self.assertRaisesRegex(ValueError,"export size"):
-                    handler.load_watch_image({"token":token})
-                self.assertIsNone(state["img"])
-                self.assertTrue(source.exists())
-                target["identity"]["width"] = 128
-                loaded = handler.load_watch_image({"token":token})
-                self.assertTrue(loaded["watch_cleanup"])
-                self.assertEqual(loaded["source_kind"],"photocraft")
-                self.assertEqual(state["doc"],target["document"])
-                self.assertEqual(loaded["width"],128)
-                self.assertTrue(Path(state["path"]).is_file())
-                self.assertFalse(source.exists())
-                self.assertTrue((skin / "skin.png").exists())
-                self.assertEqual(handler.load_watch_image({"token":token}),{"skipped":True})
-            self.assertNotEqual(C.WATCH_DIRECTORY,U.WATCH_DIRECTORY)
 
 
 class WatchApiTests(unittest.TestCase):

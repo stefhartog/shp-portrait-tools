@@ -27,7 +27,6 @@ from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_
 from .shared.photocraft.bridge import detect_config
 from .shared.supervision import ControlError
 from .shared.ui import stylesheet, theme_script
-from .comfy import ManagedComfy
 
 SHELL_PROTOCOL = 1
 
@@ -65,7 +64,6 @@ class Modules:
         self.cache = {"modules": {name: {"phase": "starting"} for name in MODULES}, "external": {}}
         data.mkdir(parents=True, exist_ok=True)
         logs.mkdir(parents=True, exist_ok=True)
-        self.comfy = ManagedComfy(config["comfy"], logs) if config.get("comfy") else None
 
     def expected(self, name):
         return identity(name, self.data / name, self.config["models"] if name == "dnb" else None)
@@ -107,11 +105,6 @@ class Modules:
             self.checked(name)
             return
         module.phase, module.error = "starting", None
-        if name == "crop" and self.comfy:
-            try:
-                self.comfy.start()
-            except OSError as error:
-                print(f"Tools ComfyUI startup failed: {error}", flush=True)
         port = self.config["ports"][name]
         try:
             if probe(port) is not None:
@@ -119,16 +112,13 @@ class Modules:
                                   "finish its work and stop it yourself, or configure a different port.")
             module.instance, module.token = uuid.uuid4().hex, secrets.token_hex(32)
             env = dict(photocraft_environment(self.config, os.environ),
-                       SHPC_DATA=str(self.data / "crop"), DNB_DATA=str(self.data / "dnb"),
+                       DNB_DATA=str(self.data / "dnb"),
                        DNB_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
                        SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=module.token,
                        SHP_SUPERVISOR_PID=str(os.getpid()),
                        SHP_SUPERVISOR_CREATED=str(process_identity(os.getpid())[1]))
             if self.config.get("exiftool"):
                 env["DNB_EXIFTOOL"] = self.config["exiftool"]
-            if self.comfy:
-                env["SHPC_COMFY"] = self.comfy.url
-                env["SHPC_TOOLS_COMFY"] = "1"
             log_path = self.logs / f"{name}.log"
             with log_path.open("ab") as log:
                 module.process = subprocess.Popen(
@@ -225,8 +215,7 @@ class Modules:
         return result
 
     def busy(self):
-        return (any(self.snapshot(name)["busy"] for name in MODULES)
-                or bool(self.comfy and self.comfy.status().get("busy")))
+        return any(self.snapshot(name)["busy"] for name in MODULES)
 
     def start_all(self):
         for name in MODULES:
@@ -241,11 +230,7 @@ class Modules:
 
     def monitor(self):
         while not self.finished.is_set():
-            status = external_status(self.comfy.url if self.comfy else None,
-                                     photocraft_environment(self.config, os.environ))
-            if self.comfy:
-                state = self.comfy.status()
-                status["comfy"].update(state)
+            status = external_status(photocraft_environment(self.config, os.environ))
             with self.cache_lock:
                 self.cache["external"] = status
             self.finished.wait(2)
@@ -259,15 +244,10 @@ class Modules:
         self.finished.set()
         if force:
             with contextlib.ExitStack() as stack:
-                locks = [module.lock for module in self.modules.values()]
-                if self.comfy:
-                    locks.append(self.comfy.lock)
-                for lock in locks:
+                for lock in [module.lock for module in self.modules.values()]:
                     if not lock.acquire(timeout=3):
                         raise RuntimeError("Module lifecycle action did not settle; refusing unsafe force restart")
                     stack.callback(lock.release)
-                if self.comfy:
-                    self.comfy.closed = True
                 return self.force_close()
         for name, module in self.modules.items():
             with module.lock:
@@ -294,15 +274,9 @@ class Modules:
                         if strict:
                             raise RuntimeError(f"{name} did not stop safely: {error}") from error
                         break
-        if self.comfy:
-            self.comfy.close(timeout=30 if strict else None)
-            if strict:
-                require_session_stopped(self.comfy.process)
 
     def force_close(self):
         targets = [(name, module.process, module.process_identity) for name, module in self.modules.items()]
-        if self.comfy:
-            targets.append(("comfy", self.comfy.process, self.comfy.process_identity))
         pinned = []
         try:
             for name, process, expected in targets:
@@ -315,7 +289,7 @@ class Modules:
         errors = []
         for name, process, handles in pinned:
             def graceful():
-                if handles and name != "comfy":
+                if handles:
                     try:
                         self.owner(name, "stop", {"confirm": True})
                     except (ControlError, LaunchError) as error:
@@ -332,17 +306,9 @@ class Modules:
             raise RuntimeError("; ".join(errors))
 
 
-def external_status(comfy_url=None, environ=None):
+def external_status(environ=None):
     """TCP reachability only: no authentication, document access or service management."""
-    def comfy_address():
-        url = urlsplit(comfy_url or os.environ.get("SHPC_COMFY", "http://127.0.0.1:8188"))
-        if url.scheme not in ("http", "https") or not url.hostname:
-            raise ValueError("SHPC_COMFY must be an HTTP(S) URL with a hostname")
-        return url.hostname, url.port or (443 if url.scheme == "https" else 80)
-
-    targets = {"photocraft_crop": lambda: ("127.0.0.1", detect_config("SHPC", "crop", environ)["port"]),
-               "photocraft_dnb": lambda: ("127.0.0.1", detect_config("DNB", "dnb", environ)["port"]),
-               "comfy": comfy_address}
+    targets = {"photocraft_dnb": lambda: ("127.0.0.1", detect_config("DNB", "dnb", environ)["port"])}
     result = {}
     probes = {}
     for name, address in targets.items():
@@ -441,8 +407,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
         if path == "/api/health":
             modules = self.server.modules
             result = {**identity("shell", modules.data, modules.config["models"]), "shell_protocol": SHELL_PROTOCOL,
-                      "ports": modules.config["ports"], "exiftool": modules.config.get("exiftool"),
-                      "comfy": modules.config.get("comfy")}
+                      "ports": modules.config["ports"], "exiftool": modules.config.get("exiftool")}
             result.update(draining=self.server.lifetime.stopping, shutdown_error=self.server.shutdown_error,
                           process_identity=process_identity(os.getpid()))
             return self.send(200, json.dumps(result).encode(), "application/json")
@@ -464,7 +429,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path == "/static/lifecycle.js":
             return self.send(200, script(), "text/javascript; charset=utf-8")
-        if path in ("/crop", "/dnb"):
+        if path == "/dnb":
             self.send_response(308)
             self.send_header("Location", path + "/")
             self.send_header("Content-Length", "0")
@@ -578,11 +543,6 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                     return self.send(200, b'{"managed":false,"accepted":true}', "application/json")
                 raise ControlError(f"{name} is {phase}. Use its Start control when stopped.",
                                    "module_" + phase, 409, module=name, phase=phase)
-            if modules.comfy and path == "/api/comfy/start" and name == "crop" and self.command == "POST":
-                return self.send(200, json.dumps(modules.comfy.start()).encode(), "application/json")
-            if modules.comfy and path == "/api/run" and name == "crop" and self.command == "POST":
-                if modules.comfy.status()["phase"] != "running":
-                    raise LaunchError("Tools ComfyUI is not ready; check the tray status and comfy.log.")
             if modules.modules[name].phase != "running":
                 raise LaunchError(f"{name} is not ready. Use its Start control.")
             modules.checked(name)

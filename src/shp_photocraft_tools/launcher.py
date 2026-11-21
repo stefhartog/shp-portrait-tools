@@ -22,9 +22,11 @@ from .shared.health import identity
 from .shared.platform_paths import data_root, global_config_dir
 
 APP = "SHP Portrait Tools"
-DEFAULT_PORTS = {"crop": 18768, "dnb": 18765}
+DEFAULT_PORTS = {"dnb": 18765}
 SHELL_PORT = 18760
-MODULES = {"crop": "crop.server", "dnb": "dnb.ui_server"}
+MODULES = {"dnb": "dnb.ui_server"}
+# AI Fill moved to the separate shp-ai-fill project; older launcher.json files still name it.
+RETIRED_MODULES = {"crop"}
 MODEL_FILES = ("yunet.onnx", "face_landmarks.onnx", "selfie_multiclass_256x256.onnx")
 CHROMIUM_FLATPAK = "io.github.ungoogled_software.ungoogled_chromium"
 
@@ -40,7 +42,10 @@ def read_config(path):
         raise LaunchError(f"Cannot read launcher configuration {path}: {error}. Run scripts/install_desktop.py.") from error
     if not isinstance(config, dict):
         raise LaunchError(f"Launcher configuration must be a JSON object: {path}")
+    config.pop("comfy", None)  # Tools-managed ComfyUI left with AI Fill.
     startup = config.get("startup", {})
+    if isinstance(startup, dict):
+        startup = {name: value for name, value in startup.items() if name not in RETIRED_MODULES}
     if (not isinstance(startup, dict) or set(startup) - set(MODULES)
             or any(type(value) is not bool for value in startup.values())):
         raise LaunchError(f"'startup' must map module names to booleans in {path}")
@@ -53,31 +58,17 @@ def read_config(path):
         if not model.is_file() or not os.access(model, os.R_OK):
             raise LaunchError(f"Missing or unreadable Skin Tools model: {model}. Update {path}; weights are not copied.")
     ports = config.get("ports", DEFAULT_PORTS)
+    if isinstance(ports, dict):
+        ports = {name: port for name, port in ports.items() if name not in RETIRED_MODULES}
     if not isinstance(ports, dict) or set(ports) != set(MODULES):
-        raise LaunchError(f"'ports' must contain crop and dnb in {path}")
+        raise LaunchError(f"'ports' must contain dnb in {path}")
     if any(type(port) is not int or not 1024 <= port <= 65535 for port in ports.values()):
         raise LaunchError(f"Launcher ports must be integers between 1024 and 65535 in {path}")
-    if len(set(ports.values())) != 2:
-        raise LaunchError("AI Fill and Skin Tools must use different ports")
     config["ports"] = ports
     shell_port = config.get("shell_port", SHELL_PORT)
     if type(shell_port) is not int or not 1024 <= shell_port <= 65535 or shell_port in ports.values():
         raise LaunchError("'shell_port' must be a distinct integer port between 1024 and 65535")
     config["shell_port"] = shell_port
-    comfy = config.get("comfy")
-    if comfy is not None and sys.platform == "win32":
-        raise LaunchError("Tools-managed ComfyUI is not supported on Windows; remove 'comfy' from " + str(path))
-    if comfy is not None:
-        if (not isinstance(comfy, dict) or set(comfy) != {"directory", "port"}
-                or not isinstance(comfy["directory"], str) or not Path(comfy["directory"]).is_absolute()
-                or type(comfy["port"]) is not int or not 1024 <= comfy["port"] <= 65535
-                or comfy["port"] in (*ports.values(), shell_port, 8188)):
-            raise LaunchError("'comfy' requires an absolute directory and a distinct dedicated port (not 8188)")
-        from .comfy import runtime
-        try:
-            runtime(comfy["directory"])
-        except ValueError as error:
-            raise LaunchError(str(error)) from error
     exiftool = config.get("exiftool")
     if exiftool is not None and (not isinstance(exiftool, str) or not Path(exiftool).is_file()):
         raise LaunchError(f"Configured ExifTool does not exist: {exiftool}")
@@ -168,8 +159,7 @@ def ensure_shell(config_path, data, config, logs):
     def check(found):
         verify(found, expected, port)
         if (found.get("shell_protocol") != 1 or found.get("ports") != config["ports"]
-                or found.get("exiftool") != config.get("exiftool")
-                or found.get("comfy") != config.get("comfy")):
+                or found.get("exiftool") != config.get("exiftool")):
             raise LaunchError(f"Port {port} belongs to an incompatible Tools supervisor. "
                               "Close its work before changing launcher configuration.")
 
@@ -296,7 +286,7 @@ def write_default_config(path):
     if path.exists():
         raise LaunchError(f"{path} already exists; edit it instead")
     config = {"models": os.environ.get("DNB_MODELS") or str(data_root() / "dnb" / "models"),
-              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"crop": False, "dnb": True}}
+              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"dnb": True}}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n")
     return config

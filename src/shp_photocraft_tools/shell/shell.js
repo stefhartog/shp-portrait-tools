@@ -21,12 +21,11 @@
     tab.setAttribute('aria-label', tab.textContent.trim()+': '+tab.title);
     tab.setAttribute('aria-busy', String(busy));
   }
-  const names = {crop: 'AI Fill', dnb: 'Skin Tools'};
-  const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'patch', 'settings'];
+  const names = {dnb: 'Skin Tools'};
+  const views = ['mask', 'frequency', 'dnb', 'combine', 'settings'];
   const modes = ['mask', 'frequency', 'dnb', 'combine'];
-  const cropViews = ['crop', 'patch'];
   function viewAvailable(name) {
-    return name === 'settings' || modules[['crop', 'patch'].includes(name) ? 'crop' : 'dnb']?.phase !== 'stopped';
+    return name === 'settings' || modules.dnb?.phase !== 'stopped';
   }
   const $ = id => document.getElementById(id);
   const frames = new Map();
@@ -35,11 +34,8 @@
   let initialSelection = true;
   let skinMode = 'mask';
   let sequence = 0, pending = null;
-  let cropPending = null;
   const ready = new WeakSet();
   let skinBusy = false;
-  let cropWatchBusy = false;
-  let cropBusy = false;
   function setCacheTabs(tabs) {
     for (const mode of modes) {
       const tab = $(`tab-${mode}`), indicator = tab.querySelector('.cache-indicator');
@@ -54,7 +50,7 @@
   function clearCacheTabs() {
     setCacheTabs(Object.fromEntries(modes.map(mode => [mode,{state:'idle',label:'Cache not checked'}])));
   }
-  function navigationLocked() { return skinBusy || cropWatchBusy || cropBusy || !!modules.dnb?.busy || !!modules.crop?.busy; }
+  function navigationLocked() { return skinBusy || !!modules.dnb?.busy; }
   function syncNavigation() {
     const locked = navigationLocked();
     window.__shpNavigationLocked = locked;
@@ -69,13 +65,6 @@
     if (!frame || !ready.has(frame)) return;
     pending = ++sequence;
     frame.contentWindow.postMessage({type:'shp-tools-mode', mode:skinMode, request:pending}, location.origin);
-  }
-  function requestCropMode() {
-    const frame = frames.get('crop');
-    if (!frame || !ready.has(frame)) return;
-    cropPending = ++sequence;
-    frame.contentWindow.postMessage({type:'shp-tools-crop-mode', mode:active === 'patch' ? 'patch' : 'expand',
-      request:cropPending}, location.origin);
   }
 
   function report(message, error = false) {
@@ -94,7 +83,7 @@
       $(`tab-${key}`).tabIndex = selected ? 0 : -1;
     }
     for (const key of [...Object.keys(names), 'settings']) {
-      const selected = key === (active === 'settings' ? 'settings' : cropViews.includes(active) ? 'crop' : 'dnb');
+      const selected = key === (active === 'settings' ? 'settings' : 'dnb');
       const panel = $(`panel-${key}`);
       panel.classList.toggle('inactive', !selected);
       panel.setAttribute('aria-hidden', String(!selected));
@@ -102,7 +91,6 @@
       if (selected) panel.setAttribute('aria-labelledby', `tab-${active}`);
     }
     if (modes.includes(name)) { skinMode = name; if (notify) requestMode(); }
-    if (cropViews.includes(name) && notify) requestCropMode();
   }
   function mountGeneralSettings(frame) {
     const source = frame.contentDocument.getElementById('generalSettingsContent');
@@ -115,31 +103,6 @@
     $('settingsAvailability').hidden = true;
   }
   window.addEventListener('message', event => {
-    const crop = frames.get('crop');
-    if (crop && event.source === crop.contentWindow && event.origin === location.origin) {
-      const data = event.data;
-      if (data?.type === 'shp-crop-ready') {
-        ready.add(crop);
-        if (cropViews.includes(active)) requestCropMode();
-        return;
-      }
-      if (data?.type === 'shp-crop-busy' && typeof data.busy === 'boolean') {
-        cropBusy = data.busy; syncNavigation(); return;
-      }
-      if (data?.type === 'shp-crop-mode' && ['expand','patch'].includes(data.mode) &&
-          (data.request === null || Number.isSafeInteger(data.request))) {
-        if (data.request !== cropPending) return;
-        cropPending = null;
-        if (cropViews.includes(active)) select(data.mode === 'patch' ? 'patch' : 'crop', false, true);
-        return;
-      }
-      if (event.data?.type === 'shp-crop-watch-busy' && typeof event.data.busy === 'boolean') {
-        cropWatchBusy = event.data.busy; syncNavigation(); return;
-      }
-      if (event.data?.type === 'shp-crop-watch-loaded' && !skinBusy && !modules.dnb?.busy) {
-        select('crop', false, true); return;
-      }
-    }
     const frame = frames.get('dnb'), data = event.data;
     if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin ||
         !data || typeof data !== 'object') return;
@@ -182,23 +145,21 @@
   });
   function render() {
     if (modules.dnb?.phase !== 'running') skinBusy = false;
-    if (modules.crop?.phase !== 'running') cropWatchBusy = false;
-    if (modules.crop?.phase !== 'running') cropBusy = false;
     syncNavigation();
     if (initialSelection || !viewAvailable(active)) {
-      select(['mask', 'crop', 'settings'].find(viewAvailable), true, true);
+      select(['mask', 'settings'].find(viewAvailable), true, true);
     }
     for (const [name, state] of Object.entries(modules)) {
+      if (!(name in names)) continue;
       document.querySelectorAll(`[role="tab"][data-service="${name}"]`).forEach(tab => {
         renderTabStatus(tab, state);
       });
       const placeholder = $(`panel-${name}`).querySelector('.placeholder');
       placeholder.hidden = state.phase === 'running';
       placeholder.textContent = state.phase === 'stopped'
-        ? `${names[name]} is unloaded. Use Start in the Tools tray menu to load it again. Other modules remain available.`
+        ? `${names[name]} is unloaded. Use Start in the Tools tray menu to load it again.`
           + (state.startup_enabled === false ? ' Load on startup is disabled; manual Start does not change it.' : '')
-          + (name === 'dnb' ? ' Skin Mask, FS & Tone, Dodge & Burn and Combine share this service.'
-            : ' Crop & Expand and Patch Fill share this service.')
+          + ' Skin Mask, FS & Tone, Dodge & Burn and Combine share this service.'
         : `${names[name]}: ${state.error || state.phase}. Use the Tools tray menu for service controls.`;
       const frame = frames.get(name);
       if (name === 'dnb') {
@@ -213,21 +174,15 @@
         next.title = `SHP Portrait Tools — ${names[name]}`;
         next.src = `${name}/`;
         next.dataset.instance = state.instance;
-        if (name === 'dnb') {
-          pending = null;
-          clearCacheTabs();
-          next.onload = () => next.contentWindow.postMessage({type:'shp-tools-probe'}, location.origin);
-        } else {
-          cropPending = null;
-          next.onload = () => next.contentWindow.postMessage({type:'shp-tools-crop-probe'}, location.origin);
-        }
+        pending = null;
+        clearCacheTabs();
+        next.onload = () => next.contentWindow.postMessage({type:'shp-tools-probe'}, location.origin);
         $(`panel-${name}`).append(next);
         frames.set(name, next);
       } else if (['stopping', 'stopped', 'error'].includes(state.phase)) {
         frame?.remove();
         frames.delete(name);
-        if (name === 'dnb') { pending = null; clearCacheTabs(); }
-        if (name === 'crop') cropPending = null;
+        pending = null; clearCacheTabs();
       }
     }
   }

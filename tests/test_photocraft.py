@@ -19,7 +19,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.crop.photocraft_bridge import Bridge as CropBridge
 from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
 from shp_photocraft_tools.shared.photocraft import Client, ControlError, detect_config
 
@@ -101,7 +100,7 @@ class BridgeTests(unittest.TestCase):
     def test_open_uses_absolute_path_in_gui_and_relative_when_headless(self):
         for headless in (False, True):
             with self.subTest(headless=headless):
-                b = self.bridge(CropBridge, headless=headless)
+                b = self.bridge(DnbBridge, headless=headless)
                 b.headless = headless
                 b.client.calls.clear()
                 rel = "scratch.png"
@@ -114,18 +113,17 @@ class BridgeTests(unittest.TestCase):
                     self.assertEqual((method, params["path"]), ("app.open", str(b.exchange / rel)))
 
     def test_open_refuses_exchange_outside_read_root(self):
-        b = self.bridge(CropBridge)
+        b = self.bridge(DnbBridge)
         b.read_root = self.root / "elsewhere"
         with self.assertRaises(ControlError):
             b._open("scratch.png")
         self.assertFalse(any(c[0] == "app.open" for c in b.client.calls))
 
     def test_status_preserves_authentication_failure_code(self):
-        from shp_photocraft_tools.modules.crop import server as crop
         from shp_photocraft_tools.modules.dnb import ui_server as skin
         from shp_photocraft_tools.shared.photocraft.bridge import AuthenticationError
 
-        for module in (crop, skin):
+        for module in (skin,):
             with self.subTest(module=module.__name__), patch.object(module, "bridge") as bridge:
                 bridge.return_value.status.side_effect = AuthenticationError("test authentication refused")
                 result = module.api_pc_status({})
@@ -218,9 +216,7 @@ class BridgeTests(unittest.TestCase):
             popen.assert_not_called()
 
     def test_fetch_both_bridges_desktop_and_headless(self):
-        self.assertIs(CropBridge.fetch, DnbBridge.fetch)
-        self.assertIs(CropBridge.launch, DnbBridge.launch)
-        for cls in (CropBridge, DnbBridge):
+        for cls in (DnbBridge,):
             for headless in (False, True):
                 with self.subTest(module=cls.module, headless=headless):
                     b = self.bridge(cls, headless=headless)
@@ -285,25 +281,12 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(b.client.documents), 1)
         self.assertEqual(list(b.exchange.iterdir()), [])
 
-    def test_crop_signed_margins_and_grouped_undo(self):
-        b = self.bridge(CropBridge)
-        layer = np.zeros((58, 60, 4), np.uint8)
-        b.send_expand(layer, b.client.documents[0], (-4, 5, 0, 5))
-        self.assertIn(("image.crop", {"x": 4, "y": -5, "width": 60, "height": 58}), b.client.calls)
-        self.assertIn(("history.selectSnapshot", {"snapshot": 7}), b.client.calls)
-        self.assertFalse(any(c.startswith("select.") or "layerMask" in c for c, p in b.client.calls))
-        self.assertEqual(b.client.active, 1)
-        self.assertEqual(list(b.exchange.iterdir()), [])
-
     def test_failed_send_cleans_scratch_and_reports_error(self):
-        for cls in (CropBridge, DnbBridge):
+        for cls in (DnbBridge,):
             with self.subTest(module=cls.module):
                 b = self.bridge(cls, fail_copy=True)
                 with self.assertRaisesRegex(ControlError, "copy failed"):
-                    if cls is CropBridge:
-                        b.send_expand(np.zeros((58, 64, 4), np.uint8), b.client.documents[0], (0, 5, 0, 5))
-                    else:
-                        b.send(np.zeros((48, 64, 3), np.uint16), np.ones((48, 64), np.uint8), b.client.documents[0])
+                    b.send(np.zeros((48, 64, 3), np.uint16), np.ones((48, 64), np.uint8), b.client.documents[0])
                 self.assertEqual(b.client.active, 1)
                 self.assertEqual(len(b.client.documents), 1)
                 self.assertEqual(list(b.exchange.iterdir()), [])

@@ -152,12 +152,12 @@ class LauncherTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
             try:
-                self.ports["crop"] = server.server_port
+                self.ports["dnb"] = server.server_port
                 self.write_config()
                 self.launch()
                 status = self.status()
-                self.assertEqual(status["crop"]["phase"], "error")
-                self.assertIn("occupied", status["crop"]["error"])
+                self.assertEqual(status["dnb"]["phase"], "error")
+                self.assertIn("occupied", status["dnb"]["error"])
                 self.assertTrue(thread.is_alive())
             finally:
                 server.shutdown()
@@ -176,9 +176,9 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(L.LaunchError, "Missing or unreadable"):
             L.read_config(self.config)
         (self.models / L.MODEL_FILES[0]).write_bytes(b"fixture")
-        self.ports["crop"] = self.ports["dnb"]
+        self.shell_port = self.ports["dnb"]
         self.write_config()
-        with self.assertRaisesRegex(L.LaunchError, "different ports"):
+        with self.assertRaisesRegex(L.LaunchError, "shell_port"):
             L.read_config(self.config)
 
     @unittest.skipIf(sys.platform == "win32", "Linux-only (Ungoogled Chromium / XDG desktop install)")

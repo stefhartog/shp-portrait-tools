@@ -441,7 +441,6 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         js.JSStringRelease.argtypes = [ctypes.c_void_p]
         js.JSGlobalContextRelease.argtypes = [ctypes.c_void_p]
         html = T.S.HTML.read_text()
-        crop = files("shp_photocraft_tools.modules.crop.ui").joinpath("index.html").read_text()
         self.assertIn("#pcGet, #pcSend, #pcSendLayers, #xGet, #xRun, #xSend { flex:0 0 calc(11ch + 26px); white-space:nowrap; }", stylesheet().decode())
         self.assertIn("#statusWrap { min-width:0;", stylesheet().decode())
         self.assertNotIn('id="loadTimings"', html.split('id="g-file"')[1].split('</details>')[0])
@@ -573,9 +572,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         """
         dnb_status = "function setStatus(msg, err=false, ok=false) {" + html.split(
             "function setStatus(msg, err=false, ok=false) {", 1)[1].split("function finishProcessing", 1)[0]
-        crop_status = "function setStatus(msg, err=false, ok=false) {" + crop.split(
-            "function setStatus(msg, err=false, ok=false) {", 1)[1].split("\n", 1)[0] + "\n"
-        for status_helper, busy_expression in ((dnb_status,"state.busy"),(crop_status,"busy")):
+        for status_helper, busy_expression in ((dnb_status,"state.busy"),):
             mask_status_harness += """
               (() => {
                 const symbol={setAttribute(k,v){this[k]=v;}},$=()=>symbol,logNote=()=>{};
@@ -826,98 +823,8 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         """
         self.assertIn("logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);\n    finishProcessing(started);", html)
         self.assertIn("$('pcSend').textContent = 'Send Result';", html)
-        self.assertNotIn('id="xRun"', crop.split('<aside>')[0])
-        crop_panel, ai_panel = crop.split('<section class="crop-section">')[1].split('<details class="crop-section" open>')
-        self.assertIn('id="xRun"', crop_panel)
-        self.assertIn('id="xInfo"', crop_panel)
-        self.assertLess(crop_panel.index('id="xRatios"'), crop_panel.index('id="xInfo"'))
-        self.assertLess(crop_panel.index('id="xInfo"'), crop_panel.index('id="xGenerate"'))
-        self.assertIn('#xVariations { display:flex; flex:1; min-width:0;', crop)
-        self.assertIn('#xVariations button { flex:1; min-width:0;', crop)
-        self.assertIn('grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr)', crop)
-        self.assertIn('grid-template-areas:". top ." "left . right" ". bottom ."', crop)
-        self.assertNotIn('#xInfo b', crop)
-        self.assertNotIn('= cropped', crop)
-        self.assertNotIn('id="xInfo"', ai_panel)
-        self.assertEqual(crop.count('id="xRun"'), 1)
-        self.assertNotIn('<summary>', crop_panel)
-        self.assertIn('<summary>AI SETTINGS</summary>', ai_panel)
-        self.assertIn('id="xAdv"', ai_panel.split('</details>')[0])
-        self.assertIn('id="xPrompt"', ai_panel.split('</details>')[0])
-        self.assertIn('.crop-section > summary { display:block; list-style:none; cursor:pointer;', crop)
-        self.assertIn('.crop-section > summary::-webkit-details-marker { display:none; }', crop)
-        self.assertIn('.crop-section > summary:focus-visible { outline:2px solid var(--acc);', crop)
-        self.assertIn('padding-inline:clamp(16px, 10%, 40px)', crop)
-        self.assertNotIn('#xInfo:empty', crop)
-        self.assertIn('X.modeLoading=true;xButtons(); xSyncSize(); xInfo(); xDraw();', crop)
-        self.assertIn('loadList().catch(e => setStatus(e.message, true)); initializeCrop();', crop)
-        self.assertIn('". bottom ."; margin-top:16px;', crop)
-        self.assertNotIn('id="xVar"', crop)
-        self.assertNotIn('fillInfo', crop)
-        self.assertIn("root.querySelectorAll('.model-row').forEach(row => root.insertBefore(row, firstSlider));", crop)
-        variation_code = "let variations = 1;" + crop.split("let variations = 1;", 1)[1].split("/* view:", 1)[0]
-        run_code = "async function xRun() {" + crop.split("async function xRun() {", 1)[1].split("async function xPoll()", 1)[0]
-        variation_harness = """
-          (() => {
-            const buttons=[1,2,3].map(count=>({
-              dataset:{count:String(count)},classList:{toggle(k,v){this[k]=v;}},
-              setAttribute(k,v){this[k]=v;}
-            }));
-            const note={},document={querySelectorAll:()=>buttons};
-            const $=id=>id==='xVariationNote'?note:{value:'prompt'};
-            const stored=new Map([['shpx-var','4']]);
-            const localStorage={getItem:k=>stored.get(k),setItem:(k,v)=>stored.set(k,v)};
-            const X={running:false,img:true,free:false,fx:0,fy:0,fw:100};let busy=false;
-            function check(ok){if(!ok)throw Error('Crop variations');}
-        """ + variation_code + """
-            check(variations===4 && !note.hidden && note.textContent.includes('4 variations'));
-            check(buttons.every(b=>b['aria-pressed']==='false'));
-            check(stored.get('shpx-var')==='4');
-            buttons[1].onclick();
-            check(variations===2 && note.hidden && buttons[1]['aria-pressed']==='true');
-            check(buttons.filter(b=>b.classList.on).length===1 && stored.get('shpx-var')==='2');
-            X.running=true;buttons[2].onclick();check(variations===2);
-            X.running=false;setVariations(3);check(variations===3);
-            const xRatio=()=>[4,3], xMargins=()=>[0,0,10,10], fH=()=>100;
-            const setBusy=value=>busy=value,xButtons=()=>{};
-            let payload=null;
-            const api=(path,body)=>{payload=body;return new Promise(()=>{});};
-        """ + run_code + """
-            xRun();check(payload.variations===3);
-            setVariations(4);xRun();check(payload.variations===3);
-            busy=false;xRun();check(payload.variations===4);
-          })();
-        """
-        info_code = "function xInfo() {" + crop.split("function xInfo() {", 1)[1].split("function xButtons()", 1)[0]
-        variation_harness += """
-          (() => {
-            const info={},run={},$=id=>id==='xInfo'?info:run;let busy=false;
-            const X={img:true,W:100,H:80,fw:110,fx:-20,fy:5,ready:true,running:false};
-            const fH=()=>90,xRatio=()=>[4,3];
-            const xMargins=()=>[-X.fx,-X.fy,X.fx+X.fw-X.W,X.fy+fH()-X.H];
-            function check(ok){if(!ok)throw Error('Crop info layout');}
-        """ + info_code + """
-            xInfo();
-            check(info.innerHTML.includes('title="Original resolution">100 × 80</span>'));
-            check(info.innerHTML.includes('title="New resolution (4:3)">110 × 90</span>'));
-            for(const [side,value] of [['top','−5'],['left','+20'],['right','−10'],['bottom','+15']]){
-              check(info.innerHTML.includes(`aria-label="${side} shift: ${value} pixels">${value}</span>`));
-            }
-            check(!info.innerHTML.includes('<b>') && !run.disabled);
-            X.fx=0;X.fy=0;X.fw=100;X.H=90;xInfo();
-            check(info.innerHTML.includes('shift: 0 pixels">0</span>'));
-            check(info.innerHTML.includes('Nothing to generate') && run.disabled);
-            X.img=null;X.W=500;X.H=400;X.fw=600;X.fx=-50;X.fy=-20;xInfo();
-            check(info.innerHTML.includes('title="Original resolution">0 × 0</span>'));
-            check(info.innerHTML.includes('title="New resolution (4:3)">0 × 0</span>'));
-            for(const side of ['top','left','right','bottom']){
-              check(info.innerHTML.includes(`aria-label="${side} shift: 0 pixels">0</span>`));
-            }
-            check(!info.innerHTML.includes('Nothing to generate') && run.disabled);
-          })();
-        """
         transfer_code = "async function pcGet() {" + html.split("async function pcGet() {", 1)[1].split("$('pcGet').onclick", 1)[0]
-        variation_harness += """
+        variation_harness = """
           (async () => {
             const state={busy:false,loaded:true,sourceKind:'photocraft',imageGeneration:42,mode:'dnb'};
             const original=state.sourceKind, calls=[],statuses=[],notes=[];
@@ -996,30 +903,6 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             check(loaded===1 && notes.some(text=>text.includes('input retained: document changed')) && !state.busy);
             check(modes.length===1 && messages.length===1);
           })().then(()=>globalThis.watchFolderCheck='ok',e=>globalThis.watchFolderCheck=e.message);
-        """
-        crop_watcher = "let cropWatchError = '';" + crop.split("let cropWatchError = '';",1)[1].split("function xTransferTitles",1)[0]
-        variation_harness += """
-          (async()=>{
-            const X={running:false},document={hidden:false,createElement:()=>({})},window={},location={origin:'http://local'},messages=[];
-            const cropSliderDrag=null,queuedSettings={};
-            const $=()=>({after(){}});
-            const parent={__shpNavigationLocked:true,postMessage:message=>messages.push(message)},setTimeout=()=>0;
-            let busy=false,loaded=0,fail=false,calls=0;
-            const xTransferBusy=value=>busy=value,xLoaded=()=>loaded++,setStatus=()=>{};
-            const setCropMode=async mode=>{if(mode!=='expand')throw Error('Watch opened Patch instead of Crop');};
-            const api=async(path)=>{calls++;if(path==='/api/watch-folder')return {ready:true,token:'crop-token'};
-              if(fail)throw Error('wrong target');return {source_kind:'photocraft'};};
-        """ + crop_watcher + """
-            await pollCropWatchFolder();if(calls!==1||cropWatchPending.hidden)throw Error('Crop pending status missing');
-            parent.__shpNavigationLocked=false;queuedSettings.fill_steps=31;
-            await pollCropWatchFolder();if(loaded!==0||cropWatchPending.hidden)throw Error('Crop watch ignored pending settings');
-            delete queuedSettings.fill_steps;await pollCropWatchFolder();
-            if(loaded!==1||!messages.some(m=>m.type==='shp-crop-watch-loaded')||busy)throw Error('Crop watch routing');
-            const selected=messages.filter(m=>m.type==='shp-crop-watch-loaded').length;
-            fail=true;await pollCropWatchFolder();
-            if(loaded!==1||messages.filter(m=>m.type==='shp-crop-watch-loaded').length!==selected||busy)
-              throw Error('Failed Crop import changed tab');
-          })().then(()=>globalThis.cropWatchCheck='ok',e=>globalThis.cropWatchCheck=e.message);
         """
         batch_display = "const display = snapshot => {" + html.split("const display = snapshot => {", 1)[1].split(
             "const completed = {'Loading image", 1)[0] + "};"
@@ -1105,107 +988,6 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             window.__shpNativeFileDialog=false;await $('batchChooseSource').onclick();
             check(statuses.at(-1).includes('Tools desktop'));
           })().then(()=>globalThis.batchCheck='ok',e=>globalThis.batchCheck=e.message);
-        """
-        crop_get_code = "async function xGet() {" + crop.split("async function xGet() {", 1)[1].split("async function xRun()", 1)[0]
-        crop_send_code = "async function xSend() {" + crop.split("async function xSend() {", 1)[1].split("$('xSend').onclick", 1)[0]
-        self.assertIn('id="xFreeMemory"', crop.split("<summary>AI SETTINGS</summary>", 1)[1])
-        self.assertIn("The next generation reloads models; not all RAM/VRAM can be freed", crop)
-        self.assertIn("$('xFreeMemory').disabled = blocked;", crop)
-        free_code = "async function xFreeMemory() {" + crop.split("async function xFreeMemory() {", 1)[1].split("$('xFreeMemory').onclick", 1)[0]
-        variation_harness += """
-          (async () => {
-            const X={running:false,settingsSaving:false,hasResult:true,seq:7};
-            let busy=false,failure=null,acknowledged=true,release=null;
-            const calls=[],statuses=[],xButtons=()=>{},xInfo=()=>{};
-            const setBusy=b=>busy=b,setStatus=t=>statuses.push(t);
-            const api=async(path,payload)=>{
-              calls.push(path);
-              if(release)await new Promise(resolve=>{release=resolve;});
-              if(failure)throw Error(failure);
-              return {requested:acknowledged};
-            };
-            const check=ok=>{if(!ok)throw Error('Comfy memory UI: '+statuses.join(','));};
-        """ + free_code + """
-            for(const flag of ['running','settingsSaving']){X[flag]=true;await xFreeMemory();check(!calls.length);X[flag]=false;}
-            busy=true;await xFreeMemory();check(!calls.length);busy=false;
-            release=true;const pending=xFreeMemory();check(busy&&calls.length===1);
-            await xFreeMemory();check(calls.length===1);release();release=null;await pending;
-            check(!busy&&statuses.at(-1)==='Memory release requested');
-            check(calls[0]==='/api/comfy/free'&&X.seq===7&&X.hasResult);
-            failure='Comfy has running or queued work';await xFreeMemory();
-            check(!busy&&statuses.at(-1)===failure);
-            failure='Comfy is not reachable';await xFreeMemory();check(!busy&&statuses.at(-1)===failure);
-            failure=null;acknowledged=false;await xFreeMemory();
-            check(!busy&&statuses.at(-1)==='Memory release was not acknowledged.');
-          })().then(()=>globalThis.comfyFreeCheck='ok',e=>globalThis.comfyFreeCheck=e.message);
-        """
-        variation_harness += """
-          (async () => {
-            const X={running:false,hasResult:true,sourceKind:'photocraft',seq:7};
-            let busy=false,connected=false,selected=null,error=null,authFailure=false;
-            const calls=[],statuses=[],elements={};
-            const $=id=>elements[id]||={};
-            const window={__shpNativeFileDialog:true,prompt:()=>{calls.push('chooser');return selected;}};
-            const setBusy=b=>busy=b,xButtons=()=>{},xInfo=()=>{},setStatus=t=>statuses.push(t);
-            const xLoaded=r=>{X.sourceKind=r.source_kind;calls.push('loaded');};
-            const api=async(path,payload)=>{
-              calls.push(path);
-              if(error)throw Error(error);
-              if(path==='/api/pc/status')return {connected,code:authFailure?'authentication':'control',message:'PhotoCraft authentication refused'};
-              if(path==='/api/send-result'){check(payload.seq===7);return {saved:true,path:'/chosen/image_shpcrop_001.png'};}
-              return {source_kind:path==='/api/load'?'local':'photocraft'};
-            };
-            function check(ok){if(!ok)throw Error('Crop local routing: '+calls.join(','));}
-        """ + crop_get_code + crop_send_code + """
-            await xGet();check(X.sourceKind==='photocraft'&&!busy&&!X.transferring&&!calls.includes('loaded'));
-            authFailure=true;calls.length=0;await xGet();
-            check(!calls.includes('chooser')&&!calls.includes('/api/load')&&statuses.at(-1)==='PhotoCraft authentication refused'&&!busy);
-            authFailure=false;
-            selected='/chosen/image.png';calls.length=0;await xGet();
-            check(X.sourceKind==='local'&&calls.includes('/api/load')&&!busy);
-            connected=true;calls.length=0;await xSend();
-            check(calls.join(',')==='/api/send-result'&&statuses.at(-1).includes('image_shpcrop_001.png')&&!busy);
-            calls.length=0;await xGet();check(!calls.includes('chooser')&&calls.includes('/api/fetch'));
-            connected=false;window.__shpNativeFileDialog=false;await xGet();
-            check(statuses.at(-1).includes('Tools desktop')&&!busy);
-            error='bad image';await xGet();check(statuses.at(-1)==='bad image'&&!busy);
-            busy=true;calls.length=0;await xGet();await xSend();check(!calls.length);
-          })().then(()=>globalThis.cropTransferCheck='ok',e=>globalThis.cropTransferCheck=e.message);
-        """
-        geometry_code = crop.split("function xRatio()", 1)[1].split("function xSyncSize()", 1)[0]
-        variation_harness += """
-          (() => {
-            const X={img:true,limit:999,land:true,free:false,aspect:1};
-            function check(ok){if(!ok)throw Error('Crop expansion cap: '+JSON.stringify(X));}
-        """ + "function xRatio()" + geometry_code + """
-            for(const [W,H] of [[300,200],[3000,2000],[6000,4000],[200,6000],[6000,200]]){
-              X.W=W;X.H=H;
-              for(const ratio of [[1,1],[4,3],[3,2],[16,9],[5,4]]){
-                X.ratio=ratio;
-                for(const land of [true,false]){
-                  X.land=land;X.free=false;xResetFrame();
-                  for(const requested of [xWmin(),xWmax(),20000]){
-                    X.fw=requested;
-                    for(const pos of [-5000,0,5000]){
-                      X.fx=pos;X.fy=-pos;xClamp();
-                      check(xMargins().every(m=>m<=999));
-                      check(Math.min(X.fx+X.fw,W)-Math.max(X.fx,0)>=KEEP);
-                      check(Math.min(X.fy+fH(),H)-Math.max(X.fy,0)>=KEEP);
-                      const [a,b]=xRatio();
-                      check(Math.abs(fH()-Math.round(X.fw*b/a))<=SNAP);
-                    }
-                  }
-                }
-              }
-              X.free=true;X.fw=20000;X.fh=20000;X.fx=-1000;X.fy=1000;xClamp();
-              check(xMargins().every(m=>m<=999));
-            }
-            X.W=3000;X.H=2000;X.free=true;X.fw=3999;X.fh=2000;X.fx=-999;X.fy=0;xClamp();
-            check(xMargins()[0]===999);
-            X.fx=-1000;xClamp();check(xMargins()[0]===999);
-            X.W=6000;X.H=4000;X.fw=4000;X.fh=4999;X.fx=2000;X.fy=-999;xClamp();
-            check(xMargins()[0]===-2000 && xMargins()[1]===999);
-          })();
         """
         helpers = html.split("const temporaryLog =")[1].split("function slider(")[0]
         harness = """
@@ -1303,7 +1085,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
           check(shell.document.documentElement.dataset.theme==='photocraft');
         })();
         """
-        for package in ("shell", "modules.crop.ui", "modules.dnb.ui"):
+        for package in ("shell", "modules.dnb.ui"):
             page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
             self.assertIn('<script src="static/theme.js"></script>', page)
         css = stylesheet().decode()
@@ -1321,13 +1103,9 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertNotIn(".tab:hover", css)
         self.assertNotIn("button.workflow:disabled", css)
         for package, expected in (
-            ("modules.crop.ui", {"xGet", "xSend"}),
             ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
         ):
             page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
-            if package == "modules.crop.ui":
-                self.assertNotIn("#xRun { width:", page)
-                self.assertIn("button.cancel { background:#b3363b; border-color:#b3363b; color:#fff; }", stylesheet().decode())
             workflow = set()
             for tag in re.findall(r"<button\b[^>]*>", page):
                 button_id = re.search(r'\bid="([^"]+)"', tag)
@@ -1341,7 +1119,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertIn(".tab { margin-bottom:-1px;", css)
         self.assertIn("flex-wrap:wrap-reverse;", css)
         self.assertNotIn("box-shadow:0 1px 0 var(--workspace)", css)
-        for page_package in ("modules.crop.ui", "modules.dnb.ui"):
+        for page_package in ("modules.dnb.ui",):
             self.assertIn("border-top:0;", files("shp_photocraft_tools."+page_package).joinpath("index.html").read_text())
         self.assertNotIn('.tab.on { border-color:var(--acc)', css)
         self.assertIn(":focus-visible", css)
@@ -1362,12 +1140,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             "function select(name, notify = true, internal = false) {", 1)[1].split("function mountGeneralSettings", 1)[0]
         navigation_harness = """
           (() => {
-            const views=['mask','frequency','dnb','combine','crop','patch','settings'],modes=['mask','frequency','dnb','combine'],cropViews=['crop','patch'];
-            const names={crop:'Crop',dnb:'D&B'};
+            const views=['mask','frequency','dnb','combine','settings'],modes=['mask','frequency','dnb','combine'];
+            const names={dnb:'D&B'};
             const window={};
             let modules={dnb:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
             const tabs=views.map(view=>({dataset:{view},setAttribute(k,v){this[k]=v;}}));
-            const document={querySelectorAll:()=>tabs},requestMode=()=>{},requestCropMode=()=>{};
+            const document={querySelectorAll:()=>tabs},requestMode=()=>{};
             const $=()=>({setAttribute(){},focus(){},classList:{toggle(){}}});
         """ + availability + navigation + "document.querySelectorAll('[role=\"tab\"]').forEach(button => {" + shell_js.split(
             "document.querySelectorAll('[role=\"tab\"]').forEach(button => {", 1)[1].split("function render()", 1)[0] + """
@@ -1388,20 +1166,13 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             if(tabs.some(tab=>tab.disabled))throw Error('Tabs did not unlock');
             if(active!=='dnb')throw Error('Busy clicks were queued');
             select('settings');if(active!=='settings')throw Error('Normal navigation did not restore');
-            cropBusy=true;syncNavigation();select('patch');
-            if(active!=='settings'||!tabs.every(tab=>tab.disabled))throw Error('Crop UI busy lock');
-            cropBusy=false;modules.crop={phase:'running',busy:true};syncNavigation();select('patch');
-            if(active!=='settings')throw Error('Crop backend busy lock');
-            modules.crop.busy=false;syncNavigation();select('patch');
-            if(active!=='patch'||tabs.some(tab=>tab.disabled))throw Error('Patch tab did not unlock');
-            select('settings');
-            modules.crop={phase:'stopped'};
-            select('crop');if(active!=='settings')throw Error('Hidden tab accepted selection');
+            select('crop');select('patch');if(active!=='settings')throw Error('Retired AI Fill view accepted');
             modules.dnb.phase='stopped';
-            tabs[6].onkeydown({key:'ArrowRight',preventDefault(){}});
+            select('mask');if(active!=='settings')throw Error('Hidden tab accepted selection');
+            tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='settings')throw Error('Keyboard selected unloaded module');
             modules.dnb.phase='starting';
-            tabs[6].onkeydown({key:'ArrowRight',preventDefault(){}});
+            tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
             if(active!=='mask')throw Error('Starting tabs not available');
           })();
         """
@@ -1435,13 +1206,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         poll_code = "async function poll() {" + shell_js.split("async function poll() {", 1)[1].split("  poll();", 1)[0]
         isolation_harness = """
           (async () => {
-            const names={crop:'Crop',dnb:'D&B'},frames=new Map(),reports=[],placeholders={crop:{},dnb:{}};
-            let skinBusy=false,cropWatchBusy=false,cropBusy=false;const syncNavigation=()=>{};
-            let modules={},pending=null,cropPending=null,initialSelection=true,active='crop';
+            const names={dnb:'D&B'},frames=new Map(),reports=[],placeholders={dnb:{}};
+            let skinBusy=false;const syncNavigation=()=>{};
+            let modules={},pending=null,initialSelection=true,active='settings';
             const select=name=>{active=name;initialSelection=false;};
-            const tabs={crop:{},dnb:{}};
-            const document={querySelectorAll:selector=>selector.includes('="crop"')?[tabs.crop]:
-              selector.includes('="dnb"')?[tabs.dnb]:Object.values(tabs),
+            const tabs={dnb:{}};
+            const document={querySelectorAll:selector=>selector.includes('="dnb"')?[tabs.dnb]:Object.values(tabs),
               createElement:()=>({dataset:{},remove(){this.removed=true;}})};
             const panels=Object.fromEntries(Object.keys(names).map(name=>[name,
               {querySelector:()=>placeholders[name],append:frame=>{frame.appended=true;}}]));
@@ -1453,42 +1223,30 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             const setTimeout=()=>{},location={origin:'http://local'};
             const fetch=async()=>({ok:true,json:async()=>({modules})});
             const skin={dataset:{instance:'skin'},remove(){this.removed=true;}};
-            const crop={dataset:{instance:'crop'},remove(){this.removed=true;}};
-            frames.set('crop',crop);frames.set('dnb',skin);
+            frames.set('dnb',skin);
             const check=ok=>{if(!ok)throw Error('Shell module isolation');};
         """ + availability + render_code + poll_code + """
-            modules={crop:{phase:'running',instance:'crop'},dnb:{phase:'running',instance:'skin'}};
-            await poll();check(active==='mask'&&!initialSelection);
-            active='combine';await poll();check(active==='combine');
-            modules.crop={phase:'stopping',instance:'crop'};
-            await poll();check(crop.removed&&!frames.has('crop')&&frames.get('dnb')===skin&&!skin.removed);
-            modules.crop={phase:'stopped',instance:'crop'};await poll();
-            check(active==='combine');
-            check(placeholders.crop.textContent.includes('unloaded')&&!placeholders.crop.hidden);
-            check(placeholders.dnb.hidden&&tabs.dnb.phase==='running'&&reports.at(-1)[0]==='');
-            modules.crop={phase:'error',instance:'crop',error:'Child failed'};await poll();
-            check(placeholders.crop.textContent.includes('Child failed')&&frames.get('dnb')===skin);
-            modules.crop={phase:'running',instance:'crop-new'};await poll();
-            check(frames.get('crop').dataset.instance==='crop-new'&&placeholders.crop.hidden);
-            modules.dnb={phase:'stopped',instance:'skin'};await poll();
-            check(skin.removed&&placeholders.dnb.textContent.includes('share this service'));
-            initialSelection=true;modules.crop={phase:'stopped',startup_enabled:false};
-            modules.dnb={phase:'running',instance:'skin-new',startup_enabled:true};await poll();
-            check(active==='mask'&&placeholders.crop.textContent.includes('startup is disabled'));
-            active='crop';await poll();check(active==='mask');
+            modules={dnb:{phase:'running',instance:'skin'},crop:{phase:'running',instance:'stale'}};
+            await poll();check(active==='mask'&&!initialSelection&&frames.get('dnb')===skin&&!frames.has('crop'));
+            active='combine';await poll();check(active==='combine'&&tabs.dnb.phase==='running'&&reports.at(-1)[0]==='');
+            modules={dnb:{phase:'error',instance:'skin',error:'Child failed'}};await poll();
+            check(skin.removed&&!frames.has('dnb')&&placeholders.dnb.textContent.includes('Child failed'));
+            modules.dnb={phase:'running',instance:'skin-new'};await poll();
+            check(frames.get('dnb').dataset.instance==='skin-new'&&placeholders.dnb.hidden);
+            const reloaded=frames.get('dnb');
+            modules.dnb={phase:'stopped',instance:'skin-new'};await poll();
+            check(reloaded.removed&&active==='settings'&&placeholders.dnb.textContent.includes('share this service'));
             initialSelection=true;modules.dnb={phase:'stopped',startup_enabled:false};await poll();
-            check(active==='settings'&&!placeholders.crop.hidden&&!placeholders.dnb.hidden);
-            modules.crop={phase:'starting',startup_enabled:true};await poll();
+            check(active==='settings'&&!placeholders.dnb.hidden&&placeholders.dnb.textContent.includes('startup is disabled'));
+            modules.dnb={phase:'starting',startup_enabled:true};await poll();
             check(active==='settings');
-            modules.crop={phase:'running',instance:'crop-reloaded'};await poll();
-            check(active==='settings'&&frames.get('crop').dataset.instance==='crop-reloaded');
-            initialSelection=true;await poll();check(active==='crop');
-            modules.dnb={phase:'running',instance:'skin-late'};await poll();
-            check(active==='crop');
+            modules.dnb={phase:'running',instance:'skin-reloaded'};await poll();
+            check(active==='settings'&&frames.get('dnb').dataset.instance==='skin-reloaded');
+            initialSelection=true;await poll();check(active==='mask');
           })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
         """
-        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'crop', 'patch', 'settings'])
-        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'crop', 'patch', 'settings'];", shell_js)
+        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'settings'])
+        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'settings'];", shell_js)
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
@@ -1519,7 +1277,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
           })().then(()=>globalThis.skinStartupCheck='ok',e=>globalThis.skinStartupCheck=e.message);
         """
         self.assertNotIn('class="badge"', shell_page)
-        self.assertEqual(shell_page.count('title="Starting" data-service='), 6)
+        self.assertEqual(shell_page.count('title="Starting" data-service='), 4)
         self.assertIn('[role="tab"]:where(:not(:disabled)):hover', shell_css)
         self.assertNotIn('[role="tab"]:hover', shell_css)
         self.assertNotIn("border-color:var(--acc)", shell_css)
@@ -1527,9 +1285,8 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         for colour in ("#272727", "#515151", "#444444", "#626262", "#e0e0e0", "#b8b8b8", "#6a9fc5"):
             self.assertIn(colour, css)
         self.assertNotIn("filter:", css)
-        from shp_photocraft_tools.modules.crop.server import Handler as CropHandler
         from shp_photocraft_tools.supervisor import ShellHandler
-        for handler_type in (T.S.Handler, CropHandler, ShellHandler):
+        for handler_type in (T.S.Handler, ShellHandler):
             handler = object.__new__(handler_type)
             handler.path = "/static/theme.js"
             handler.valid_host = lambda: True
@@ -1538,8 +1295,8 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
                 send.assert_called_once_with(200, theme_script(), "text/javascript; charset=utf-8")
         context = js.JSGlobalContextCreate(None)
         try:
-            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.cropTransferCheck,globalThis.comfyFreeCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.cropWatchCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html + crop, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check]:
+            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:

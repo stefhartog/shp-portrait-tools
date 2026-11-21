@@ -25,7 +25,7 @@ settings-file change and undo command are recorded below.
 The target is Windows desktop Photoshop **28.0**, with an installed, licensed copy.
 The plugin declares that minimum version; compatibility with other versions is not
 validated. No cloud image processing, Photoshop source changes, special launcher or
-PhotoCraft-compatible Photoshop server is involved. Crop/AI Fill remains unchanged.
+PhotoCraft-compatible Photoshop server is involved. AI Fill is a separate app and not involved.
 
 Implemented source paths:
 

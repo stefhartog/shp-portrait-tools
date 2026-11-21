@@ -9,7 +9,9 @@ Python package `shp_photocraft_tools` (Python 3.13, managed with uv). Public nam
 internal IDs — keep internal IDs, routes, commands, and data/config paths unchanged:
 
 - **Skin Tools** = module `dnb` (Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service)
-- **AI Fill** = module `crop` (Crop & Expand, Patch Fill — needs an external ComfyUI; Linux only)
+- **AI Fill** (former module `crop`: Crop & Expand, Patch Fill, ComfyUI) was split out to the separate
+  `shp-ai-fill` repo on 2026-11-21. `launcher.read_config` still accepts and ignores legacy `crop`/`comfy`
+  entries in existing `launcher.json` files; don't reintroduce AI Fill code here.
 - Editors: **PhotoCraft** (host editor, `shared/photocraft/`) and **Photoshop** (Windows 28.0 preview,
   UXP connector in `plugins/photoshop/`)
 
@@ -18,7 +20,7 @@ Key docs (read the relevant one before non-trivial changes):
 - `HANDOFF.md` — current-state behavior contracts for the whole app (shell, lifecycle, pose backends, etc.)
 - `docs/windows-handoff.md` — Windows port status, what is and isn't verified
 - `docs/photoshop.md` — Photoshop connector wire protocol and live-validation notes
-- `MODELS.md` — required ONNX models / ComfyUI nodes. `docs/source/` is frozen history, not current guidance.
+- `MODELS.md` — required ONNX models. `docs/source/` is frozen history, not current guidance.
 
 ## Commands
 
@@ -43,6 +45,9 @@ python -m uv run --no-sync python -m unittest test_local_results.LocalResultTest
 - `SHP_TEST_DNB_CUDA=1` enables CUDA hardware parity checks in `test_cuda_bands`.
 - Photoshop connector mock tests (Node): `node tests\photoshop_plugin.cjs`
   (or `python -m uv tool run --from nodejs-wheel node tests\photoshop_plugin.cjs`). Mocks do not prove live Photoshop behavior.
+- Several UI tests run only with Node on PATH (they skip otherwise); `test_dnb_progress`'s big harness needs Linux
+  JavaScriptCore, `test_status_layout` needs Firefox, and `tests/desktop_smoke.py` is an opt-in Linux GTK smoke
+  (`SHP_DESKTOP_SMOKE=1`) that still drives the removed AI Fill module and needs updating.
 - No linter/formatter is configured.
 
 Running the app:
@@ -52,7 +57,6 @@ python -m uv run --no-sync shp-photocraft-tools --init-config   # once; writes %
 python -m uv run --no-sync shp-photocraft-tools                 # supervised shell + desktop window
 python -m uv run --no-sync shp-photocraft-tools --no-browser    # services only; http://127.0.0.1:18760/
 python -m uv run --no-sync shp-photocraft-dnb --dir <folder>    # standalone Skin Tools web UI (port 8765)
-python -m uv run --no-sync shp-photocraft-crop --dir <folder> --comfy http://127.0.0.1:8188   # standalone AI Fill (8768)
 ```
 
 Do not restart, kill, or reinstall a running Tools instance without the user's explicit OK: running
@@ -62,20 +66,19 @@ not pick up Python changes.
 ## Architecture
 
 ```
-launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy, mounted iframes)
-   │                ├─► modules/dnb/ui_server.py   (owned backend 18765)
-   │                ├─► modules/crop/server.py     (owned backend 18768)
-   │                └─► comfy.py                    (optional owned ComfyUI 18788, Linux)
+launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy, mounted iframe)
+   │                └─► modules/dnb/ui_server.py   (owned backend 18765)
    └─► desktop/ (Linux: GTK3/WebKit2 controller.py; Windows: windows_controller.py, pywebview + pystray)
 ```
 
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
-  serving a single-file UI (`modules/*/ui/index.html`) plus shared assets from `shared/ui/`
-  (no CDN). The shell talks to module iframes via origin-checked `postMessage` (e.g. `shp-tools-crop-mode` with sequence acks).
+  serving a single-file UI (`modules/dnb/ui/index.html`) plus shared assets from `shared/ui/`
+  (no CDN). The shell talks to the module iframe via origin-checked `postMessage` (`shp-tools-mode` with sequence acks).
+  The supervisor still has the multi-module registry (`MODULES` in `launcher.py`), now with one entry.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).
-- `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `DNB_DATA`, `SHPC_DATA`,
+- `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `DNB_DATA`,
   `DNB_MODELS`, `SHP_TOOLS_DATA`, `*_WATCH_DIRECTORY`. `launcher.py` and `supervisor.py` import `fcntl`
   and the Linux desktop controller imports `gi`, so those don't import on Windows.
 - `shared/local_output.py` (+ `local_output_windows.py`, `winfs.py`): exclusive, never-overwrite numbered

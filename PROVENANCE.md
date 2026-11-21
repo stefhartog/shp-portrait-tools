@@ -1,6 +1,8 @@
 # Source provenance
 
 This is a new repository, not a move, rename or history rewrite of either original project.
+AI Fill (the former Crop module) was later split out again into
+[stefhartog/shp-ai-fill](https://github.com/stefhartog/shp-ai-fill); its code no longer lives here.
 
 | Source | Snapshot |
 |---|---|

@@ -94,6 +94,7 @@ def main(argv=None):
     try:
         if not args.launch and not args.files:
             raise ValueError("LightCraft must pass at least one filename; configure the helper path without placeholders.")
+        # The "crop" namespace predates the AI Fill split; keep it so existing handoff setups resolve unchanged.
         config = detect_config("SHPC", "crop")
         paths = input_paths(args.files, config["read_root"])
         if args.launch:

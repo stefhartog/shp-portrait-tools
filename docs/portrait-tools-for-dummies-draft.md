@@ -1,5 +1,9 @@
 # SHP Portrait Tools for Dummies
 
+> **AI Fill has moved.** Crop & Expand and Patch Fill are now the separate
+> [SHP AI Fill](https://github.com/stefhartog/shp-ai-fill) web app. AI Fill and ComfyUI
+> sections below describe the older combined app.
+
 > **DRAFT for review - 10 November 2026.** This guide describes the repository's
 > current Linux implementation described in the coding session's updated README,
 > HANDOFF and MODELS on 10 November 2026, including its **uncommitted** rename and

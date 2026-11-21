@@ -19,7 +19,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.crop import server as C
 from shp_photocraft_tools.modules.dnb import dodge_burn as D, ui_server as S
 from shp_photocraft_tools.modules.dnb import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
 from shp_photocraft_tools.modules.dnb.skin_mask_compare import pick_target
@@ -86,7 +85,6 @@ class DnbTests(unittest.TestCase):
             css, headers = self.get(route)
             self.assertEqual(headers["Content-Type"], "text/css; charset=utf-8")
             self.assertEqual(css, stylesheet())
-            self.assertEqual(css, C.stylesheet())
             self.assertIn(b"width:74px", css)
             self.assertIn(b"width:42px", css)
         for route in ("/static/missing.css", "/static/../pyproject.toml", "/missing", "/img/orig"):
@@ -714,9 +712,9 @@ class EngineTests(unittest.TestCase):
 
     def test_entrypoints_outside_checkout_without_models(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, SHPC_DATA=tmp + "/crop", DNB_DATA=tmp + "/dnb",
+            env = dict(os.environ, DNB_DATA=tmp + "/dnb",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
-            for module in ("crop.server", "dnb.ui_server", "dnb.dodge_burn"):
+            for module in ("dnb.ui_server", "dnb.dodge_burn"):
                 result = subprocess.run([sys.executable, "-m", "shp_photocraft_tools.modules." + module, "--help"],
                                         env=env, cwd=tmp, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -725,9 +723,9 @@ class EngineTests(unittest.TestCase):
 
     def test_servers_print_bound_port_and_serve_without_models(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = dict(os.environ, SHPC_DATA=tmp + "/crop", DNB_DATA=tmp + "/dnb",
+            env = dict(os.environ, DNB_DATA=tmp + "/dnb",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
-            for module in ("crop.server", "dnb.ui_server"):
+            for module in ("dnb.ui_server",):
                 process = subprocess.Popen([sys.executable, "-u", "-m", "shp_photocraft_tools.modules." + module, "--port", "0"],
                                            env=env, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 lines = queue.Queue()
