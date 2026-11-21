@@ -165,7 +165,7 @@ Models are **not bundled**, and the desktop installer does not download them.
 Create this folder:
 
 ```sh
-mkdir -p "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+mkdir -p "$HOME/.local/share/shp-portrait-tools/dnb/models"
 ```
 
 Use the pinned download links in [MODELS](../MODELS.md#db-three-manually-supplied-onnx-files).
@@ -181,7 +181,7 @@ The links point to specific conversions: similarly named models are not substitu
 Check the downloads with the documented hashes:
 
 ```sh
-cd "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+cd "$HOME/.local/share/shp-portrait-tools/dnb/models"
 sha256sum -c <<'EOF'
 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  yunet.onnx
 f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c  face_landmarks.onnx
@@ -201,7 +201,7 @@ Go back to Tools and install its **per-user** launcher:
 ```sh
 cd "$HOME/shp-photocraft-tools"
 uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+  --models "$HOME/.local/share/shp-portrait-tools/dnb/models"
 ```
 
 This creates the Tools shortcut, icons and `launcher.json`, using existing models.
@@ -213,7 +213,7 @@ Check the native bindings without opening the window:
 ```sh
 /usr/bin/python3 src/shp_portrait_tools/desktop/controller.py \
   --url http://127.0.0.1:18760/ \
-  --data-dir "${XDG_DATA_HOME:-$HOME/.local/share}/shp-photocraft-tools/webview" --check
+  --data-dir "$HOME/.local/share/shp-portrait-tools/webview" --check
 ```
 
 **Check:** this exits successfully, not with a missing-GI/namespace error.
@@ -356,7 +356,7 @@ does not have the native chooser. Keep the terminal running; Ctrl+C stops this
 standalone service when its work is finished.
 
 For the **shared desktop**, save wanted work and Quit Tools first. Open its
-installer-created `~/.config/shp-photocraft-tools/launcher.json` in a text editor
+installer-created `~/.config/shp-portrait-tools/launcher.json` in a text editor
 (or your custom XDG config location). Add this top-level property while preserving
 the existing models/ports and valid JSON:
 

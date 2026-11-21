@@ -86,11 +86,14 @@ def main():
             parser.error(f"Missing model {models / filename}; weights are not copied by this installer")
     if args.exiftool and not args.exiftool.is_file():
         parser.error(f"ExifTool does not exist: {args.exiftool}")
+    from shp_portrait_tools.shared.platform_paths import global_config_dir, migrate_legacy_roots
+
+    # Move a pre-rename install's folders first so the new launcher.json lands beside its settings.
+    migrate_legacy_roots()
     home = Path.home()
     data = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
-    config_root = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
     launcher = home / ".local" / "bin" / NAME
-    config_path = config_root / NAME / "launcher.json"
+    config_path = global_config_dir() / "launcher.json"
     icon = data / "icons" / "hicolor" / "scalable" / "apps" / f"{NAME}.svg"
     application = data / "applications" / f"{NAME}.desktop"
     if args.desktop_dir:

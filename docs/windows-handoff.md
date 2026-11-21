@@ -20,7 +20,7 @@ python -m uv run --no-sync python scripts/install_windows_shortcut.py --remove -
 
 It never overwrites an existing shortcut without `--force`; `--output-dir <dir>` writes elsewhere (used
 by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_portrait_tools.launcher
---config %APPDATA%\shp-photocraft-tools\launcher.json`, start in `<repo>`, icon drawn from
+--config %APPDATA%\shp-portrait-tools\launcher.json`, start in `<repo>`, icon drawn from
 `desktop/shp-photocraft-tools.svg` into `shp-photocraft-tools.ico` next to `launcher.json`. Run
 `--init-config` first.
 
@@ -45,7 +45,7 @@ user's live taskbar.
 The normal shortcut/supervisor starts the same Skin Tools service that includes the Photoshop
 connector backend; no alternate startup command or new shortcut arguments are needed. Choose
 **Settings & Info > Source editor** in Skin Tools. That choice is stored as `source_editor` in the
-existing `%APPDATA%\shp-photocraft-tools\settings.json`, preserving other settings and the PhotoCraft
+existing `%APPDATA%\shp-portrait-tools\settings.json`, preserving other settings and the PhotoCraft
 transport. Older settings default to PhotoCraft. Restarts restore the choice, not a fetched document
 or connection; Photoshop must reconnect before Get Image, and disconnected Photoshop never silently
 falls back to PhotoCraft. The shortcut must target a durable installation containing the changes;
@@ -115,8 +115,8 @@ overrides and dependency checks still report that requirement as missing.
     In a standalone browser (no `window.__shpNativeFileDialog`) Image analysis shows the image
     list + path box + Load; the desktop window hides them. Verified with headless Edge and
     `/api/load` on a synthetic copy of the scikit-image astronaut.- **Paths** (`shared/platform_paths.py`): on win32 data defaults to
-  `%LOCALAPPDATA%\shp-photocraft-tools\<module>`, models to `...\dnb\models`, global settings
-  to `%APPDATA%\shp-photocraft-tools`, inbox to a folder under the data directory. Overrides:
+  `%LOCALAPPDATA%\shp-portrait-tools\<module>`, models to `...\dnb\models`, global settings
+  to `%APPDATA%\shp-portrait-tools`, inbox to a folder under the data directory. Overrides:
   `DNB_DATA`, `SHPC_DATA`, `DNB_MODELS`, `DNB_WATCH_DIRECTORY`/`SHPC_WATCH_DIRECTORY`, and
   generic `WATCH_DIRECTORY`. Linux defaults (including the fixed inbox) are unchanged.
 - **Output safety** (`shared/winfs.py`, `shared/local_output_windows.py`, dispatched from
@@ -157,7 +157,7 @@ python -m uv run --no-sync python -m unittest test_windows_output test_windows_s
 
 ### Verified end to end with real models (2026-11-16)
 
-Standalone service on 8765 with the three ONNX models in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`
+Standalone service on 8765 with the three ONNX models in `%LOCALAPPDATA%\shp-portrait-tools\dnb\models`
 (SHA-256 checked) and a disposable `DNB_DATA`/`DNB_WATCH_DIRECTORY`. Test image: scikit-image's
 `astronaut.png` (public domain NASA photo, 512x512; a real face, not a user photo). Same-origin
 JSON calls to `/api/load`, `/api/run` (Skin Mask, FS & Tone, Dodge & Burn, Combine) and `/api/save`
@@ -184,7 +184,7 @@ browser, batch/PhotoCraft send.
 
 - **`--extra gpu` on Windows:** fixed by adding `required-environments` (linux, win32) to `[tool.uv]` and relocking. The lock now forks `nvidia-cublas`: Linux keeps 13.8.2.12, win32 uses 13.10.0.20 (13.8.2.12 has no Windows wheel; the other CUDA libs already had Windows wheels). Verified: `uv sync --locked --extra gpu` succeeds, ONNX Runtime 1.31.1 lists `CUDAExecutionProvider`, `add_windows_dll_directories()` finds `nvidia\cudnn\bin` and `nvidia\cu13\bin\x86_64` in the venv. Not re-verified with the lock-installed libs: real model inference (the earlier Conv check used hand-installed wheels). The lock was not tested on Linux.
 - **Model weights:** not bundled. Full analysis needs `yunet.onnx`, `face_landmarks.onnx` and
-  `selfie_multiclass_256x256.onnx` in `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models` (or
+  `selfie_multiclass_256x256.onnx` in `%LOCALAPPDATA%\shp-portrait-tools\dnb\models` (or
   `DNB_MODELS`) per MODELS.md; rtmlib downloads the pose weights on first use. Inference was
   verified on one public-domain face (see above); accuracy and speed on real-size portraits are **not verified**.
 - Not tested: symlink semantics (needs Developer Mode/elevation), CPU-only fallback end to end,
@@ -231,19 +231,19 @@ Commands (from the worktree; nothing is installed, no shortcut/registry/Start me
 
 ```powershell
 python -m uv sync --locked --extra gpu           # includes win32-only pywebview + pystray
-python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
+python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-portrait-tools\launcher.json
 python -m uv run --no-sync shp-portrait-tools                  # starts shell + Skin Tools and opens the window
 python -m uv run --no-sync shp-portrait-tools --no-browser     # services only; open http://127.0.0.1:18760/
 ```
 
-`launcher.json` defaults: models `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`, ports crop
+`launcher.json` defaults: models `%LOCALAPPDATA%\shp-portrait-tools\dnb\models`, ports crop
 18768 / dnb 18765, shell 18760, startup `{crop: false, dnb: true}`; `comfy` is rejected on Windows.
 `SHP_TOOLS_DATA` relocates the data/state tree (used by the smoke test). Logs: `<data>\state\*.log`
 and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
 
 Optional shortcut recipe (documented only, NOT executed): a `.lnk` whose target is
 `<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_portrait_tools.launcher --config
-%APPDATA%\shp-photocraft-tools\launcher.json`, start in `<worktree>`.
+%APPDATA%\shp-portrait-tools\launcher.json`, start in `<worktree>`.
 
 Code: `shared/filelock.py` (msvcrt lock), `shared/windows_process.py` (identity, jobs,
 single-instance mutex/event), platform dispatch in `shared/owned_process.py` and
@@ -345,7 +345,7 @@ After updating launcher code, exit Tools completely and reopen it to replace the
 running supervisor and modules; a window refresh alone does not update their settings.
 
 For shortcut launches, the optional `photocraft` object in the existing
-`%APPDATA%\shp-photocraft-tools\launcher.json` holds paths only:
+`%APPDATA%\shp-portrait-tools\launcher.json` holds paths only:
 
 ```json
 {

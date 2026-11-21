@@ -50,7 +50,7 @@ class LauncherTests(unittest.TestCase):
                                       "APPDATA": str(self.root / "AppData/Roaming")})
         env.start()
         self.addCleanup(env.stop)
-        self.data_root = self.root / ("AppData/Local" if sys.platform == "win32" else ".local/share") / "shp-photocraft-tools"
+        self.data_root = self.root / ("AppData/Local" if sys.platform == "win32" else ".local/share") / "shp-portrait-tools"
         self.pids = set()
         self.addCleanup(self.stop_servers)
 
@@ -188,7 +188,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(command[0], "/usr/bin/ungoogled-chromium")
             self.assertIn("--app=http://127.0.0.1:18760/", command)
             self.assertIn("--class=shp-photocraft-tools", command)
-            self.assertTrue(any("shp-photocraft-tools/ungoogled-chromium-profile" in arg for arg in command))
+            self.assertTrue(any("shp-portrait-tools/ungoogled-chromium-profile" in arg for arg in command))
             self.assertNotIn("--new-tab", command)
         with patch.object(L.shutil, "which", return_value=None):
             with self.assertRaisesRegex(L.LaunchError, "not found"):

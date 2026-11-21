@@ -19,7 +19,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from .shared.filelock import file_lock
 from .shared.health import identity
-from .shared.platform_paths import data_root, global_config_dir
+from .shared.platform_paths import data_root, global_config_dir, legacy_config_path, migrate_legacy_roots, state_root
 
 APP = "SHP Portrait Tools"
 DEFAULT_PORTS = {"dnb": 18765}
@@ -253,7 +253,7 @@ def chromium_command(config, urls):
                        if (found := shutil.which(name))), None)
     if executable:
         command = [executable]
-        profile = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "ungoogled-chromium-profile"
+        profile = global_config_dir() / "ungoogled-chromium-profile"
     elif binary is None and (flatpak := shutil.which("flatpak")):
         result = subprocess.run([flatpak, "info", CHROMIUM_FLATPAK], capture_output=True, timeout=10)
         if result.returncode:
@@ -271,14 +271,35 @@ def tools_dirs():
     if sys.platform == "win32":
         data = Path(os.environ.get("SHP_TOOLS_DATA") or data_root())
         return data, data / "state"
-    return (Path.home() / ".local" / "share" / "shp-photocraft-tools",
-            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "shp-photocraft-tools")
+    return data_root(), state_root()
 
 
 def default_config_path():
-    if sys.platform == "win32":
-        return global_config_dir() / "launcher.json"
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "shp-photocraft-tools" / "launcher.json"
+    return global_config_dir() / "launcher.json"
+
+
+def migration_log(message):
+    """Migration notes go to the console when there is one, and always to launcher.log."""
+    if sys.stderr is not None:
+        print(message, file=sys.stderr, flush=True)
+    try:
+        state = tools_dirs()[1]
+        state.mkdir(parents=True, exist_ok=True)
+        with (state / "launcher.log").open("a", encoding="utf-8") as log:
+            log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {message}\n")
+    except OSError:
+        pass
+
+
+def prepare_folders(config):
+    """Move pre-rename folders once, then follow a --config that still names the old folder."""
+    if not os.environ.get("SHP_TOOLS_DATA"):
+        migrate_legacy_roots(migration_log)
+    if not config.exists():
+        moved = legacy_config_path(config)
+        if moved != config and moved.exists():
+            return moved
+    return config
 
 
 def write_default_config(path):
@@ -304,7 +325,7 @@ def desktop_command(url, data):
                               "Microsoft Edge WebView2 Runtime, or use --no-browser and the loopback URL.")
         return command
     helper = files("shp_portrait_tools.desktop").joinpath("controller.py")
-    data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "shp-photocraft-tools" / "webview"
+    data = data_root() / "webview"
     icon = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "icons/hicolor/scalable/apps/shp-photocraft-tools.svg"
     command = ["/usr/bin/python3", str(helper), "--url", url, "--data-dir", str(data), "--icon", str(icon)]
     tray_icon = icon.with_name("shp-photocraft-tools-tray.svg")
@@ -389,6 +410,7 @@ def main():
     mode.add_argument("--browser", action="store_true", help="open Ungoogled Chromium app instead of the owned desktop")
     args = parser.parse_args()
     try:
+        args.config = prepare_folders(args.config)
         if args.init_config:
             if sys.platform != "win32":
                 raise LaunchError("--init-config is for Windows; Linux uses scripts/install_desktop.py")

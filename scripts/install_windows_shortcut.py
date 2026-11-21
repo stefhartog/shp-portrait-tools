@@ -28,7 +28,8 @@ READ_SCRIPT = (
 
 
 def appdata_config():
-    return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "shp-photocraft-tools" / "launcher.json"
+    from shp_portrait_tools.shared.platform_paths import global_config_dir
+    return global_config_dir() / "launcher.json"
 
 
 def start_menu_dir():
@@ -113,7 +114,7 @@ def main(argv=None):
               file=sys.stderr)
         status = 1
     if not args.config.exists():
-        print(f"Note: {args.config} does not exist yet; run `python -m uv run --no-sync shp-photocraft-tools "
+        print(f"Note: {args.config} does not exist yet; run `python -m uv run --no-sync shp-portrait-tools "
               "--init-config` before launching.", file=sys.stderr)
     print(f"Target:     {pythonw}\nArguments:  {shortcut_arguments(args.config)}\nStart in:   {repo}")
     for link in links:

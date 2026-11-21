@@ -16,7 +16,7 @@ not the frozen `docs/source/` installation notes.
 
 ## D&B: three manually supplied ONNX files
 
-Create `~/.local/share/shp-photocraft-tools/dnb/models/` and download the following files there.
+Create `~/.local/share/shp-portrait-tools/dnb/models/` and download the following files there.
 Use actual binary downloads, not Git LFS pointer text or a hosting site's HTML page.
 Links below pin the ONNX conversions inspected on 2026-11-05.
 
@@ -34,7 +34,7 @@ SHA-256 values below were verified against both preserved local binaries and ups
 Git LFS SHA-256 metadata. After downloading, verify before analysis:
 
 ```sh
-cd "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+cd "$HOME/.local/share/shp-portrait-tools/dnb/models"
 sha256sum -c <<'EOF'
 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  yunet.onnx
 f38c3321ceffbc9e95103480ad38cc3f52e7e1bde2bcee7cd9355d0b9138ac0c  face_landmarks.onnx
@@ -163,7 +163,7 @@ network activity.
 The pair is pinned to OpenCV Zoo revision
 [`48b10fa505aeb51fbd127fc60a5c660040e823b7`](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models)
 and belongs in a dedicated `opencv-zoo/` folder under `DNB_MODELS` (default
-`~/.local/share/shp-photocraft-tools/dnb/models/opencv-zoo/`):
+`~/.local/share/shp-portrait-tools/dnb/models/opencv-zoo/`):
 
 | File | Size | SHA-256 | Pinned upstream |
 |---|---:|---|---|

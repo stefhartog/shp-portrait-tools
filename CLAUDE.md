@@ -9,8 +9,12 @@ Python package `shp_portrait_tools` (Python 3.13, managed with uv; renamed from 
 on 2026-11-21). An internal rename to Portrait/Skin Tools names is in progress, one piece at a time
 (see `TRANSITION-install-and-split.md` Phase 1b if present). Distribution `shp-portrait-tools`; commands
 `shp-portrait-tools` and `shp-skin-tools` (old `shp-photocraft-tools`/`shp-photocraft-dnb`/`shpdnb` remain as
-aliases for one release). Still unchanged: data/config folders and app identity strings (`shp-photocraft-tools`),
-output filename suffixes (`shpdnb` etc.), the `dnb` module ID and its routes.
+aliases for one release). Data/config/state folders are `shp-portrait-tools`; `shared/platform_paths.py`
+falls back to an unmigrated `shp-photocraft-tools` folder and `migrate_legacy_roots()` (run by the launcher,
+`shp-skin-tools` and `install_desktop.py`, never at import) moves only app-owned entries. The per-module PhotoCraft
+control folders (`photocraft_config_dir()`), AI Fill's `crop` data and the Linux inbox keep the old name. Still
+unchanged: app identity strings (`shp-photocraft-tools` window class/icons/health), output filename suffixes
+(`shpdnb` etc.), the `dnb` module ID and its routes.
 Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything PhotoCraft relies on.
 
 - **Skin Tools** = module `dnb` (Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service)
@@ -58,7 +62,7 @@ python -m uv run --no-sync python -m unittest test_local_results.LocalResultTest
 Running the app:
 
 ```powershell
-python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
+python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-portrait-tools\launcher.json
 python -m uv run --no-sync shp-portrait-tools                 # supervised shell + desktop window
 python -m uv run --no-sync shp-portrait-tools --no-browser    # services only; http://127.0.0.1:18760/
 python -m uv run --no-sync shp-skin-tools --dir <folder>      # standalone Skin Tools web UI (port 8765)

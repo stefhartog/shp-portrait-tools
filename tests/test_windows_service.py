@@ -26,7 +26,7 @@ class StandaloneServiceTests(unittest.TestCase):
     def test_port_is_exclusive_and_service_stops_cleanly(self):
         with tempfile.TemporaryDirectory(prefix="shp svc ") as temp:
             data, inbox = str(Path(temp) / "data"), str(Path(temp) / "inbox")
-            settings = Path(temp) / "config" / "shp-photocraft-tools" / "settings.json"
+            settings = Path(temp) / "config" / "shp-portrait-tools" / "settings.json"
             settings.parent.mkdir(parents=True)
             settings.write_text('{"source_editor": "photoshop", "custom": "keep"}')
             before = settings.read_bytes()

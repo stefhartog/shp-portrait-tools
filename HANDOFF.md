@@ -24,6 +24,17 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## Folder rename (2026-11-21)
+
+Data, config and (Linux) state folders are now `shp-portrait-tools`. `shared/platform_paths.py` prefers
+the new folder and falls back to an existing `shp-photocraft-tools` one. `migrate_legacy_roots()` runs
+at the start of the launcher, `shp-skin-tools` and `install_desktop.py`: it moves only `dnb`, `state`,
+`webview`, `watchfolder` (data) and `launcher.json*`, `settings.json`, `photoshop`, the icon and the
+Chromium profile (config), all or nothing, then rewrites `launcher.json` paths that named moved data.
+A `--config` still naming the old folder is followed to the new file. Kept in the old folders: AI Fill's
+`crop`, the per-module PhotoCraft control folders (`<config>/shp-photocraft-tools/<module>`), and files
+Tools did not create. If any entry is in use the move is undone and the old folders stay in use.
+
 ## Scope, ownership and activation
 
 The public monorepo is [`stefhartog/shp-portrait-tools`](https://github.com/stefhartog/shp-portrait-tools)

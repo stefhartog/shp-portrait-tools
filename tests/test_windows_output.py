@@ -242,10 +242,10 @@ class PlatformPathTests(unittest.TestCase):
         with patch.dict(os.environ, env):
             for name in ("DNB_DATA", "WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):
                 os.environ.pop(name, None)
-            self.assertEqual(P.module_data("DNB_DATA", "dnb"), Path(env["LOCALAPPDATA"]) / "shp-photocraft-tools" / "dnb")
-            self.assertEqual(P.global_config_dir(), Path(env["APPDATA"]) / "shp-photocraft-tools")
+            self.assertEqual(P.module_data("DNB_DATA", "dnb"), Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "dnb")
+            self.assertEqual(P.global_config_dir(), Path(env["APPDATA"]) / "shp-portrait-tools")
             self.assertEqual(P.watch_directory("DNB_WATCH_DIRECTORY", "w", "w"),
-                             Path(env["LOCALAPPDATA"]) / "shp-photocraft-tools" / "w")
+                             Path(env["LOCALAPPDATA"]) / "shp-portrait-tools" / "w")
 
 if __name__ == "__main__":
     unittest.main()

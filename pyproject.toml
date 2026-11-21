@@ -26,11 +26,11 @@ research = ["matplotlib>=3.11.2", "jupyter>=1.1.1"]
 
 [project.scripts]
 shp-portrait-tools = "shp_portrait_tools.launcher:main"
-shp-skin-tools = "shp_portrait_tools.modules.dnb.ui_server:main"
+shp-skin-tools = "shp_portrait_tools.skin_tools:main"
 # Old command names, kept for one release; remove after the next tagged release.
 shp-photocraft-tools = "shp_portrait_tools.launcher:main"
-shp-photocraft-dnb = "shp_portrait_tools.modules.dnb.ui_server:main"
-shpdnb = "shp_portrait_tools.modules.dnb.ui_server:main"
+shp-photocraft-dnb = "shp_portrait_tools.skin_tools:main"
+shpdnb = "shp_portrait_tools.skin_tools:main"
 
 [build-system]
 requires = ["hatchling"]

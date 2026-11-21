@@ -109,7 +109,7 @@ Get the three Skin Tools ONNX models and their documented hashes from
 the model folder:
 
 ```sh
-mkdir -p "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+mkdir -p "$HOME/.local/share/shp-portrait-tools/dnb/models"
 ```
 
 The required filenames are `yunet.onnx`, `face_landmarks.onnx` and
@@ -118,9 +118,14 @@ desktop launcher and start the app:
 
 ```sh
 uv run --no-sync python scripts/install_desktop.py \
-  --models "$HOME/.local/share/shp-photocraft-tools/dnb/models"
+  --models "$HOME/.local/share/shp-portrait-tools/dnb/models"
 "$HOME/.local/bin/shp-photocraft-tools"
 ```
+
+Earlier installs kept their settings, models and logs in folders named
+`shp-photocraft-tools`. The first start of this version moves them to `shp-portrait-tools`
+(close every Tools window first); SHP AI Fill data and the PhotoCraft control folders stay where
+they are, and a note in the old folder lists what moved.
 
 Skin analysis also fetches pose-estimation weights on first use; internet access is
 needed then unless you prepare the cache in advance.

@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from shp_portrait_tools.shared.platform_paths import global_config_dir
+from shp_portrait_tools.shared.platform_paths import photocraft_config_dir
 from shp_portrait_tools.shared.filelock import file_lock
 
 OPENFILL = Path.home() / ".config" / "openfill-photocraft"
@@ -36,7 +36,8 @@ class AuthenticationError(ControlError):
 def detect_config(prefix, module, environ=None):
     """Module-specific env overrides shared SHP_PC_*; existing OpenFill auth is reused."""
     environ = os.environ if environ is None else environ
-    own = (global_config_dir() if sys.platform == "win32"
+    # PhotoCraft is configured against these token/exchange folders, so they keep the pre-rename name.
+    own = (photocraft_config_dir() if sys.platform == "win32"
            else Path.home() / ".config" / "shp-photocraft-tools") / module
 
     def env(key, default=None):
