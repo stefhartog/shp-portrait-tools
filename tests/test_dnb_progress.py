@@ -313,6 +313,9 @@ for (const [status,cached,enabled,expected] of [
             "function calculationDetailLines(", 1)[1].split("function cacheTimingLine(", 1)[0]
         operation = "let loadProgress = null;" + html.split("let loadProgress = null;", 1)[1].split("async function loadList()", 1)[0]
         get = "async function pcGet() {" + html.split("async function pcGet() {", 1)[1].split("async function pcSend(", 1)[0]
+        # Local Open goes through the picker helpers; this fake window has no JS bridge, so it uses the prompt.
+        get += "function desktopPicker() {" + html.split("function desktopPicker() {", 1)[1].split(
+            "let batchSelection = null;", 1)[0]
         resolver = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split(
             "const SKINTONE_DEFAULTS", 1)[0]
         harness = r"""

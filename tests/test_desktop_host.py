@@ -1,11 +1,16 @@
 """Shared desktop-host behaviour (tray model, module controls, quit/restart flow) against a fake platform."""
 
+import json
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
+from importlib.resources import files
 from pathlib import Path
 from unittest.mock import Mock
 
-from shp_portrait_tools.desktop.host import DesktopHost
+from shp_portrait_tools.desktop.host import DesktopHost, PickerApi
 
 RUNNING = {"phase": "running", "instance": "one", "busy": False, "loaded": True, "revision": 4, "startup_enabled": True}
 
@@ -123,6 +128,77 @@ class DesktopHostTests(unittest.TestCase):
         host.native_shutdown()
         self.assertEqual(host.spawned, [])
         self.assertFalse(host.quitting)
+
+    def test_picker_api_exposes_only_pickers_and_blocks_while_a_dialog_is_open(self):
+        host = self.host
+        picks = {"image": Path("C:/a.png"), "images": [Path("C:/a.png"), Path("C:/b.png")], "folder": Path("C:/dir")}
+        seen = []
+
+        class Fake:
+            def __init__(self, window):
+                seen.append(window)
+
+            def image(self):
+                return picks["image"]
+
+            def images(self):
+                return picks["images"]
+
+            def folder(self):
+                return picks["folder"]
+
+        host.picker_factory = Fake
+        api = PickerApi(host)
+        self.assertEqual(sorted(name for name in dir(api) if not name.startswith("_")),
+                         ["pick_folder", "pick_image", "pick_images"])
+        self.assertEqual(api.pick_image(), str(picks["image"]))
+        self.assertEqual(api.pick_images(), [str(path) for path in picks["images"]])
+        self.assertEqual(api.pick_folder(), str(picks["folder"]))
+        self.assertTrue(all(window is host.window for window in seen))
+        self.assertFalse(host.dialog_open)
+        host.dialog_open = True  # a tray dialog is already open: no second modal
+        self.assertIsNone(api.pick_image())
+        host.dialog_open = False
+        Fake.image = lambda self: None
+        self.assertIsNone(api.pick_image())
+        Fake.folder = lambda self: (_ for _ in ()).throw(OSError("dialog failed"))
+        self.assertIsNone(api.pick_folder())
+        self.assertFalse(host.dialog_open)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")
+    def test_page_uses_js_bridge_and_keeps_prompt_fallback(self):
+        html = files("shp_portrait_tools.modules.skin.ui").joinpath("index.html").read_text(encoding="utf-8")
+        code = re.search(r"function desktopPicker\(\) \{.*?\nlet batchSelection = null;", html, re.S)[0]
+        script = """
+const assert = require('node:assert/strict');
+const calls = [];
+let dialogChoice = 'folder', closeHandler = null;
+const dialog = {returnValue:'', addEventListener(type, handler){ closeHandler = handler; },
+  showModal(){ this.returnValue = dialogChoice; closeHandler(); }};
+const $ = id => { assert.equal(id, 'batchSourceDialog'); return dialog; };
+const bridge = {pick_image: async () => (calls.push('image'), 'C:/a.png'),
+  pick_images: async () => (calls.push('images'), ['C:/a.png', 'C:/b.png']),
+  pick_folder: async () => (calls.push('folder'), 'C:/dir')};
+let top = {pywebview: {api: bridge}}, prompts = [];
+const window = {get top(){ return top; }, prompt: request => (prompts.push(request), request === 'SHP_OPEN_IMAGE_V1' ? '/p.png' : '{"folder":"/x"}')};
+""" + code + """
+(async () => {
+  assert.equal(await chooseImage(), 'C:/a.png');
+  assert.deepEqual(await chooseBatchSource(), {folder:'C:/dir'});
+  dialogChoice = 'images'; assert.deepEqual(await chooseBatchSource(), {paths:['C:/a.png','C:/b.png']});
+  dialogChoice = 'cancel'; assert.equal(await chooseBatchSource(), null);
+  assert.deepEqual(calls, ['image', 'folder', 'images']);
+  assert.deepEqual(prompts, []);
+  top = {};  // a host without the bridge (Linux GTK) answers the old prompts
+  assert.equal(await chooseImage(), '/p.png');
+  assert.deepEqual(await chooseBatchSource(), {folder:'/x'});
+  assert.deepEqual(prompts, ['SHP_OPEN_IMAGE_V1', 'SHP_OPEN_BATCH_SOURCE_V1']);
+  top = {get pywebview(){ throw new Error('cross-origin'); }};
+  assert.equal(desktopPicker(), null);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_watch_folder_token_shows_window_once(self):
         host = self.host

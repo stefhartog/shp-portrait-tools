@@ -24,6 +24,17 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## File pickers through pywebview's JS API (2026-11-21)
+
+Local Open and the batch source now call `window.top.pywebview.api.pick_image()`, `pick_images()` and
+`pick_folder()`, served by `host.PickerApi` (the window's only `js_api` object; it exposes nothing else)
+and `host.Picker` (pywebview's native dialogs). The host refuses a second picker while a tray dialog is
+open and reports picker errors as a notice. The Folder-or-Images choice moved from a Win32 Yes/No/Cancel
+box into the page (`#batchSourceDialog`). Pages without the bridge keep the `prompt('SHP_OPEN_*')` path
+answered by the Linux GTK controller; plain browsers still see the "needs the Tools desktop window"
+message. On Windows the WebView2 ScriptDialogOpening hook no longer answers prompts (all prompts are
+cancelled) and only renders alert/confirm as native message boxes.
+
 ## Shared desktop host core (2026-11-21)
 
 `desktop/host.py` `DesktopHost` holds the platform-neutral host: geometry persistence, status/watch

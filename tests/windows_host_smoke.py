@@ -49,7 +49,9 @@ def main():
     root = Path(tempfile.mkdtemp(prefix="shp-smoke-"))
     inbox = root / "inbox"
     inbox.mkdir()
-    os.environ.update(SHP_TOOLS_DATA=str(root / "data"), DNB_WATCH_DIRECTORY=str(inbox))
+    # Every Tools folder in the temp tree: data/state, global settings and the inbox.
+    os.environ.update(SHP_TOOLS_DATA=str(root / "data"), SKIN_WATCH_DIRECTORY=str(inbox),
+                      LOCALAPPDATA=str(root / "local"), APPDATA=str(root / "roaming"))
     config = root / "launcher.json"
     config.write_text(json.dumps({"models": args.models, "ports": {"skin": 18765}, "shell_port": 18760,
                                   "startup": {"skin": True}}))
@@ -68,8 +70,6 @@ def main():
             return True
         def error(self, *a):
             print("ERRORBOX", a, flush=True)
-        def batch_source(self):
-            return "folder"
 
     class FakePicker:
         def __init__(self, window):
@@ -77,7 +77,6 @@ def main():
         def image(self): return picks["image"]
         def images(self): return picks["images"]
         def folder(self): return picks["folder"]
-        def batch_source(self): return "images"
 
     host = wc.Host("http://127.0.0.1:18760/", root / "data" / "webview", dialogs=FakeDialogs(), picker_factory=FakePicker)
 
@@ -97,13 +96,15 @@ def main():
                 time.sleep(4)
                 inner = js("(()=>{const f=document.querySelector('iframe');try{return f.contentDocument.title+'|'+f.contentWindow.__shpNativeFileDialog}catch(e){return 'x:'+e}})()")
                 check("iframe native flag", str(inner).endswith("|true"), str(inner))
-            for request in ("SHP_OPEN_IMAGE_V1", "SHP_OPEN_BATCH_FOLDER_V1", "SHP_OPEN_BATCH_IMAGES_V1", "SHP_OPEN_BATCH_SOURCE_V1"):
-                answer = js(f"window.prompt('{request}')")
-                print("  prompt", request, "->", answer, flush=True)
-                expected = {"SHP_OPEN_IMAGE_V1": picks["image"], "SHP_OPEN_BATCH_FOLDER_V1": picks["folder"],
-                            "SHP_OPEN_BATCH_IMAGES_V1": json.dumps(picks["images"]),
-                            "SHP_OPEN_BATCH_SOURCE_V1": json.dumps({"paths": picks["images"]})}[request]
-                check("prompt " + request, answer == expected)
+            reach = js("(()=>{const f=document.querySelector('iframe');try{return f.contentWindow.desktopPicker()!==null}"
+                       "catch(e){return 'x:'+e}})()")
+            check("page reaches the JS picker bridge", reach is True, str(reach))
+            for method, expected in (("pick_image", picks["image"]), ("pick_folder", picks["folder"]),
+                                     ("pick_images", picks["images"])):
+                answer = js(f"window.pywebview.api.{method}()")
+                print("  picker", method, "->", answer, flush=True)
+                check("picker " + method, answer == expected)
+            check("old prompt is cancelled", js("window.prompt('SHP_OPEN_IMAGE_V1')") is None)
             host.hide()
             time.sleep(1)
             check("hide to tray", host.window.native.Visible is False)

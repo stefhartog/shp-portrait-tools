@@ -12,28 +12,57 @@ import sys
 import threading
 import time
 
-from .protocol import Connection, busy_modules, external_lines, validate_url, work_signature
+from .protocol import IMAGE_EXTENSIONS, Connection, busy_modules, external_lines, validate_url, work_signature
 
 MODULE_LABELS = {"skin": "Skin Tools"}
 WINDOW_TITLE = "SHP Portrait Tools"
 DEFAULT_SIZE, MINIMUM_SIZE, BACKGROUND = (1399, 949), (363, 626), "#1b1b1b"
 
 
-def answer_open_prompt(request, picker):
-    """The text for window.prompt(request), shared by every host that bridges it; None means cancelled."""
-    batch = request == "SHP_OPEN_BATCH_SOURCE_V1"
-    if batch:
-        choice = picker.batch_source()
-        if choice is None:
-            return None
-        request = "SHP_OPEN_BATCH_FOLDER_V1" if choice == "folder" else "SHP_OPEN_BATCH_IMAGES_V1"
-    if request == "SHP_OPEN_BATCH_FOLDER_V1":
-        folder = picker.folder()
-        return None if folder is None else json.dumps({"folder": folder}) if batch else folder
-    if request == "SHP_OPEN_BATCH_IMAGES_V1":
-        paths = picker.images()
-        return None if not paths else json.dumps({"paths": paths} if batch else paths)
-    return picker.image()
+class Picker:
+    """pywebview's native file/folder dialogs; each returns None when cancelled."""
+
+    def __init__(self, window):
+        self.window = window
+
+    def _open(self, kind, multiple=False):
+        import webview
+        filters = (f"Images ({';'.join('*.' + extension for extension in IMAGE_EXTENSIONS)})",)
+        dialog = webview.FileDialog.FOLDER if kind == "folder" else webview.FileDialog.OPEN
+        result = self.window.create_file_dialog(dialog, allow_multiple=multiple,
+                                                file_types=() if kind == "folder" else filters)
+        return list(result) if result else None
+
+    def image(self):
+        paths = self._open("image")
+        return paths[0] if paths else None
+
+    def images(self):
+        return self._open("images", True)
+
+    def folder(self):
+        paths = self._open("folder")
+        return paths[0] if paths else None
+
+
+class PickerApi:
+    """The only calls the page can make through pywebview's JS bridge (`window.pywebview.api`).
+
+    pywebview exposes this object's public methods; the host reference is private so nothing else is
+    reachable from JavaScript. Each call returns a path, a list of paths, or null when cancelled.
+    """
+
+    def __init__(self, host):
+        self._host = host
+
+    def pick_image(self):
+        return self._host.pick("image")
+
+    def pick_images(self):
+        return self._host.pick("images")
+
+    def pick_folder(self):
+        return self._host.pick("folder")
 
 
 class DesktopHost:
@@ -49,6 +78,7 @@ class DesktopHost:
                                  "--config", str(launcher_config)] if launcher_python and launcher_config else None)
         self.window = self.icon = self.single = None
         self.dialogs = None
+        self.picker_factory = Picker
         self.quitting = self.dialog_open = self.control_pending = self.tray_ready = self.hooked = False
         self.pending_action = "quit"
         self.pending_module = None
@@ -147,7 +177,7 @@ class DesktopHost:
         self.window = webview.create_window(
             WINDOW_TITLE, html=f"<body style='background:{BACKGROUND}'></body>",
             width=self.geometry.get("width", DEFAULT_SIZE[0]), height=self.geometry.get("height", DEFAULT_SIZE[1]),
-            min_size=MINIMUM_SIZE, background_color=BACKGROUND, **options)
+            min_size=MINIMUM_SIZE, background_color=BACKGROUND, js_api=PickerApi(self), **options)
         events = self.window.events
         events.closing += self.on_closing
         events.loaded += self.on_loaded
@@ -160,6 +190,22 @@ class DesktopHost:
             return
         self.hooked = True
         self.window.load_url(self.base + "/")
+
+    def pick(self, kind):
+        """Run one native picker for the page; tray actions wait while it is open."""
+        if self.quitting or self.dialog_open or kind not in ("image", "images", "folder"):
+            return None
+        self.dialog_open = True
+        try:
+            result = getattr(self.picker_factory(self.window), kind)()
+        except Exception as error:
+            self.message(f"File chooser failed: {error}")
+            return None
+        finally:
+            self.dialog_open = False
+        if kind == "images":
+            return [str(path) for path in result] if result else None
+        return str(result) if result else None
 
     def on_closing(self):
         if self.quitting:

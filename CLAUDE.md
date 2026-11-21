@@ -96,6 +96,11 @@ launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy,
   and the quit/restart/reload confirmation flow (with the 90 s drain wait). Platform hosts subclass it and add only
   dialogs/pickers, webview hooks, the tray widget and process helpers (`own_identity`, `process_alive`,
   `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
+  File pickers: `PickerApi` (only `pick_image`/`pick_images`/`pick_folder`) is the window's pywebview `js_api`;
+  the Skin Tools page reaches it as `window.top.pywebview.api` (same-origin iframe) and asks Folder-or-Images
+  in its own `#batchSourceDialog`. Without the bridge (Linux GTK host) the page falls back to the old
+  `prompt('SHP_OPEN_*')` protocol. The Windows host no longer bridges prompts; its WebView2 dialog hook only
+  gives `alert`/`confirm` native message boxes.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).

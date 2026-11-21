@@ -11,19 +11,18 @@ import argparse
 import ctypes
 import hashlib
 import json
-import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .host import MODULE_LABELS, DesktopHost, answer_open_prompt  # noqa: F401 (re-exported for callers/tests)
+from .host import MODULE_LABELS, DesktopHost, Picker
 from .icons import icon_image, write_icon
-from .protocol import IMAGE_EXTENSIONS, OPEN_PROMPTS, validate_url
+from .protocol import validate_url
 
 WEBVIEW2_CLIENT = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
-MB_OK, MB_OKCANCEL, MB_YESNOCANCEL, MB_YESNO = 0, 1, 3, 4
-MB_ICONERROR, MB_ICONQUESTION, MB_ICONWARNING, MB_DEFBUTTON2, MB_SETFOREGROUND = 0x10, 0x20, 0x30, 0x100, 0x10000
-IDYES, IDNO = 6, 7
+MB_OK, MB_OKCANCEL, MB_YESNO = 0, 1, 4
+MB_ICONERROR, MB_ICONWARNING, MB_DEFBUTTON2, MB_SETFOREGROUND = 0x10, 0x30, 0x100, 0x10000
+IDYES = 6
 
 
 def webview2_version():
@@ -62,41 +61,6 @@ class Dialogs:
     def ok_cancel(self, text):
         return self._box("SHP Portrait Tools", text, MB_OKCANCEL) == 1
 
-    def batch_source(self):
-        answer = self._box("Choose batch source",
-                           "Choose one folder's direct images, or select image files from one folder.\n\n"
-                           "Yes: Folder\nNo: Images\nCancel: Cancel", MB_YESNOCANCEL | MB_ICONQUESTION)
-        return {IDYES: "folder", IDNO: "images"}.get(answer)
-
-
-class Picker:
-    """pywebview file/folder pickers; each returns None when cancelled."""
-
-    def __init__(self, window, dialogs):
-        self.window, self.dialogs = window, dialogs
-
-    def _open(self, kind, multiple=False):
-        import webview
-        filters = (f"Images ({';'.join('*.' + extension for extension in IMAGE_EXTENSIONS)})",)
-        dialog = webview.FileDialog.FOLDER if kind == "folder" else webview.FileDialog.OPEN
-        result = self.window.create_file_dialog(dialog, allow_multiple=multiple,
-                                                file_types=() if kind == "folder" else filters)
-        return list(result) if result else None
-
-    def image(self):
-        paths = self._open("image")
-        return paths[0] if paths else None
-
-    def images(self):
-        return self._open("images", True)
-
-    def folder(self):
-        paths = self._open("folder")
-        return paths[0] if paths else None
-
-    def batch_source(self):
-        return self.dialogs.batch_source()
-
 
 def tray_image():
     return icon_image(tray=True, size=64)
@@ -106,7 +70,7 @@ class Host(DesktopHost):
     def __init__(self, url, data, launcher_python=None, launcher_config=None, dialogs=None, picker_factory=None):
         super().__init__(url, data, launcher_python, launcher_config)
         self.dialogs = dialogs or Dialogs(self.owner_handle)
-        self.picker_factory = picker_factory or (lambda window: Picker(window, self.dialogs))
+        self.picker_factory = picker_factory or Picker
 
     # Platform hooks ---------------------------------------------------------------------------
 
@@ -155,7 +119,8 @@ class Host(DesktopHost):
 
         def attach():
             core = form.webview.CoreWebView2
-            # WebView2 raises ScriptDialogOpening only when its built-in dialogs are off; we then own all of them.
+            # WebView2 raises ScriptDialogOpening only when its built-in dialogs are off; we then own all of them
+            # (native message boxes for alert/confirm). File pickers use pywebview's JS API, not prompt().
             core.Settings.AreDefaultScriptDialogsEnabled = False
             core.ScriptDialogOpening += self.on_script_dialog
             core.PermissionRequested += self.on_permission
@@ -188,11 +153,7 @@ class Host(DesktopHost):
 
     def on_script_dialog(self, sender, args):
         request, kind = str(args.Message), int(args.Kind)  # Alert=0, Confirm=1, Prompt=2, Beforeunload=3
-        origin = urlsplit(str(args.Uri))
-        if kind == 2 and request in OPEN_PROMPTS and f"{origin.scheme}://{origin.netloc}" == self.base:
-            deferral = args.GetDeferral()
-            threading.Thread(target=self.answer_prompt, args=(args, deferral, request), daemon=True).start()
-        elif kind == 0:
+        if kind == 0:
             self.dialogs.alert(request)
             args.Accept()
         elif kind == 1:
@@ -200,26 +161,7 @@ class Host(DesktopHost):
                 args.Accept()
         elif kind == 3:
             args.Accept()
-        # Other prompts stay cancelled (null): WebView2 only raises this event when its own dialogs are disabled.
-
-    def answer_prompt(self, args, deferral, request):
-        from System import Func, Type
-        self.dialog_open = True
-        answer = None
-        try:
-            answer = answer_open_prompt(request, self.picker_factory(self.window))
-        except Exception as error:
-            self.message(f"File chooser failed: {error}")
-        finally:
-            self.dialog_open = False
-
-        def finish():
-            if answer is not None:
-                args.ResultText = answer
-                args.Accept()
-            deferral.Complete()
-
-        self.window.native.Invoke(Func[Type](finish))
+        # Prompts stay cancelled (null): WebView2 only raises this event when its own dialogs are disabled.
 
     # Tray (pystray widget over the shared tray model) -----------------------------------------
 

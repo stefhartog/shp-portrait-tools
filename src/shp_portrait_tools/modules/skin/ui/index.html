@@ -113,6 +113,12 @@
     <div class="preset-dialog-actions"><button type="submit" value="save">Save</button><button type="submit" value="cancel" formnovalidate>Cancel</button></div>
   </form>
 </dialog>
+<dialog id="batchSourceDialog" aria-labelledby="batchSourceTitle">
+  <form method="dialog">
+    <p id="batchSourceTitle">Choose one folder's direct images, or select image files from one folder.</p>
+    <div class="preset-dialog-actions"><button type="submit" value="folder">Folder</button><button type="submit" value="images">Images</button><button type="submit" value="cancel" formnovalidate>Cancel</button></div>
+  </form>
+</dialog>
 <div id="app">
 <div id="bar"><div id="barActions"><button class="workflow" id="pcConnect" hidden title="Connect to a controlled PhotoCraft window or launch a separate one.">PhotoCraft</button><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Send the corrected photograph to PhotoCraft." disabled>Send Result</button><button class="workflow" id="pcSendLayers" disabled hidden>Send Layers</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
 <aside>
@@ -1518,7 +1524,7 @@ async function pcGet() {
       if (!connection.connected) {
         if (connection.code === 'authentication') throw new Error(connection.message);
         if (!window.__shpNativeFileDialog) throw new Error('Local Open needs the Tools desktop window. In a standalone browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
-        path = window.prompt('SHP_OPEN_IMAGE_V1');
+        path = await chooseImage();
         if (!path) { restoreAfterFailedLoad(); recordLoadStage('Image selection cancelled'); loadProgress.finished = true; setStatus('Image selection cancelled.'); return; }
       }
     }
@@ -1670,14 +1676,46 @@ function renderBatch(batch) {
     return row;
   }));
 }
+// Native pickers. The desktop host exposes them through pywebview's JS API on the top window, which
+// shares this page's origin. A host without that bridge (the Linux GTK controller) still answers the
+// SHP_OPEN_* prompts, so those remain the fallback.
+function desktopPicker() {
+  try {
+    const api = window.top && window.top.pywebview && window.top.pywebview.api;
+    return api && typeof api.pick_image === 'function' ? api : null;
+  } catch (e) { return null; }
+}
+async function chooseImage() {
+  const picker = desktopPicker();
+  return picker ? await picker.pick_image() : window.prompt('SHP_OPEN_IMAGE_V1');
+}
+function chooseBatchKind() {
+  const dialog = $('batchSourceDialog');
+  return new Promise(resolve => {
+    dialog.returnValue = '';
+    dialog.addEventListener('close', () => resolve(['folder','images'].includes(dialog.returnValue) ? dialog.returnValue : null),
+      {once:true});
+    dialog.showModal();
+  });
+}
+async function chooseBatchSource() {
+  const picker = desktopPicker();
+  if (!picker) {
+    const selected = window.prompt('SHP_OPEN_BATCH_SOURCE_V1');
+    return selected ? JSON.parse(selected) : null;
+  }
+  const kind = await chooseBatchKind();
+  if (kind === 'folder') { const folder = await picker.pick_folder(); return folder ? {folder} : null; }
+  if (kind === 'images') { const paths = await picker.pick_images(); return paths && paths.length ? {paths} : null; }
+  return null;
+}
 let batchSelection = null;
 $('batchChooseSource').onclick = async () => {
   if (state.busy) return;
   if (!window.__shpNativeFileDialog) { setStatus('Batch source selection needs the Tools desktop window.', true); return; }
   try {
-    const selected = window.prompt('SHP_OPEN_BATCH_SOURCE_V1');
-    if (!selected) return;
-    const source = JSON.parse(selected);
+    const source = await chooseBatchSource();
+    if (!source) return;
     const folder = typeof source?.folder === 'string' && source.folder.length > 0;
     const paths = Array.isArray(source?.paths) && source.paths.length > 0 &&
       source.paths.every(path => typeof path === 'string' && path.length > 0);

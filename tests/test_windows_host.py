@@ -83,25 +83,6 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_url("http://example.com:1/")
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_prompt_protocol(self):
-        from shp_portrait_tools.desktop.windows_controller import answer_open_prompt
-
-        class Fake:
-            def __init__(self, choice="folder"):
-                self.choice = choice
-            def image(self): return "C:\\a.png"
-            def images(self): return ["C:\\a.png", "C:\\b.png"]
-            def folder(self): return "C:\\dir"
-            def batch_source(self): return self.choice
-
-        self.assertEqual(answer_open_prompt("SHP_OPEN_IMAGE_V1", Fake()), "C:\\a.png")
-        self.assertEqual(answer_open_prompt("SHP_OPEN_BATCH_FOLDER_V1", Fake()), "C:\\dir")
-        self.assertEqual(json.loads(answer_open_prompt("SHP_OPEN_BATCH_IMAGES_V1", Fake())), Fake().images())
-        self.assertEqual(json.loads(answer_open_prompt("SHP_OPEN_BATCH_SOURCE_V1", Fake())), {"folder": "C:\\dir"})
-        self.assertEqual(json.loads(answer_open_prompt("SHP_OPEN_BATCH_SOURCE_V1", Fake("images")))["paths"], Fake().images())
-        self.assertIsNone(answer_open_prompt("SHP_OPEN_BATCH_SOURCE_V1", Fake(None)))
-
 
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class NoConsoleTests(unittest.TestCase):
