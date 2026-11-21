@@ -29,10 +29,10 @@ def fixture():
         models.mkdir()
         for filename in launcher.MODEL_FILES:
             (models / filename).write_bytes(b"fixture only - never loaded")
-        sockets = [socket.socket() for _ in launcher.MODULES]
+        sockets = [socket.socket() for _ in launcher.DEFAULT_PORTS]
         for sock in sockets:
             sock.bind(("127.0.0.1", 0))
-        ports = {name: sock.getsockname()[1] for name, sock in zip(launcher.MODULES, sockets)}
+        ports = {name: sock.getsockname()[1] for name, sock in zip(launcher.DEFAULT_PORTS, sockets)}
         for sock in sockets:
             sock.close()
         config = {"models": str(models), "ports": ports, "shell_port": 0}
@@ -50,10 +50,10 @@ def fixture():
             return spawn(command, **kwargs)
 
         with patch.dict(os.environ, env), patch.object(supervisor.subprocess, "Popen", side_effect=child):
-            modules = supervisor.Modules(config, root, root / "logs", "synthetic-shell-fixture")
+            modules = supervisor.SkinWorker(config, root, root / "logs", "synthetic-shell-fixture")
             server = supervisor.ShellServer(("127.0.0.1", 0), modules)
             threads = [threading.Thread(target=server.serve_forever),
-                       threading.Thread(target=modules.start_all),
+                       threading.Thread(target=modules.start_on_launch),
                        threading.Thread(target=modules.monitor)]
             for thread in threads:
                 thread.start()

@@ -88,7 +88,9 @@ launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy,
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
   serving a single-file UI (`modules/skin/ui/index.html`) plus shared assets from `shared/ui/`
   (no CDN). The shell talks to the module iframe via origin-checked `postMessage` (`shp-tools-mode` with sequence acks).
-  The supervisor still has the multi-module registry (`MODULES` in `launcher.py`), now with one entry.
+  The supervisor manages exactly one worker (`SkinWorker`; `MODULE`/`SERVER_MODULE` in `launcher.py`). Its HTTP
+  API keeps the per-module shape (`/api/status` → `modules.skin`, `/api/modules/skin/<action>`) that the shell and
+  both tray hosts use, and it still proxies `/skin/` so the shell and the Skin Tools page share one origin.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).

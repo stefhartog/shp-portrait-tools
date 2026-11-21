@@ -1,7 +1,6 @@
-"""Loopback shell, fixed module proxy and capability-guarded child supervision."""
+"""Loopback shell, fixed Skin Tools proxy and capability-guarded supervision of that one worker."""
 
 import argparse
-import contextlib
 import http.client
 import json
 import os
@@ -13,13 +12,13 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .launcher import MODULES, LaunchError, background_python, probe, read_config, verify, set_startup, apply_photocraft_env
+from .launcher import (MODULE, SERVER_MODULE, LaunchError, apply_photocraft_env, background_python, probe,
+                       read_config, set_startup, verify)
 from .shared.health import identity
 from .shared.lifecycle import BrowserHandler, BrowserServer, script
 from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
@@ -43,51 +42,60 @@ def photocraft_environment(config, environ):
     return env
 
 
-@dataclass
-class Module:
-    process: subprocess.Popen | None = None
-    instance: str | None = None
-    token: str = ""
-    phase: str = "stopped"
-    error: str | None = None
-    process_identity: tuple | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+class SkinWorker:
+    """The one supervised service: start, ownership-checked control, status and draining shutdown."""
 
+    name = MODULE
 
-class Modules:
     def __init__(self, config, data, logs, instance, config_path=None):
         self.config, self.data, self.logs, self.instance = config, data, logs, instance
         self.config_path = config_path
         self.preferences_lock = threading.Lock()
-        self.modules = {name: Module() for name in MODULES}
+        self.lock = threading.Lock()  # one lifecycle action at a time
+        self.process = None
+        self.process_identity = None
+        self.worker_instance = None
+        self.token = ""
+        self.phase = "stopped"
+        self.error = None
         self.finished = threading.Event()
         self.cache_lock = threading.Lock()
-        self.cache = {"modules": {name: {"phase": "starting"} for name in MODULES}, "external": {}}
+        self.cache = {"external": {}}
         data.mkdir(parents=True, exist_ok=True)
         logs.mkdir(parents=True, exist_ok=True)
 
-    def expected(self, name):
-        return identity(name, module_folder(self.data, name), self.config["models"] if name == "skin" else None)
+    @property
+    def port(self):
+        return self.config["ports"][MODULE]
 
-    def checked(self, name):
-        module = self.modules[name]
-        if module.process is None or module.process.poll() is not None:
-            raise LaunchError(f"{name} is not running. Use Start. See {self.logs / (name + '.log')}")
-        health = probe(self.config["ports"][name])
+    @property
+    def log_path(self):
+        return self.logs / f"{MODULE}.log"
+
+    def alive(self):
+        return self.process is not None and self.process.poll() is None
+
+    def expected(self):
+        return identity(MODULE, module_folder(self.data, MODULE), self.config["models"])
+
+    def checked(self):
+        if not self.alive():
+            raise LaunchError(f"{MODULE} is not running. Use Start. See {self.log_path}")
+        health = probe(self.port)
         if health is None:
-            raise LaunchError(f"{name} is not responding. See {self.logs / (name + '.log')}")
-        verify(health, self.expected(name), self.config["ports"][name])
-        if (not owns(module.process, health.get("pid")) or health.get("instance") != module.instance
+            raise LaunchError(f"{MODULE} is not responding. See {self.log_path}")
+        verify(health, self.expected(), self.port)
+        if (not owns(self.process, health.get("pid")) or health.get("instance") != self.worker_instance
                 or health.get("supervisor") != self.instance or health.get("owner_protocol") != 1):
-            raise LaunchError(f"{name} ownership changed. No unrelated process will be controlled.")
+            raise LaunchError(f"{MODULE} ownership changed. No unrelated process will be controlled.")
         return health
 
-    def owner(self, name, action, body=None):
-        self.checked(name)
-        connection = http.client.HTTPConnection("127.0.0.1", self.config["ports"][name], timeout=3)
+    def owner(self, action, body=None):
+        self.checked()
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         try:
             connection.request("POST", f"/api/owner/{action}", json.dumps(body or {}),
-                               {"Content-Type": "application/json", "X-SHP-Owner": self.modules[name].token})
+                               {"Content-Type": "application/json", "X-SHP-Owner": self.token})
             response = connection.getresponse()
             result = json.loads(response.read(16384))
             if response.status != 200:
@@ -96,79 +104,74 @@ class Modules:
                                    response.status, **details)
             return result
         except (OSError, http.client.HTTPException, ValueError) as error:
-            raise LaunchError(f"{name} control connection failed: {error}") from error
+            raise LaunchError(f"{MODULE} control connection failed: {error}") from error
         finally:
             connection.close()
 
-    def start(self, name):
-        module = self.modules[name]
-        if module.process is not None and module.process.poll() is None:
-            self.checked(name)
+    def start(self):
+        if self.alive():
+            self.checked()
             return
-        module.phase, module.error = "starting", None
-        port = self.config["ports"][name]
+        self.phase, self.error = "starting", None
         try:
-            if probe(port) is not None:
-                raise LaunchError(f"Port {port} is already occupied. This supervisor did not start that process; "
+            if probe(self.port) is not None:
+                raise LaunchError(f"Port {self.port} is already occupied. This supervisor did not start that process; "
                                   "finish its work and stop it yourself, or configure a different port.")
-            module.instance, module.token = uuid.uuid4().hex, secrets.token_hex(32)
+            self.worker_instance, self.token = uuid.uuid4().hex, secrets.token_hex(32)
             env = dict(photocraft_environment(self.config, os.environ),
-                       SKIN_DATA=str(module_folder(self.data, "skin")),
-                       SKIN_MODELS=self.config["models"], SHP_SERVER_INSTANCE=module.instance,
-                       SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=module.token,
+                       SKIN_DATA=str(module_folder(self.data, MODULE)),
+                       SKIN_MODELS=self.config["models"], SHP_SERVER_INSTANCE=self.worker_instance,
+                       SHP_SUPERVISOR_INSTANCE=self.instance, SHP_SUPERVISOR_TOKEN=self.token,
                        SHP_SUPERVISOR_PID=str(os.getpid()),
                        SHP_SUPERVISOR_CREATED=str(process_identity(os.getpid())[1]))
             if self.config.get("exiftool"):
                 env["SKIN_EXIFTOOL"] = self.config["exiftool"]
-            log_path = self.logs / f"{name}.log"
-            with log_path.open("ab") as log:
-                module.process = subprocess.Popen(
-                    [background_python(), "-u", "-m", "shp_portrait_tools.modules." + MODULES[name],
-                     "--port", str(port)], env=env, cwd=str(self.data),
+            with self.log_path.open("ab") as log:
+                self.process = subprocess.Popen(
+                    [background_python(), "-u", "-m", SERVER_MODULE, "--port", str(self.port)],
+                    env=env, cwd=str(self.data),
                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **spawn_options())
-            module.process_identity = adopt(module.process) or process_identity(module.process.pid)
+            self.process_identity = adopt(self.process) or process_identity(self.process.pid)
             deadline, failure = time.monotonic() + 40, None
             while time.monotonic() < deadline:
-                if module.process.poll() is not None:
-                    raise LaunchError(f"{name} exited with status {module.process.returncode}. See {log_path}")
+                if self.process.poll() is not None:
+                    raise LaunchError(f"{MODULE} exited with status {self.process.returncode}. See {self.log_path}")
                 try:
-                    self.checked(name)
-                    module.phase = "running"
+                    self.checked()
+                    self.phase = "running"
                     return
                 except LaunchError as error:
                     failure = error
                 time.sleep(0.15)
-            raise LaunchError(f"{name} startup timed out: {failure}. See {log_path}")
+            raise LaunchError(f"{MODULE} startup timed out: {failure}. See {self.log_path}")
         except (LaunchError, OSError) as error:
             # Only a child that has never been exposed through the proxy is eligible for startup cleanup.
-            if module.process is not None and module.process.poll() is None:
-                module.process.terminate()
+            if self.alive():
+                self.process.terminate()
                 try:
-                    module.process.wait(timeout=5)
+                    self.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    module.process.kill()
-                    module.process.wait()
-            module.phase, module.error = "error", str(error)
+                    self.process.kill()
+                    self.process.wait()
+            self.phase, self.error = "error", str(error)
             raise LaunchError(str(error)) from error
 
-    def stop(self, name, confirm=False, revision=None):
-        module = self.modules[name]
-        if module.process is None or module.process.poll() is not None:
-            module.phase, module.error = "stopped", None
+    def stop(self, confirm=False, revision=None):
+        if not self.alive():
+            self.phase, self.error = "stopped", None
             return
-        self.owner(name, "stop", {"confirm": confirm, "revision": revision})
-        module.phase = "stopping"
+        self.owner("stop", {"confirm": confirm, "revision": revision})
+        self.phase = "stopping"
         try:
-            module.process.wait(timeout=8)
+            self.process.wait(timeout=8)
         except subprocess.TimeoutExpired as error:
-            raise LaunchError(f"{name} is still stopping. No force-kill was sent; inspect its log.") from error
-        module.phase, module.error = "stopped", None
+            raise LaunchError(f"{MODULE} is still stopping. No force-kill was sent; inspect its log.") from error
+        self.phase, self.error = "stopped", None
 
-    def control(self, name, action, request):
-        if name not in MODULES or action not in ("start", "stop", "restart", "startup"):
+    def control(self, action, request):
+        if action not in ("start", "stop", "restart", "startup"):
             raise ControlError("Unknown module or action", "invalid", 400)
-        module = self.modules[name]
-        if not module.lock.acquire(blocking=False):
+        if not self.lock.acquire(blocking=False):
             raise ControlError("Another action is already running for this module.", "busy")
         try:
             if self.finished.is_set():
@@ -177,57 +180,52 @@ class Modules:
                 if self.config_path is None:
                     raise LaunchError("Startup preferences are unavailable without a launcher configuration")
                 with self.preferences_lock:
-                    startup = set_startup(self.config_path, name, request.get("enabled"))
-                    self.config["startup"] = startup
-                return self.snapshot(name)
+                    self.config["startup"] = set_startup(self.config_path, MODULE, request.get("enabled"))
+                return self.snapshot()
             if action != "start":
-                if request.get("instance") != module.instance:
+                if request.get("instance") != self.worker_instance:
                     raise ControlError("Module instance changed. Refresh its status and try again.", "changed")
-                self.stop(name, request.get("confirm", False), request.get("revision"))
+                self.stop(request.get("confirm", False), request.get("revision"))
             if action != "stop":
-                self.start(name)
-            return self.snapshot(name)
+                self.start()
+            return self.snapshot()
         except LaunchError as error:
             if action != "startup":
-                module.error = str(error)
+                self.error = str(error)
             raise
         finally:
-            module.lock.release()
+            self.lock.release()
 
-    def snapshot(self, name):
-        module = self.modules[name]
-        if module.phase == "stopping" and (module.process is None or module.process.poll() is not None):
-            module.phase, module.error = "stopped", None
-        result = {"phase": module.phase, "instance": module.instance, "busy": False, "loaded": False,
-                  "revision": None, "error": module.error,
-                  "startup_enabled": self.config.get("startup", {}).get(name, True)}
-        if module.phase == "stopped":
+    def snapshot(self):
+        if self.phase == "stopping" and not self.alive():
+            self.phase, self.error = "stopped", None
+        result = {"phase": self.phase, "instance": self.worker_instance, "busy": False, "loaded": False,
+                  "revision": None, "error": self.error,
+                  "startup_enabled": self.config.get("startup", {}).get(MODULE, True)}
+        if self.phase == "stopped":
             return result
-        if module.phase in ("starting", "stopping"):
+        if self.phase in ("starting", "stopping"):
             result["busy"] = True
-        elif module.process is not None and module.process.poll() is None:
+        elif self.alive():
             try:
-                result.update(self.owner(name, "status"))
+                result.update(self.owner("status"))
                 result["phase"] = "stopping" if result["stopping"] else "running"
             except (LaunchError, ControlError) as error:
                 result.update(phase="unavailable", busy=True, error=str(error))
-        elif module.phase == "running":
-            result.update(phase="error", error=f"Server exited ({module.process.returncode}). See {name}.log")
+        elif self.phase == "running":
+            result.update(phase="error", error=f"Server exited ({self.process.returncode}). See {MODULE}.log")
         return result
 
     def busy(self):
-        return any(self.snapshot(name)["busy"] for name in MODULES)
+        return self.snapshot()["busy"]
 
-    def start_all(self):
-        for name in MODULES:
-            if self.finished.is_set():
-                return
-            if not self.config.get("startup", {}).get(name, True):
-                continue
-            try:
-                self.control(name, "start", {})
-            except (LaunchError, ControlError) as error:
-                print(f"{name} startup: {error}", flush=True)
+    def start_on_launch(self):
+        if self.finished.is_set() or not self.config.get("startup", {}).get(MODULE, True):
+            return
+        try:
+            self.control("start", {})
+        except (LaunchError, ControlError) as error:
+            print(f"{MODULE} startup: {error}", flush=True)
 
     def monitor(self):
         while not self.finished.is_set():
@@ -237,74 +235,62 @@ class Modules:
             self.finished.wait(2)
 
     def status(self):
+        """Shell/tray status. The `modules` mapping keeps its shape so both desktop hosts stay compatible."""
         with self.cache_lock:
             external = self.cache["external"]
-        return {"modules": {name: self.snapshot(name) for name in MODULES}, "external": external}
+        return {"modules": {MODULE: self.snapshot()}, "external": external}
 
     def close(self, force=False, strict=False):
         self.finished.set()
         if force:
-            with contextlib.ExitStack() as stack:
-                for lock in [module.lock for module in self.modules.values()]:
-                    if not lock.acquire(timeout=3):
-                        raise RuntimeError("Module lifecycle action did not settle; refusing unsafe force restart")
-                    stack.callback(lock.release)
+            if not self.lock.acquire(timeout=3):
+                raise RuntimeError("Module lifecycle action did not settle; refusing unsafe force restart")
+            try:
                 return self.force_close()
-        for name, module in self.modules.items():
-            with module.lock:
-                deadline = time.monotonic() + 30
-                while True:
-                    try:
-                        self.stop(name, confirm=True)
-                        if strict:
-                            require_session_stopped(module.process)
-                        break
-                    except ControlError as error:
-                        if error.code == "busy":
-                            if strict and time.monotonic() >= deadline:
-                                raise RuntimeError(f"{name} remained busy; normal shutdown did not force-stop it") from error
-                            time.sleep(.2)
-                            continue
-                        print(f"{name} shutdown deferred: {error}", flush=True)
-                        if strict:
-                            raise RuntimeError(f"{name} did not stop safely: {error}") from error
-                        break
-                    except LaunchError as error:
-                        # If control is unreachable the child detects parent exit and drains itself.
-                        print(f"{name} shutdown deferred: {error}", flush=True)
-                        if strict:
-                            raise RuntimeError(f"{name} did not stop safely: {error}") from error
-                        break
+            finally:
+                self.lock.release()
+        with self.lock:
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    self.stop(confirm=True)
+                    if strict:
+                        require_session_stopped(self.process)
+                    return
+                except ControlError as error:
+                    if error.code == "busy":
+                        if strict and time.monotonic() >= deadline:
+                            raise RuntimeError(f"{MODULE} remained busy; normal shutdown did not force-stop it") from error
+                        time.sleep(.2)
+                        continue
+                    print(f"{MODULE} shutdown deferred: {error}", flush=True)
+                    if strict:
+                        raise RuntimeError(f"{MODULE} did not stop safely: {error}") from error
+                    return
+                except LaunchError as error:
+                    # If control is unreachable the child detects parent exit and drains itself.
+                    print(f"{MODULE} shutdown deferred: {error}", flush=True)
+                    if strict:
+                        raise RuntimeError(f"{MODULE} did not stop safely: {error}") from error
+                    return
 
     def force_close(self):
-        targets = [(name, module.process, module.process_identity) for name, module in self.modules.items()]
-        pinned = []
+        handles = pin_session(self.process, self.process_identity)
+
+        def graceful():
+            if handles:
+                try:
+                    self.owner("stop", {"confirm": True})
+                except (ControlError, LaunchError) as error:
+                    print(f"Force restart: {MODULE} graceful stop: {error}", flush=True)
         try:
-            for name, process, expected in targets:
-                pinned.append((name, process, pin_session(process, expected)))
-        except BaseException:
-            for _, _, handles in pinned:
-                for fd in handles:
-                    close_handle(fd)
-            raise
-        errors = []
-        for name, process, handles in pinned:
-            def graceful():
-                if handles:
-                    try:
-                        self.owner(name, "stop", {"confirm": True})
-                    except (ControlError, LaunchError) as error:
-                        print(f"Force restart: {name} graceful stop: {error}", flush=True)
-            try:
-                drain_pinned(handles, graceful)
-                if process is not None:
-                    process.wait(timeout=1)
-                    require_session_stopped(process)
-                print(f"Force restart: {name} stopped", flush=True)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-                errors.append(f"{name}: {error}")
-        if errors:
-            raise RuntimeError("; ".join(errors))
+            drain_pinned(handles, graceful)
+            if self.process is not None:
+                self.process.wait(timeout=1)
+                require_session_stopped(self.process)
+            print(f"Force restart: {MODULE} stopped", flush=True)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"{MODULE}: {error}") from error
 
 
 def external_status(environ=None):
@@ -332,20 +318,20 @@ def external_status(environ=None):
 
 
 class ShellServer(BrowserServer):
-    def __init__(self, address, modules, **kwargs):
-        self.modules = modules
+    def __init__(self, address, worker, **kwargs):
+        self.worker = worker
         self.force_shutdown = False
         self.native_cleaned = False
         self.shutdown_error = None
         self.drain_client = None
         self.drain_thread = None
         self.shutdown_lock = threading.Lock()
-        super().__init__(address, ShellHandler, close_with_ui=True, busy=modules.busy, **kwargs)
+        super().__init__(address, ShellHandler, close_with_ui=True, busy=worker.busy, **kwargs)
 
     def native_drain(self):
         try:
             print(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} stopping owned services", flush=True)
-            self.modules.close(force=self.force_shutdown, strict=True)
+            self.worker.close(force=self.force_shutdown, strict=True)
             self.native_cleaned = True
             print(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} owned services stopped", flush=True)
             self.shutdown()
@@ -407,14 +393,14 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == "/api/health":
-            modules = self.server.modules
-            result = {**identity("shell", modules.data, modules.config["models"]), "shell_protocol": SHELL_PROTOCOL,
-                      "ports": modules.config["ports"], "exiftool": modules.config.get("exiftool")}
+            worker = self.server.worker
+            result = {**identity("shell", worker.data, worker.config["models"]), "shell_protocol": SHELL_PROTOCOL,
+                      "ports": worker.config["ports"], "exiftool": worker.config.get("exiftool")}
             result.update(draining=self.server.lifetime.stopping, shutdown_error=self.server.shutdown_error,
                           process_identity=process_identity(os.getpid()))
             return self.send(200, json.dumps(result).encode(), "application/json")
         if path == "/api/status":
-            result = self.server.modules.status()
+            result = self.server.worker.status()
             with self.server.lifetime.lock:
                 result["lifecycle"] = {"draining": self.server.lifetime.stopping,
                     "leases": sum(expiry > time.monotonic() for expiry in self.server.lifetime.clients.values())}
@@ -431,7 +417,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
             return self.send(200, theme_script(), "text/javascript; charset=utf-8")
         if path == "/static/lifecycle.js":
             return self.send(200, script(), "text/javascript; charset=utf-8")
-        if path == "/skin":
+        if path == "/" + MODULE:
             self.send_response(308)
             self.send_header("Location", path + "/")
             self.send_header("Content-Length", "0")
@@ -466,12 +452,11 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                 if req.get("force") and not req.get("restart"):
                     raise ValueError("Force is available only for explicitly confirmed restart")
                 def safe_to_stop():
-                    status = self.server.modules.status()
-                    signature = {name: [state.get("instance"), state.get("revision"), state.get("loaded")]
-                                 for name, state in status["modules"].items()}
+                    state = self.server.worker.snapshot()
+                    signature = {MODULE: [state.get("instance"), state.get("revision"), state.get("loaded")]}
                     if req.get("expected") != signature:
                         raise ControlError("Work changed while confirming shutdown; review it and try again.", "changed")
-                    return self.server.modules.busy()
+                    return state["busy"]
                 if (req.get("force") and self.server.shutdown_error
                         and self.server.drain_client == req["client"]
                         and self.server.drain_thread is not None and not self.server.drain_thread.is_alive()):
@@ -517,7 +502,9 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                 if (not isinstance(request, dict) or type(request.get("confirm", False)) is not bool
                         or (request.get("revision") is not None and type(request["revision"]) is not int)):
                     raise ValueError("Invalid module confirmation")
-                result = self.server.modules.control(parts[3], parts[4], request)
+                if parts[3] != MODULE:
+                    raise ControlError("Unknown module or action", "invalid", 400)
+                result = self.server.worker.control(parts[4], request)
                 return self.send(200, json.dumps(result).encode(), "application/json")
             except (LaunchError, ControlError) as error:
                 return self.fail(error)
@@ -529,30 +516,30 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
 
     def proxy(self):
         parts = self.path.split("/", 2)
-        if len(parts) != 3 or parts[1] not in MODULES:
+        if len(parts) != 3 or parts[1] != MODULE:
             return self.send(404, b'{"error":"Not found"}', "application/json")
         name, path = parts[1], "/" + parts[2]
         if path.startswith("/api/owner/") or "%" in path or ".." in urlsplit(path).path or path.startswith("//"):
             return self.send(403, b'{"error":"Private or invalid module route"}', "application/json")
         if not (path == "/" or path == "/index.html" or path.startswith(("/api/", "/img/", "/static/"))):
             return self.send(404, b'{"error":"Not found"}', "application/json")
-        modules = self.server.modules
+        worker = self.server.worker
         connection = None
         try:
-            phase = modules.modules[name].phase
+            phase = worker.phase
             if phase in ("stopped", "stopping"):
                 if self.command == "POST" and path in ("/api/ui/close", "/api/ui/heartbeat"):
                     return self.send(200, b'{"managed":false,"accepted":true}', "application/json")
                 raise ControlError(f"{name} is {phase}. Use its Start control when stopped.",
                                    "module_" + phase, 409, module=name, phase=phase)
-            if modules.modules[name].phase != "running":
+            if worker.phase != "running":
                 raise LaunchError(f"{name} is not ready. Use its Start control.")
-            modules.checked(name)
-            connection = http.client.HTTPConnection("127.0.0.1", modules.config["ports"][name],
-                                                   timeout=None if name == "skin" and path == "/api/batch" else 900)
+            worker.checked()
+            connection = http.client.HTTPConnection("127.0.0.1", worker.port,
+                                                   timeout=None if path == "/api/batch" else 900)
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))) if self.command == "POST" else None
             connection.request(self.command, path, body, {"Content-Type": "application/json",
-                               "Origin": f"http://127.0.0.1:{modules.config['ports'][name]}"})
+                               "Origin": f"http://127.0.0.1:{worker.port}"})
             response = connection.getresponse()
             content = response.read()
             self.send(response.status, content, response.getheader("Content-Type", "application/octet-stream"))
@@ -578,9 +565,9 @@ def main():
     config = read_config(args.config)
     apply_photocraft_env(config)
     instance = os.environ.get("SHP_SERVER_INSTANCE", uuid.uuid4().hex)
-    modules = Modules(config, args.data, args.state, instance, args.config)
-    server = ShellServer(("127.0.0.1", config["shell_port"]), modules)
-    threads = [threading.Thread(target=modules.start_all), threading.Thread(target=modules.monitor, daemon=True)]
+    worker = SkinWorker(config, args.data, args.state, instance, args.config)
+    server = ShellServer(("127.0.0.1", config["shell_port"]), worker)
+    threads = [threading.Thread(target=worker.start_on_launch), threading.Thread(target=worker.monitor, daemon=True)]
     for thread in threads:
         thread.start()
     print(f"SHP Portrait Tools: http://127.0.0.1:{server.server_port}/", flush=True)
@@ -590,7 +577,7 @@ def main():
         print("Closing Tools; active module work will finish before shutdown.", flush=True)
     finally:
         if not server.native_cleaned:
-            modules.close(force=server.force_shutdown)
+            worker.close(force=server.force_shutdown)
         server.server_close()
         for thread in threads:
             thread.join(timeout=10)

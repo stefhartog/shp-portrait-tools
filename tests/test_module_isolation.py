@@ -20,12 +20,11 @@ from shp_portrait_tools.shared.supervision import ControlError
 
 class ModuleIsolationTests(unittest.TestCase):
     def manager(self):
-        manager = object.__new__(S.Modules)
-        manager.modules = {
-            name: S.Module(process=Mock(), instance=name + "-one", phase="running")
-            for name in ("skin",)}
-        for module in manager.modules.values():
-            module.process.poll.return_value = None
+        manager = object.__new__(S.SkinWorker)
+        manager.process, manager.process_identity = Mock(), None
+        manager.process.poll.return_value = None
+        manager.worker_instance, manager.phase, manager.error, manager.token = "skin-one", "running", None, ""
+        manager.lock = threading.Lock()
         manager.finished = threading.Event()
         manager.cache_lock = threading.Lock()
         manager.cache = {"external": {}}
@@ -77,10 +76,10 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_startup_toggle_changes_only_persisted_preference_not_work(self):
         manager = self.manager()
-        skin = manager.modules["skin"]
+        skin = manager
         with patch.object(S, "set_startup", return_value={"skin": False}) as save, \
                 patch.object(manager, "stop") as stop, patch.object(manager, "start") as start:
-            result = manager.control("skin", "startup", {"enabled": False})
+            result = manager.control("startup", {"enabled": False})
             save.assert_called_once_with(manager.config_path, "skin", False)
             self.assertFalse(result["startup_enabled"])
             self.assertEqual(skin.phase, "running")
@@ -88,7 +87,7 @@ class ModuleIsolationTests(unittest.TestCase):
             start.assert_not_called()
         with patch.object(S, "set_startup", side_effect=OSError("read-only")):
             with self.assertRaises(OSError):
-                manager.control("skin", "startup", {"enabled": True})
+                manager.control("startup", {"enabled": True})
         self.assertFalse(manager.config["startup"]["skin"])
         handler = self.handler(manager, "/api/modules/skin/startup", "POST")
         handler.rfile = io.BytesIO(b'{"enabled":true}')
@@ -104,21 +103,21 @@ class ModuleIsolationTests(unittest.TestCase):
         self.assertEqual(handler.send.call_args.args[0], 200)
         self.assertTrue(json.loads(handler.send.call_args.args[1])["startup_enabled"])
 
-    def test_start_all_honors_startup_preference(self):
-        for enabled, expected in (({}, ["skin"]), ({"skin": True}, ["skin"]), ({"skin": False}, [])):
+    def test_start_on_launch_honors_startup_preference(self):
+        for enabled, expected in (({}, ["start"]), ({"skin": True}, ["start"]), ({"skin": False}, [])):
             manager = self.manager()
             manager.config["startup"] = enabled
             with self.subTest(enabled=enabled), patch.object(manager, "control") as control:
-                manager.start_all()
+                manager.start_on_launch()
                 self.assertEqual([call.args[0] for call in control.call_args_list], expected)
 
     def test_manual_start_does_not_change_startup_preference(self):
         manager = self.manager()
-        manager.modules["skin"].process.poll.return_value = 0
+        manager.process.poll.return_value = 0
         manager.config["startup"] = {"skin": False}
         with patch.object(S, "probe", side_effect=LaunchError("test stop")):
             with self.assertRaises(LaunchError):
-                manager.start("skin")
+                manager.start()
         self.assertFalse(manager.config["startup"]["skin"])
 
     def test_native_notifications_are_allocated_above_webview_not_overlaid(self):
@@ -201,31 +200,30 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_stop_keeps_supervisor_alive_then_start_recovers(self):
         manager = self.manager()
-        skin = manager.modules["skin"]
+        skin = manager
         skin.process.wait.side_effect = lambda **_: setattr(skin.process.poll, "return_value", 0)
-        stopped = manager.control("skin", "stop", {"instance": skin.instance, "confirm": True, "revision": 7})
+        stopped = manager.control("stop", {"instance": skin.worker_instance, "confirm": True, "revision": 7})
         self.assertEqual(stopped["phase"], "stopped")
         self.assertFalse(stopped["loaded"])
         self.assertFalse(stopped["busy"])
-        manager.owner.assert_called_once_with("skin", "stop", {"confirm": True, "revision": 7})
+        manager.owner.assert_called_once_with("stop", {"confirm": True, "revision": 7})
         self.assertFalse(manager.finished.is_set())
-        def start(name):
-            module = manager.modules[name]
-            module.phase, module.instance = "running", "skin-two"
-            module.process.poll.return_value = None
+        def start():
+            manager.phase, manager.worker_instance = "running", "skin-two"
+            manager.process.poll.return_value = None
         with patch.object(manager, "start", side_effect=start):
-            result = manager.control("skin", "start", {})
+            result = manager.control("start", {})
         self.assertEqual(result["phase"], "running")
         self.assertEqual(result["instance"], "skin-two")
 
     def test_late_stop_completion_becomes_unloaded_not_permanently_busy(self):
         manager = self.manager()
-        skin = manager.modules["skin"]
+        skin = manager
         skin.phase, skin.error = "stopping", "still stopping"
         manager.owner.reset_mock()
-        self.assertTrue(manager.snapshot("skin")["busy"])
+        self.assertTrue(manager.snapshot()["busy"])
         skin.process.poll.return_value = 0
-        state = manager.snapshot("skin")
+        state = manager.snapshot()
         self.assertEqual(state["phase"], "stopped")
         self.assertIsNone(state["error"])
         self.assertFalse(state["busy"])
@@ -239,21 +237,21 @@ class ModuleIsolationTests(unittest.TestCase):
         self.assertEqual(state["skin"]["phase"], "unavailable")
         self.assertIn("Skin Tools unavailable", state["skin"]["error"])
         self.assertFalse(manager.finished.is_set())
-        manager.modules["skin"].process.poll.return_value = 1
-        self.assertEqual(manager.snapshot("skin")["phase"], "error")
+        manager.process.poll.return_value = 1
+        self.assertEqual(manager.snapshot()["phase"], "error")
 
     def test_busy_or_unconfirmed_stop_is_rejected(self):
         for code in ("busy", "confirmation", "changed"):
             manager = self.manager()
             manager.owner.side_effect = ControlError("Cannot stop", code)
             with self.subTest(code=code), self.assertRaises(ControlError):
-                manager.control("skin", "stop", {"instance": "skin-one"})
-            self.assertEqual(manager.modules["skin"].phase, "running")
-            manager.modules["skin"].process.wait.assert_not_called()
+                manager.control("stop", {"instance": "skin-one"})
+            self.assertEqual(manager.phase, "running")
+            manager.process.wait.assert_not_called()
 
     def handler(self, manager, path, command="GET"):
         handler = object.__new__(S.ShellHandler)
-        handler.server = SimpleNamespace(modules=manager, lifetime=BrowserLifetime(),
+        handler.server = SimpleNamespace(worker=manager, lifetime=BrowserLifetime(),
             server_port=19000, shutdown_error=None)
         handler.path, handler.command = path, command
         handler.headers = {"Content-Length": "2", "X-SHP-Control": "1"}
@@ -262,7 +260,7 @@ class ModuleIsolationTests(unittest.TestCase):
 
     def test_stopped_routes_are_explicit_and_close_beacons_are_benign(self):
         manager = self.manager()
-        manager.modules["skin"].phase = "stopped"
+        manager.phase = "stopped"
         for path, method in (("/skin/", "GET"), ("/skin/api/run", "POST"),
                              ("/skin/api/ui/close", "POST"), ("/skin/api/ui/heartbeat", "POST")):
             handler = self.handler(manager, path, method)
@@ -276,7 +274,7 @@ class ModuleIsolationTests(unittest.TestCase):
                     self.assertEqual(code, 409)
                     self.assertEqual(json.loads(body)["code"], "module_stopped")
                 connect.assert_not_called()
-        manager.modules["skin"].phase = "running"
+        manager.phase = "running"
         handler = self.handler(manager, "/skin/api/job", "POST")
         manager.checked = Mock()
         with patch.object(S.http.client, "HTTPConnection") as connect:
@@ -290,7 +288,7 @@ class ModuleIsolationTests(unittest.TestCase):
         manager = self.manager()
         manager.data = Path("/unused")
         manager.config = {"models": "/unused", "ports": {"skin": 2}}
-        manager.modules["skin"].phase = "stopped"
+        manager.phase = "stopped"
         for path in ("/api/health", "/api/status"):
             handler = self.handler(manager, path)
             handler.headers["Host"] = "127.0.0.1:19000"
@@ -314,4 +312,4 @@ class ModuleIsolationTests(unittest.TestCase):
             control.assert_not_called()
         manager.finished.set()
         with self.assertRaises(ControlError):
-            manager.control("skin", "start", {})
+            manager.control("start", {})

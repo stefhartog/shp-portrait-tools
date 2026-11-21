@@ -128,14 +128,13 @@ class EscalationTests(unittest.TestCase):
 
     def test_new_session_member_after_pinning_prevents_restart_success(self):
         process = Mock(pid=123)
-        modules = SimpleNamespace(modules={"skin": SimpleNamespace(process=process, process_identity=(123, 7))},
-                                  owner=Mock())
+        modules = SimpleNamespace(process=process, process_identity=(123, 7), owner=Mock())
         with patch.object(S, "pin_session", return_value=[321]), \
                 patch.object(S, "drain_pinned"), \
                 patch.object(O.Path, "iterdir", return_value=[SimpleNamespace(name="125")]), \
                 patch.object(O, "process_identity", return_value=(123, 8)):
             with self.assertRaisesRegex(RuntimeError, "session still has processes"):
-                S.Modules.force_close(modules)
+                S.SkinWorker.force_close(modules)
 
     def test_grace_term_kill_bounded_failure_and_descriptor_cleanup(self):
         clock = [0]
@@ -165,10 +164,9 @@ class RestartTests(unittest.TestCase):
     def test_native_endpoint_checks_work_and_starts_one_drain_after_ack(self):
         life = BrowserLifetime()
         life.touch("desktop-one")
-        modules = Mock()
-        modules.status.return_value = {"modules": {"skin": {"instance": "c", "revision": 3, "loaded": True}}}
-        modules.busy.return_value = False
-        server = SimpleNamespace(lifetime=life, modules=modules, force_shutdown=False, shutdown_lock=threading.Lock(),
+        worker = Mock()
+        worker.snapshot.return_value = {"instance": "c", "revision": 3, "loaded": True, "busy": False}
+        server = SimpleNamespace(lifetime=life, worker=worker, force_shutdown=False, shutdown_lock=threading.Lock(),
                                  shutdown_error=None, drain_thread=None, drain_client=None, native_drain=Mock())
         events = []
         def request(expected, confirm=True, force=False):
@@ -240,25 +238,23 @@ class RestartTests(unittest.TestCase):
             identity.assert_not_called()
 
     def test_late_busy_normal_cleanup_times_out_without_force(self):
-        modules = SimpleNamespace(finished=threading.Event(),
-            modules={"skin": SimpleNamespace(lock=threading.Lock(), process=None)},
+        modules = SimpleNamespace(finished=threading.Event(), lock=threading.Lock(), process=None,
             stop=Mock(side_effect=ControlError("busy", "busy")))
         with patch.object(S.time, "monotonic", side_effect=[0, 31]), \
                 patch.object(S, "pin_session") as pin:
             with self.assertRaisesRegex(RuntimeError, "normal shutdown did not force-stop"):
-                S.Modules.close(modules, strict=True)
+                S.SkinWorker.close(modules, strict=True)
             pin.assert_not_called()
             self.assertTrue(modules.finished.is_set())
 
     def test_partial_force_failure_is_reported_without_relaunch_or_unrelated_targets(self):
         process = Mock(pid=123)
         process.poll.return_value = None
-        modules = SimpleNamespace(modules={"skin": SimpleNamespace(process=process, process_identity=(123, 7))},
-                                  owner=Mock())
+        modules = SimpleNamespace(process=process, process_identity=(123, 7), owner=Mock())
         with patch.object(S, "pin_session", return_value=[321]) as pin, \
                 patch.object(S, "drain_pinned", side_effect=RuntimeError("not exited")) as drain:
             with self.assertRaisesRegex(RuntimeError, "skin: not exited"):
-                S.Modules.force_close(modules)
+                S.SkinWorker.force_close(modules)
             pin.assert_called_once_with(process, (123, 7))
             drain.assert_called_once()
             process.wait.assert_not_called()
@@ -274,9 +270,9 @@ class RestartTests(unittest.TestCase):
                 L.wait_for_exit(20, 7)
 
     def test_native_cleanup_failure_does_not_report_success_or_release_port(self):
-        server = SimpleNamespace(modules=Mock(), force_shutdown=True, native_cleaned=False,
+        server = SimpleNamespace(worker=Mock(), force_shutdown=True, native_cleaned=False,
                                  shutdown_error=None, shutdown=Mock())
-        server.modules.close.side_effect = RuntimeError("identity changed")
+        server.worker.close.side_effect = RuntimeError("identity changed")
         S.ShellServer.native_drain(server)
         self.assertIn("identity changed", server.shutdown_error)
         self.assertFalse(server.native_cleaned)

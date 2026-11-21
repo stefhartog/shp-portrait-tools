@@ -23,19 +23,26 @@ from .shared.platform_paths import (data_root, env, global_config_dir, legacy_co
                                     module_folder, state_root)
 
 APP = "SHP Portrait Tools"
-DEFAULT_PORTS = {"skin": 18765}
+MODULE = "skin"  # the one supervised service: Skin Tools
+SERVER_MODULE = "shp_portrait_tools.modules.skin.ui_server"
+DEFAULT_PORTS = {MODULE: 18765}
 SHELL_PORT = 18760
-MODULES = {"skin": "skin.ui_server"}
-# launcher.json files written before the module rename use these keys.
-RENAMED_MODULES = {"dnb": "skin"}
-# AI Fill moved to the separate shp-ai-fill project; older launcher.json files still name it.
-RETIRED_MODULES = {"crop"}
+# Keys in older launcher.json files: `dnb` was Skin Tools' ID; `crop` (AI Fill) moved to shp-ai-fill.
+LEGACY_KEYS = {"dnb": MODULE, "crop": None}
 MODEL_FILES = ("yunet.onnx", "face_landmarks.onnx", "selfie_multiclass_256x256.onnx")
 CHROMIUM_FLATPAK = "io.github.ungoogled_software.ungoogled_chromium"
 
 
 class LaunchError(RuntimeError):
     """Actionable startup or identity failure."""
+
+
+def current_keys(mapping):
+    """Map pre-rename module keys to MODULE and drop retired ones; unknown keys stay so validation rejects them."""
+    if not isinstance(mapping, dict):
+        return mapping
+    keys = {name: LEGACY_KEYS.get(name, name) for name in mapping}
+    return {keys[name]: value for name, value in mapping.items() if keys[name] is not None}
 
 
 def read_config(path):
@@ -46,14 +53,11 @@ def read_config(path):
     if not isinstance(config, dict):
         raise LaunchError(f"Launcher configuration must be a JSON object: {path}")
     config.pop("comfy", None)  # Tools-managed ComfyUI left with AI Fill.
-    startup = config.get("startup", {})
-    if isinstance(startup, dict):
-        startup = {RENAMED_MODULES.get(name, name): value for name, value in startup.items()
-                   if name not in RETIRED_MODULES}
-    if (not isinstance(startup, dict) or set(startup) - set(MODULES)
+    startup = current_keys(config.get("startup", {}))
+    if (not isinstance(startup, dict) or set(startup) - {MODULE}
             or any(type(value) is not bool for value in startup.values())):
-        raise LaunchError(f"'startup' must map module names to booleans in {path}")
-    config["startup"] = {name: startup.get(name, True) for name in MODULES}
+        raise LaunchError(f"'startup' must map {MODULE} to a boolean in {path}")
+    config["startup"] = {MODULE: startup.get(MODULE, True)}
     models = config.get("models")
     if not isinstance(models, str) or not Path(models).is_absolute():
         raise LaunchError(f"Set an absolute 'models' directory in {path}")
@@ -61,12 +65,9 @@ def read_config(path):
         model = Path(models) / filename
         if not model.is_file() or not os.access(model, os.R_OK):
             raise LaunchError(f"Missing or unreadable Skin Tools model: {model}. Update {path}; weights are not copied.")
-    ports = config.get("ports", DEFAULT_PORTS)
-    if isinstance(ports, dict):
-        ports = {RENAMED_MODULES.get(name, name): port for name, port in ports.items()
-                 if name not in RETIRED_MODULES}
-    if not isinstance(ports, dict) or set(ports) != set(MODULES):
-        raise LaunchError(f"'ports' must contain skin in {path}")
+    ports = current_keys(config.get("ports", DEFAULT_PORTS))
+    if not isinstance(ports, dict) or set(ports) != {MODULE}:
+        raise LaunchError(f"'ports' must contain {MODULE} in {path}")
     if any(type(port) is not int or not 1024 <= port <= 65535 for port in ports.values()):
         raise LaunchError(f"Launcher ports must be integers between 1024 and 65535 in {path}")
     config["ports"] = ports
@@ -101,7 +102,7 @@ def apply_photocraft_env(config):
 
 
 def set_startup(path, name, enabled):
-    if name not in MODULES or type(enabled) is not bool:
+    if name != MODULE or type(enabled) is not bool:
         raise LaunchError("Startup preference requires a known module and a boolean")
     temporary = None
     with file_lock(path.with_suffix(path.suffix + ".lock")):
@@ -312,7 +313,7 @@ def write_default_config(path):
     if path.exists():
         raise LaunchError(f"{path} already exists; edit it instead")
     config = {"models": env("SKIN_MODELS", "DNB_MODELS") or str(module_folder(data_root(), "skin") / "models"),
-              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {"skin": True}}
+              "ports": DEFAULT_PORTS, "shell_port": SHELL_PORT, "startup": {MODULE: True}}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n")
     return config

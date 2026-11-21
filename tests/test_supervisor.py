@@ -17,7 +17,7 @@ from shell_preview import fixture
 from shp_portrait_tools.launcher import LaunchError
 from shp_portrait_tools.shared.lifecycle import BrowserLifetime
 from shp_portrait_tools.shared.supervision import ControlError, OwnerControl
-from shp_portrait_tools.supervisor import Modules, external_status
+from shp_portrait_tools.supervisor import SkinWorker, external_status
 from shp_portrait_tools.shared.photocraft.bridge import detect_config
 
 
@@ -40,10 +40,10 @@ class GateTests(unittest.TestCase):
                  patch("shp_portrait_tools.supervisor.process_identity", return_value=(1234, 1)), \
                  patch("shp_portrait_tools.supervisor.adopt", return_value=(1234, 1)), \
                  patch("shp_portrait_tools.supervisor.subprocess.Popen", side_effect=spawn), \
-                 patch.object(Modules, "checked"), \
+                 patch.object(SkinWorker, "checked"), \
                  patch("shp_portrait_tools.supervisor.socket.create_connection") as connect:
-                modules = Modules(config, root / "data", root / "logs", "test")
-                modules.start("skin")
+                worker = SkinWorker(config, root / "data", root / "logs", "test")
+                worker.start()
                 self.assertEqual(len(children), 1)
                 for child, prefix, module in zip(children, ("DNB",), ("dnb",)):
                     actual = detect_config(prefix, module, child)
@@ -112,7 +112,7 @@ class SupervisorTests(unittest.TestCase):
         self.server, self.root = self.context.__enter__()
         self.addCleanup(self.context.__exit__, None, None, None)
         self.base = f"http://127.0.0.1:{self.server.server_port}"
-        self.manager = self.server.modules
+        self.manager = self.server.worker
         self.wait_ready()
 
     def request(self, path, body=None, headers=None):
@@ -143,7 +143,7 @@ class SupervisorTests(unittest.TestCase):
 
     def control(self, name, action, **kwargs):
         return self.request(f"/api/modules/{name}/{action}",
-                            dict(instance=self.manager.modules[name].instance, **kwargs))
+                            dict(instance=self.manager.worker_instance, **kwargs))
 
     def test_packaged_assets_relative_api_image_routes_and_fixed_proxy(self):
         self.assertIn(b"SHP Portrait Tools", self.request("/"))
@@ -210,23 +210,23 @@ class SupervisorTests(unittest.TestCase):
         with ThreadPoolExecutor() as pool:
             work = pool.submit(self.request, "/skin/api/test/work", {})
             deadline = time.monotonic() + 2
-            while not self.manager.snapshot("skin")["busy"] and time.monotonic() < deadline:
+            while not self.manager.snapshot()["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)
             result = self.assert_error(409, "/api/modules/skin/stop",
-                                      {"instance": self.manager.modules["skin"].instance, "confirm": True})
+                                      {"instance": self.manager.worker_instance, "confirm": True})
             self.assertEqual(result["code"], "busy")
             self.assertTrue(work.result()["done"])
 
     def test_identity_change_and_missing_owner_capability_refused(self):
-        module = self.manager.modules["skin"]
-        instance = module.instance
-        module.instance = "not-the-owned-instance"
+        worker = self.manager
+        instance = worker.worker_instance
+        worker.worker_instance = "not-the-owned-instance"
         try:
             with self.assertRaisesRegex(LaunchError, "ownership changed"):
-                self.manager.stop("skin", True)
-            self.assertIsNone(module.process.poll())
+                worker.stop(True)
+            self.assertIsNone(worker.process.poll())
         finally:
-            module.instance = instance
+            worker.worker_instance = instance
         connection = http.client.HTTPConnection("127.0.0.1", self.manager.config["ports"]["skin"])
         try:
             connection.request("POST", "/api/owner/stop", "{}")
@@ -260,7 +260,7 @@ class SupervisorTests(unittest.TestCase):
         with ThreadPoolExecutor() as pool:
             work = pool.submit(self.request, "/skin/api/test/work", {})
             deadline = time.monotonic() + 2
-            while not self.manager.snapshot("skin")["busy"] and time.monotonic() < deadline:
+            while not self.manager.snapshot()["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)
             life.close("refreshed")
             time.sleep(.2)
@@ -269,7 +269,7 @@ class SupervisorTests(unittest.TestCase):
         self.server.finished.wait(5)
         self.assertTrue(self.server.finished.is_set())
         self.manager.close()
-        self.assertTrue(all(module.process.poll() == 0 for module in self.manager.modules.values()))
+        self.assertEqual(self.manager.process.poll(), 0)
 
 
 if __name__ == "__main__":

@@ -237,10 +237,9 @@ class LocalResultTests(unittest.TestCase):
 @unittest.skipIf(supervisor is None, "supervisor is Linux-only")
 class NativeChooserTests(unittest.TestCase):
     def test_owned_proxy_sets_child_origin_for_guarded_result_route(self):
-        manager = SimpleNamespace(modules={"skin": SimpleNamespace(phase="running")},
-                                  config={"ports": {"skin": 18765}}, checked=Mock())
+        manager = SimpleNamespace(phase="running", port=18765, checked=Mock())
         handler = SimpleNamespace(path="/skin/api/send-result", command="POST",
-                                  server=SimpleNamespace(modules=manager), headers={"Content-Length": "2"},
+                                  server=SimpleNamespace(worker=manager), headers={"Content-Length": "2"},
                                   rfile=io.BytesIO(b"{}"), send=Mock(), fail=Mock())
         with patch.object(supervisor.http.client, "HTTPConnection") as factory:
             response = factory.return_value.getresponse.return_value

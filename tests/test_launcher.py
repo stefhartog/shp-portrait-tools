@@ -33,7 +33,7 @@ class LauncherTests(unittest.TestCase):
         self.config = self.root / "launcher.json"
         self.ports = {}
         held = []
-        for module in L.MODULES:
+        for module in L.DEFAULT_PORTS:
             sock = socket.socket()
             sock.bind(("127.0.0.1", 0))
             held.append(sock)

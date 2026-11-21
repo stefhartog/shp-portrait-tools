@@ -24,6 +24,16 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## Single-worker supervisor (2026-11-21)
+
+`supervisor.SkinWorker` replaces the multi-module `Modules` registry: one process, token, phase,
+lifecycle lock and ownership check, with unchanged start/stop/restart/startup semantics, the 40 s
+start wait, busy/confirmation/revision guards, 30 s busy drain and force-restart pinning. The launcher
+has `MODULE`/`SERVER_MODULE` instead of module dictionaries; `current_keys()` still maps legacy
+`dnb`/`crop` launcher.json keys. The shell proxy and the `/api/status` / `/api/modules/skin/<action>`
+shapes are kept, because the shell embeds the Skin Tools page same-origin and moves its settings
+into Settings & Info; removing the proxy belongs with the Phase 3 desktop-host rewrite.
+
 ## Skin Tools module ID (2026-11-21)
 
 The module formerly called `dnb` is `skin`: package `modules/skin`, shell route `/skin/`, launcher.json

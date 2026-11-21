@@ -165,12 +165,12 @@ class WindowsPhotoCraftIntegration(unittest.TestCase):
 import json, sys, urllib.error, urllib.request
 from pathlib import Path
 from shp_portrait_tools.launcher import read_config, apply_photocraft_env
-from shp_portrait_tools.supervisor import Modules
+from shp_portrait_tools.supervisor import SkinWorker
 config = read_config(Path(sys.argv[1])); apply_photocraft_env(config)
 root = Path(sys.argv[2])
-modules = Modules(config, root / 'service-data', root / 'service-logs', 'test-instance')
+modules = SkinWorker(config, root / 'service-data', root / 'service-logs', 'test-instance')
 try:
-    modules.start('skin')
+    modules.start()
     url = 'http://127.0.0.1:' + str(config['ports']['skin'])
     request = urllib.request.Request(url + '/api/pc/launch', data=b'{}', method='POST',
         headers={'Origin':url,'Content-Type':'application/json'})
