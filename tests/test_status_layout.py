@@ -14,13 +14,13 @@ import time
 import threading
 import unittest
 
-from shp_photocraft_tools.shared.ui import stylesheet
+from shp_portrait_tools.shared.ui import stylesheet
 
 
 @unittest.skipUnless(shutil.which("firefox"), "Firefox is not installed")
 class StatusLayoutTests(unittest.TestCase):
     def test_screen_centering_responsive_controls_and_progress_background(self):
-        root = Path(__file__).resolve().parents[1] / "src/shp_photocraft_tools"
+        root = Path(__file__).resolve().parents[1] / "src/shp_portrait_tools"
         with tempfile.TemporaryDirectory(prefix="tools-status-layout-") as folder:
             profile = Path(folder)
             with socket.socket() as reserved:

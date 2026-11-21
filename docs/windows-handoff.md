@@ -19,7 +19,7 @@ python -m uv run --no-sync python scripts/install_windows_shortcut.py --remove -
 ```
 
 It never overwrites an existing shortcut without `--force`; `--output-dir <dir>` writes elsewhere (used
-by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_photocraft_tools.launcher
+by the tests). Target `<repo>\.venv\Scripts\pythonw.exe`, arguments `-m shp_portrait_tools.launcher
 --config %APPDATA%\shp-photocraft-tools\launcher.json`, start in `<repo>`, icon drawn from
 `desktop/shp-photocraft-tools.svg` into `shp-photocraft-tools.ico` next to `launcher.json`. Run
 `--init-config` first.
@@ -56,7 +56,7 @@ The session setup guide records this machine's user-local release, shortcut back
 rollback; no existing launcher configuration, pairing credentials or running process was changed.
 
 Verified (real runs, disposable data dir, real models read-only): launching
-`pythonw.exe -m shp_photocraft_tools.launcher --config ...` as the shortcut does leaves only
+`pythonw.exe -m shp_portrait_tools.launcher --config ...` as the shortcut does leaves only
 `pythonw.exe` processes (no conhost/OpenConsole/cmd/python.exe, no console-class window), shows the
 WebUI window, Skin Tools answers 200 on 18765; `tests/windows_host_smoke.py` passes (tray created, quit
 leaves nothing listening); a bad config under pythonw logs and shows the MessageBox; the installer's
@@ -107,10 +107,10 @@ remove shared `cv2` files; the reinstall restores them. The lock excludes
 rtmlib's redundant `opencv-python` dependency, but pip does not apply uv
 overrides and dependency checks still report that requirement as missing.
 
-- **Import probe:** every `shp_photocraft_tools` module imports except the expected
+- **Import probe:** every `shp_portrait_tools` module imports except the expected
   Linux/optional ones: `launcher` and `supervisor` (`fcntl`), `desktop.controller` (`gi`),
   `dnb.google_pose_worker` (`resource`), `dnb.texture_experiment` (`matplotlib`, research extra).
-- **Service:** `python -m shp_photocraft_tools.modules.dnb.ui_server` serves the WebUI on
+- **Service:** `python -m shp_portrait_tools.modules.dnb.ui_server` serves the WebUI on
   loopback (HTTP 200 for `/`, checked with curl on 8765 and with `--port 0` in a test).
     In a standalone browser (no `window.__shpNativeFileDialog`) Image analysis shows the image
     list + path box + Load; the desktop window hides them. Verified with headless Edge and
@@ -242,7 +242,7 @@ python -m uv run --no-sync shp-photocraft-tools --no-browser     # services only
 and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
 
 Optional shortcut recipe (documented only, NOT executed): a `.lnk` whose target is
-`<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_photocraft_tools.launcher --config
+`<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_portrait_tools.launcher --config
 %APPDATA%\shp-photocraft-tools\launcher.json`, start in `<worktree>`.
 
 Code: `shared/filelock.py` (msvcrt lock), `shared/windows_process.py` (identity, jobs,

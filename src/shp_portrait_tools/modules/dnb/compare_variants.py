@@ -4,7 +4,7 @@ Each variant is a list of bands "LO:HI:GAIN[:TAPER]" (feature sizes in mm, see d
 are corrected with that band's gain, sizes in no band are left alone.
 Every cell shows [after | change x8 (gray = no change)] for a crop around the subject's face.
 
-Usage: uv run python -m shp_photocraft_tools.modules.dnb.compare_variants IMAGE [--out FILE]
+Usage: uv run python -m shp_portrait_tools.modules.dnb.compare_variants IMAGE [--out FILE]
 """
 import argparse
 from pathlib import Path

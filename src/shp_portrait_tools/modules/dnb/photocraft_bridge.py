@@ -14,8 +14,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_photocraft_tools.shared.photocraft import Bridge as BaseBridge, Client, ControlError
-from shp_photocraft_tools.shared.photocraft import detect_config as _detect_config
+from shp_portrait_tools.shared.photocraft import Bridge as BaseBridge, Client, ControlError
+from shp_portrait_tools.shared.photocraft import detect_config as _detect_config
 from . import skintone as ST
 from . import progress
 

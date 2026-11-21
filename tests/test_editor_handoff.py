@@ -12,8 +12,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from shp_photocraft_tools import editor_handoff as E
-from shp_photocraft_tools.shared.photocraft import ControlError
+from shp_portrait_tools import editor_handoff as E
+from shp_portrait_tools.shared.photocraft import ControlError
 
 
 class HandoffTests(unittest.TestCase):
@@ -147,7 +147,7 @@ class HandoffTests(unittest.TestCase):
         for wrapper, flags in (("photocraft-lightcraft", ["--"]), ("photocraft-dnb", ["--launch", "--"])):
             subprocess.run([str(executable / wrapper), *filenames], check=True)
             self.assertEqual(json.loads(captured.read_text()),
-                             ["-m", "shp_photocraft_tools.editor_handoff", *flags, *filenames])
+                             ["-m", "shp_portrait_tools.editor_handoff", *flags, *filenames])
         with self.assertRaisesRegex(ValueError, "Existing launcher"):
             installer["install"](self.root, self.root / "another-backup", python)
         (executable / "photocraft-lightcraft").unlink()

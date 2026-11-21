@@ -11,9 +11,9 @@ import numpy as np
 from PIL import Image
 
 import test_dnb_transfer as T
-from shp_photocraft_tools.modules.dnb import skintone as ST
-from shp_photocraft_tools.modules.dnb import frequency_separation as FS
-from shp_photocraft_tools.shared.photocraft import ControlError
+from shp_portrait_tools.modules.dnb import skintone as ST
+from shp_portrait_tools.modules.dnb import frequency_separation as FS
+from shp_portrait_tools.shared.photocraft import ControlError
 
 
 @unittest.skipUnless(shutil.which("photocraft-cli"), "photocraft-cli is not installed")

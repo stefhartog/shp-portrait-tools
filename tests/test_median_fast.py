@@ -9,9 +9,9 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_photocraft_tools.modules.dnb import frequency_separation as F, ui_server as U
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
-from shp_photocraft_tools.shared.photocraft import ControlError
+from shp_portrait_tools.modules.dnb import frequency_separation as F, ui_server as U
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.shared.photocraft import ControlError
 import test_dnb as T
 import test_local_results as L
 

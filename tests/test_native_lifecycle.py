@@ -12,10 +12,10 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from shp_photocraft_tools.shared.lifecycle import BrowserLifetime
-from shp_photocraft_tools.shared.supervision import ControlError
-from shp_photocraft_tools.shared import owned_process as O
-from shp_photocraft_tools import launcher as L, supervisor as S
+from shp_portrait_tools.shared.lifecycle import BrowserLifetime
+from shp_portrait_tools.shared.supervision import ControlError
+from shp_portrait_tools.shared import owned_process as O
+from shp_portrait_tools import launcher as L, supervisor as S
 
 
 class NativeLifetimeTests(unittest.TestCase):
@@ -299,7 +299,7 @@ class RestartTests(unittest.TestCase):
                                      client="desktop-test", request=Mock())
         connection.request.return_value = {"draining": True, "pid": 555, "process_identity": [555, 77]}
         host = SimpleNamespace(pending_action="restart", connection=connection, quit_signature={},
-            restart_command=["python", "-m", "shp_photocraft_tools.launcher"], data=Path("/fake"),
+            restart_command=["python", "-m", "shp_portrait_tools.launcher"], data=Path("/fake"),
             destroy_after_quit=Mock(), shutdown_failed=Mock(), wait_for_shutdown=Mock(), message=Mock())
         with patch.object(Path, "read_text", return_value="123 (name) "+" ".join(["0"]*19+["88"])), \
                 patch.object(Path, "open", return_value=io.BytesIO()):

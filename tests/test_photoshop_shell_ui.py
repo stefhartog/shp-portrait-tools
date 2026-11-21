@@ -14,7 +14,7 @@ import unittest
 
 
 EDGE = Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
-ROOT = Path(__file__).resolve().parents[1] / "src" / "shp_photocraft_tools"
+ROOT = Path(__file__).resolve().parents[1] / "src" / "shp_portrait_tools"
 
 
 @unittest.skipUnless(EDGE.is_file(), "Microsoft Edge is not installed")

@@ -11,7 +11,7 @@ from PIL import Image
 
 import test_dnb as T
 from test_dnb import PARAMS, synthetic_image
-from shp_photocraft_tools.modules.dnb import dodge_burn as D, frequency_separation as F, ui_server as S, skintone as ST
+from shp_portrait_tools.modules.dnb import dodge_burn as D, frequency_separation as F, ui_server as S, skintone as ST
 
 
 class FilterTests(unittest.TestCase):

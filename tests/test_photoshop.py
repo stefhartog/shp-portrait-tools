@@ -20,12 +20,12 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.shared.photoshop import (
+from shp_portrait_tools.shared.photoshop import (
     Broker, CHUNK, CredentialStore, PROTOCOL, Request, handle_http,
 )
-from shp_photocraft_tools.shared.photocraft import ControlError
-from shp_photocraft_tools.modules.dnb.photoshop_bridge import Bridge
-from shp_photocraft_tools.modules.dnb import frequency_separation as FS, skintone as ST, photoshop_lut, progress
+from shp_portrait_tools.shared.photocraft import ControlError
+from shp_portrait_tools.modules.dnb.photoshop_bridge import Bridge
+from shp_portrait_tools.modules.dnb import frequency_separation as FS, skintone as ST, photoshop_lut, progress
 
 ICC = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 PROFILE = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(ICC))).strip()
@@ -305,7 +305,7 @@ class AdapterTests(unittest.TestCase):
     def test_send_reports_serial_encoding_bytes_and_separate_transfer(self):
         token = "photoshop-send-timing-test"
         document = {**self.doc, "editor": "photoshop", "profile_hash": hashlib.sha256(ICC).hexdigest()}
-        from shp_photocraft_tools.modules.dnb.photoshop_bridge import layer_preparation
+        from shp_portrait_tools.modules.dnb.photoshop_bridge import layer_preparation
         with progress.operation(token), layer_preparation():
             self.bridge.send_result(self.pixels, document, ICC)
         prep, encode, transfer = progress.snapshot(token, consume=True)["steps"]
@@ -349,7 +349,7 @@ class AdapterTests(unittest.TestCase):
                 self.bridge.fetch(directory)
 
     def test_png_capture_preserves_depth_pixels_and_embedded_icc(self):
-        from shp_photocraft_tools.modules.dnb.photocraft_bridge import tagged_rgb16
+        from shp_portrait_tools.modules.dnb.photocraft_bridge import tagged_rgb16
         self.broker.capabilities = frozenset(["png-capture-v1"])
         for depth in (8, 16):
             pixels = self.pixels if depth == 16 else ((self.pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
@@ -369,7 +369,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(doc["profile_hash"], hashlib.sha256(ICC).hexdigest())
 
     def test_png_capture_rejects_missing_icc_corruption_transparency_and_old_connector(self):
-        from shp_photocraft_tools.modules.dnb.photocraft_bridge import tagged_rgb16
+        from shp_portrait_tools.modules.dnb.photocraft_bridge import tagged_rgb16
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ControlError, "updated Photoshop connector"):
                 self.bridge.fetch(directory, capture_format="png")
@@ -485,7 +485,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(blobs[hue["lookup"]], photoshop_lut.device_link(ST.tables(dict(settings, hue_amount=100))[0]))
 
     def test_hue_output_is_only_forwarded_to_photoshop(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as U
+        from shp_portrait_tools.modules.dnb import ui_server as U
         self.assertEqual(U.parse_params({"mode": "frequency", "S": 181})["photoshop_hue"], "native")
         self.assertEqual(U.parse_params({"mode": "frequency", "S": 181, "photoshop_hue": "rendered"})["photoshop_hue"], "rendered")
         with self.assertRaisesRegex(ValueError, "Hue output"):
@@ -516,7 +516,7 @@ class AdapterTests(unittest.TestCase):
             self.bridge.send_result(self.pixels.astype(np.uint8), self.doc, ICC)
 
     def test_editor_selection_does_not_replace_photocraft_transport(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as U
+        from shp_portrait_tools.modules.dnb import ui_server as U
         old = object()
         broker, _ = paired()
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp, \
@@ -535,7 +535,7 @@ class AdapterTests(unittest.TestCase):
                     U.validate_editor_source({"mode": "frequency"})
 
     def test_connector_can_answer_while_tools_editor_call_holds_processing_lock(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as U
+        from shp_portrait_tools.modules.dnb import ui_server as U
         broker, token = paired(timeout=2)
         with patch.dict(U.EDITOR, {"selected": "photoshop", "photoshop": None, "broker": broker}):
             server = ThreadingHTTPServer(("127.0.0.1", 0), U.Handler)

@@ -45,7 +45,7 @@ def main():
             assert set(settings) == {"hue_center","hue_width","hue_softness","hue_amount"}
             return {"layer": 12, "document": document["name"]}
 
-    from shp_photocraft_tools.modules.dnb import ui_server as module
+    from shp_portrait_tools.modules.dnb import ui_server as module
     import cv2
 
     for hue in (18,43):

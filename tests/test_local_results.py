@@ -19,12 +19,12 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_photocraft_tools.modules.dnb import ui_server as S
+from shp_portrait_tools.modules.dnb import ui_server as S
 try:
-    from shp_photocraft_tools import supervisor
+    from shp_portrait_tools import supervisor
 except ImportError:  # supervisor is Linux-only (fcntl)
     supervisor = None
-from shp_photocraft_tools.shared import local_output
+from shp_portrait_tools.shared import local_output
 import test_dnb as T
 from winlinks import directory_alias, file_symlink
 

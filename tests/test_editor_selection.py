@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from shp_photocraft_tools.modules.dnb import ui_server as U
+from shp_portrait_tools.modules.dnb import ui_server as U
 
 
 class EditorSelectionTests(unittest.TestCase):
@@ -137,7 +137,7 @@ class EditorSelectionTests(unittest.TestCase):
         self.assertEqual(self.settings.read_bytes(), before)
 
     def test_backend_selection_probes_cuda_and_preserves_cpu_fallback_reason(self):
-        from shp_photocraft_tools.modules.dnb import cuda_bands
+        from shp_portrait_tools.modules.dnb import cuda_bands
 
         U.FIXED_OPTIONS = True
         for error, expected in ((None, "cuda"), (cuda_bands.CudaUnavailable("no driver"), "cpu")):

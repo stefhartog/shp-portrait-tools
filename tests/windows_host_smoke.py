@@ -53,8 +53,8 @@ def main():
     config = root / "launcher.json"
     config.write_text(json.dumps({"models": args.models, "ports": {"dnb": 18765}, "shell_port": 18760,
                                   "startup": {"dnb": True}}))
-    from shp_photocraft_tools import launcher
-    from shp_photocraft_tools.desktop import windows_controller as wc
+    from shp_portrait_tools import launcher
+    from shp_portrait_tools.desktop import windows_controller as wc
 
     for port in (18760, 18765):
         if listening(port):

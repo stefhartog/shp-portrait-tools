@@ -31,11 +31,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageCms
-from shp_photocraft_tools.shared.ui import stylesheet, theme_script
-from shp_photocraft_tools.shared.health import identity
-from shp_photocraft_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
-from shp_photocraft_tools.shared.local_output import write_local_result, batch_output
-from shp_photocraft_tools.shared.platform_paths import global_config_dir, watch_directory
+from shp_portrait_tools.shared.ui import stylesheet, theme_script
+from shp_portrait_tools.shared.health import identity
+from shp_portrait_tools.shared.lifecycle import BrowserHandler, BrowserServer, script
+from shp_portrait_tools.shared.local_output import write_local_result, batch_output
+from shp_portrait_tools.shared.platform_paths import global_config_dir, watch_directory
 
 from . import dodge_burn as D
 from . import skin_mask as K
@@ -43,7 +43,7 @@ from . import skin_mask_compare as M
 from . import pose_backend as POSE
 from . import photocraft_bridge as PCB
 from . import photoshop_bridge as PSB
-from shp_photocraft_tools.shared.photoshop import Broker as PhotoshopBroker, handle_http as photoshop_http
+from shp_portrait_tools.shared.photoshop import Broker as PhotoshopBroker, handle_http as photoshop_http
 from . import frequency_separation as FS
 from . import skintone as ST
 from . import directional_blur as DB
@@ -53,7 +53,7 @@ from . import image_session, preview_service, processing_service, progress, tran
 from .cache_coordinator import CacheCoordinator
 from .layer_cache import LayerCache, RESERVE as LAYER_MEMORY_RESERVE, memory_rejection
 from .mask_precache import Skipped, Superseded
-from shp_photocraft_tools.shared.watch_folder import WatchFolder, capture_target
+from shp_portrait_tools.shared.watch_folder import WatchFolder, capture_target
 from .paths import DATA, MODELS
 
 ROOT = DATA

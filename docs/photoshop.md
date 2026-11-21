@@ -35,7 +35,7 @@ Implemented source paths:
 - Skin Tools **Settings & Info > Source editor**: editor choice, pairing code and revocation.
 
 These are relative to the repository; Python modules live under
-`src/shp_photocraft_tools`.
+`src/shp_portrait_tools`.
 
 If tabs remain disabled after selecting Photoshop in an older UI, save or finish
 Tools work and use the tray's **Reload UI** after updating both the shell and Skin

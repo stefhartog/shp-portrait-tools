@@ -11,8 +11,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.dnb import ui_server as U, skintone as ST
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import tagged_rgb16, transfer_settings
+from shp_portrait_tools.modules.dnb import ui_server as U, skintone as ST
+from shp_portrait_tools.modules.dnb.photocraft_bridge import tagged_rgb16, transfer_settings
 import test_dnb_transfer as DT
 import test_fs_pipeline as FP
 

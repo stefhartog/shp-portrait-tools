@@ -16,8 +16,8 @@ from PIL import Image
 import test_combine as T
 from winlinks import directory_alias, file_symlink, require_file_symlink
 from test_dnb import synthetic_image
-from shp_photocraft_tools.modules.dnb import ui_server as U, progress
-from shp_photocraft_tools.shared.local_output import batch_output
+from shp_portrait_tools.modules.dnb import ui_server as U, progress
+from shp_portrait_tools.shared.local_output import batch_output
 
 
 class BatchApiTests(unittest.TestCase):
@@ -320,13 +320,13 @@ class BatchOutputTests(unittest.TestCase):
             root = Path(temp) / "input"
             root.mkdir()
             with batch_output(root) as (folder, write, write_preset):
-                with patch("shp_photocraft_tools.shared.local_output.os.fsync", side_effect=OSError("disk full")):
+                with patch("shp_portrait_tools.shared.local_output.os.fsync", side_effect=OSError("disk full")):
                     with self.assertRaisesRegex(OSError, "disk full"):
                         write(1, "image.png", b"partial")
                 self.assertEqual(list(folder.iterdir()), [])
                 write_preset({"batch": {"items": []}})
                 before = (folder / "preset.json").read_bytes()
-                with patch("shp_photocraft_tools.shared.local_output.os.replace", side_effect=OSError("disk full")):
+                with patch("shp_portrait_tools.shared.local_output.os.replace", side_effect=OSError("disk full")):
                     with self.assertRaisesRegex(OSError, "disk full"):
                         write_preset({"batch": {"items": [{"status": "success"}]}})
                 self.assertEqual((folder / "preset.json").read_bytes(), before)

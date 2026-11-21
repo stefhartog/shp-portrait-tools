@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shp_photocraft_tools import launcher
+from shp_portrait_tools import launcher
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows launcher configuration")
@@ -35,8 +35,8 @@ class WindowsPhotoCraftSetupTests(unittest.TestCase):
         env["DNB_PC_PORT"] = "19000"
         env["PHOTOCRAFT_BIN"] = str(self.root / "override.exe")
         code = ("import json,sys; from pathlib import Path; "
-                "from shp_photocraft_tools.launcher import read_config,apply_photocraft_env; "
-                "from shp_photocraft_tools.shared.photocraft.bridge import detect_config; "
+                "from shp_portrait_tools.launcher import read_config,apply_photocraft_env; "
+                "from shp_portrait_tools.shared.photocraft.bridge import detect_config; "
                 "import os; apply_photocraft_env(read_config(Path(sys.argv[1]))); "
                 "c=detect_config('DNB','dnb'); "
                 "print(json.dumps({'port':c['port'],'token':str(c['token_file']),"

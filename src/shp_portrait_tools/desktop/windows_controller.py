@@ -1,6 +1,6 @@
 """Windows desktop host: a pywebview (WebView2) window and a pystray tray icon for the Tools shell.
 
-Run with the project's Python (`python -m shp_photocraft_tools.desktop.windows_controller`, normally
+Run with the project's Python (`python -m shp_portrait_tools.desktop.windows_controller`, normally
 started by the launcher). It speaks the same loopback shell protocol as the GTK controller; the
 supervisor, not this process, owns and stops the services.
 """
@@ -125,7 +125,7 @@ class Host:
         self.base = validate_url(url)
         self.data = data
         self.connection = Connection(self.base)
-        self.restart_command = ([launcher_python, "-m", "shp_photocraft_tools.launcher",
+        self.restart_command = ([launcher_python, "-m", "shp_portrait_tools.launcher",
                                  "--config", str(launcher_config)] if launcher_python and launcher_config else None)
         self.window = self.icon = self.single = None
         self.dialogs = dialogs or Dialogs(self.owner_handle)

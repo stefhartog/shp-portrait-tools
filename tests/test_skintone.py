@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 import test_dnb as T
-from shp_photocraft_tools.modules.dnb import skintone as ST, ui_server as S
+from shp_portrait_tools.modules.dnb import skintone as ST, ui_server as S
 
 
 class SkintoneTests(unittest.TestCase):

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shp_photocraft_tools.shared.photocraft import flatpak_peer
+from shp_portrait_tools.shared.photocraft import flatpak_peer
 
 
 SERVER = r"""

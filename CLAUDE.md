@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 SHP Portrait Tools: a local desktop companion for portrait retouching on Linux and Windows.
-Python package `shp_photocraft_tools` (Python 3.13, managed with uv). Public names differ from
-internal IDs — keep internal IDs, routes, commands, and data/config paths unchanged:
+Python package `shp_portrait_tools` (Python 3.13, managed with uv; renamed from `shp_photocraft_tools`
+on 2026-11-21). An internal rename to Portrait/Skin Tools names is in progress, one piece at a time
+(see `TRANSITION-install-and-split.md` Phase 1b if present). Still unchanged: the distribution and command
+names (`shp-photocraft-*`), data/config folders (`shp-photocraft-tools`), the `dnb` module ID and its routes.
+Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything PhotoCraft relies on.
 
 - **Skin Tools** = module `dnb` (Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service)
 - **AI Fill** (former module `crop`: Crop & Expand, Patch Fill, ComfyUI) was split out to the separate

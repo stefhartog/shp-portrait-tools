@@ -14,11 +14,11 @@ from unittest.mock import Mock, patch
 from pathlib import Path
 
 from shell_preview import fixture
-from shp_photocraft_tools.launcher import LaunchError
-from shp_photocraft_tools.shared.lifecycle import BrowserLifetime
-from shp_photocraft_tools.shared.supervision import ControlError, OwnerControl
-from shp_photocraft_tools.supervisor import Modules, external_status
-from shp_photocraft_tools.shared.photocraft.bridge import detect_config
+from shp_portrait_tools.launcher import LaunchError
+from shp_portrait_tools.shared.lifecycle import BrowserLifetime
+from shp_portrait_tools.shared.supervision import ControlError, OwnerControl
+from shp_portrait_tools.supervisor import Modules, external_status
+from shp_portrait_tools.shared.photocraft.bridge import detect_config
 
 
 class GateTests(unittest.TestCase):
@@ -36,12 +36,12 @@ class GateTests(unittest.TestCase):
                 children.append(kwargs["env"])
                 return Mock(pid=1234, poll=Mock(return_value=None))
             with patch.dict(os.environ, clean_env, clear=True), \
-                 patch("shp_photocraft_tools.supervisor.probe", return_value=None), \
-                 patch("shp_photocraft_tools.supervisor.process_identity", return_value=(1234, 1)), \
-                 patch("shp_photocraft_tools.supervisor.adopt", return_value=(1234, 1)), \
-                 patch("shp_photocraft_tools.supervisor.subprocess.Popen", side_effect=spawn), \
+                 patch("shp_portrait_tools.supervisor.probe", return_value=None), \
+                 patch("shp_portrait_tools.supervisor.process_identity", return_value=(1234, 1)), \
+                 patch("shp_portrait_tools.supervisor.adopt", return_value=(1234, 1)), \
+                 patch("shp_portrait_tools.supervisor.subprocess.Popen", side_effect=spawn), \
                  patch.object(Modules, "checked"), \
-                 patch("shp_photocraft_tools.supervisor.socket.create_connection") as connect:
+                 patch("shp_portrait_tools.supervisor.socket.create_connection") as connect:
                 modules = Modules(config, root / "data", root / "logs", "test")
                 modules.start("dnb")
                 self.assertEqual(len(children), 1)
@@ -57,7 +57,7 @@ class GateTests(unittest.TestCase):
                 self.assertEqual(connect.call_count, 1)
 
     def test_explicit_photocraft_environment_overrides_saved_config(self):
-        from shp_photocraft_tools.supervisor import photocraft_environment
+        from shp_portrait_tools.supervisor import photocraft_environment
         pc = dict(port=7878, token_file="/saved/token", exchange="/saved/exchange",
                   read_root="/saved/exchange", executable="/saved/photocraft", editor_config="/saved/editor")
         env = photocraft_environment({"photocraft": pc}, {"SHP_PC_PORT": "9000", "DNB_PC_PORT": "9001"})
@@ -67,11 +67,11 @@ class GateTests(unittest.TestCase):
 
     def test_photocraft_endpoint_is_probed_once(self):
         with patch.dict(os.environ, {"DNB_PC_PORT": "7878"}):
-            with patch("shp_photocraft_tools.supervisor.socket.create_connection") as connect:
+            with patch("shp_portrait_tools.supervisor.socket.create_connection") as connect:
                 status = external_status()
             self.assertEqual(connect.call_count, 1)
             self.assertEqual(status, {"photocraft_dnb": {"reachable": True, "address": "127.0.0.1:7878"}})
-            with patch("shp_photocraft_tools.supervisor.socket.create_connection", side_effect=OSError("offline")) as connect:
+            with patch("shp_portrait_tools.supervisor.socket.create_connection", side_effect=OSError("offline")) as connect:
                 status = external_status()
             self.assertEqual(connect.call_count, 1)
             self.assertFalse(status["photocraft_dnb"]["reachable"])

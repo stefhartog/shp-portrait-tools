@@ -1,6 +1,6 @@
 """Create or remove a Start Menu (and optionally Desktop) shortcut that starts Tools with no console window.
 
-The shortcut runs `<repo>\\.venv\\Scripts\\pythonw.exe -m shp_photocraft_tools.launcher --config <launcher.json>`
+The shortcut runs `<repo>\\.venv\\Scripts\\pythonw.exe -m shp_portrait_tools.launcher --config <launcher.json>`
 with the repository as the working directory. Nothing is written without being listed first by --dry-run;
 an existing shortcut is never overwritten without --force.
 """
@@ -11,8 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from shp_photocraft_tools.desktop.icons import write_icon
-from shp_photocraft_tools.desktop.windows_identity import APP_ID, shortcut_app_id
+from shp_portrait_tools.desktop.icons import write_icon
+from shp_portrait_tools.desktop.windows_identity import APP_ID, shortcut_app_id
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "SHP Portrait Tools"
@@ -41,7 +41,7 @@ def desktop_dir():
 
 
 def shortcut_arguments(config):
-    return f'-m shp_photocraft_tools.launcher --config "{config}"'
+    return f'-m shp_portrait_tools.launcher --config "{config}"'
 
 
 def powershell(script, **env):

@@ -16,9 +16,9 @@ import numpy as np
 
 import test_dnb as T
 from test_photocraft import FakePhotoCraft
-from shp_photocraft_tools.modules.dnb import progress, skin_mask
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
-from shp_photocraft_tools.shared.ui import stylesheet, theme_script
+from shp_portrait_tools.modules.dnb import progress, skin_mask
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.shared.ui import stylesheet, theme_script
 
 
 class ProgressTests(unittest.TestCase):
@@ -226,7 +226,7 @@ if (mixOnlyPending) throw Error('mix edit hid an earlier ordinary edit');
         node = shutil.which("node")
         if not node:
             self.skipTest("Node.js is unavailable")
-        shell = files("shp_photocraft_tools.shell").joinpath("shell.js").read_text()
+        shell = files("shp_portrait_tools.shell").joinpath("shell.js").read_text()
         helpers = shell.split("(() => {", 1)[1].split("  const names =", 1)[0]
         tabs = "function setCacheTabs(tabs) {" + shell.split(
             "function setCacheTabs(tabs) {", 1)[1].split("  function navigationLocked()", 1)[0]
@@ -284,7 +284,7 @@ for (const [status,cached,enabled,expected] of [
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_subject_detection_records_timings_without_changing_results(self):
-        from shp_photocraft_tools.modules.dnb import combine_scale as C
+        from shp_portrait_tools.modules.dnb import combine_scale as C
 
         image = np.zeros((4, 4, 3), dtype=np.uint8)
         face = (0, 0, 2, 2)
@@ -1086,7 +1086,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         })();
         """
         for package in ("shell", "modules.dnb.ui"):
-            page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
+            page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             self.assertIn('<script src="static/theme.js"></script>', page)
         css = stylesheet().decode()
         self.assertIn("button.primary:not(:disabled), button.workflow:not(:disabled)", css)
@@ -1105,7 +1105,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         for package, expected in (
             ("modules.dnb.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
         ):
-            page = files("shp_photocraft_tools."+package).joinpath("index.html").read_text()
+            page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             workflow = set()
             for tag in re.findall(r"<button\b[^>]*>", page):
                 button_id = re.search(r'\bid="([^"]+)"', tag)
@@ -1120,10 +1120,10 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertIn("flex-wrap:wrap-reverse;", css)
         self.assertNotIn("box-shadow:0 1px 0 var(--workspace)", css)
         for page_package in ("modules.dnb.ui",):
-            self.assertIn("border-top:0;", files("shp_photocraft_tools."+page_package).joinpath("index.html").read_text())
+            self.assertIn("border-top:0;", files("shp_portrait_tools."+page_package).joinpath("index.html").read_text())
         self.assertNotIn('.tab.on { border-color:var(--acc)', css)
         self.assertIn(":focus-visible", css)
-        shell_css = files("shp_photocraft_tools.shell").joinpath("shell.css").read_text()
+        shell_css = files("shp_portrait_tools.shell").joinpath("shell.css").read_text()
         self.assertNotIn(".badge", shell_css)
         self.assertIn('[role="tab"][aria-busy="true"] { color:color-mix', shell_css)
         self.assertNotIn('[aria-busy="true"] { background:', shell_css)
@@ -1132,7 +1132,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertIn("#status.busy::before { animation:none; transform:none;", css)
         self.assertIn("--status-accent:#6a9fc5", css)
         self.assertIn("#status.ok::after", css)
-        shell_js = files("shp_photocraft_tools.shell").joinpath("shell.js").read_text()
+        shell_js = files("shp_portrait_tools.shell").joinpath("shell.js").read_text()
         availability = "function viewAvailable(name) {" + shell_js.split(
             "function viewAvailable(name) {", 1)[1].split("  const $", 1)[0]
         navigation = "let skinBusy = false;" + shell_js.split("let skinBusy = false;", 1)[1].split("function requestMode()", 1)[0]
@@ -1201,7 +1201,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             check(tab.title==='Error: Connection lost');
           })();
         """
-        shell_page = files("shp_photocraft_tools.shell").joinpath("index.html").read_text()
+        shell_page = files("shp_portrait_tools.shell").joinpath("index.html").read_text()
         render_code = "function render() {" + shell_js.split("function render() {", 1)[1].split("async function poll()", 1)[0]
         poll_code = "async function poll() {" + shell_js.split("async function poll() {", 1)[1].split("  poll();", 1)[0]
         isolation_harness = """
@@ -1285,7 +1285,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         for colour in ("#272727", "#515151", "#444444", "#626262", "#e0e0e0", "#b8b8b8", "#6a9fc5"):
             self.assertIn(colour, css)
         self.assertNotIn("filter:", css)
-        from shp_photocraft_tools.supervisor import ShellHandler
+        from shp_portrait_tools.supervisor import ShellHandler
         for handler_type in (T.S.Handler, ShellHandler):
             handler = object.__new__(handler_type)
             handler.path = "/static/theme.js"

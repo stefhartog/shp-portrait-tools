@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from shp_photocraft_tools.desktop.protocol import validate_url
-from shp_photocraft_tools.shared.filelock import file_lock
+from shp_portrait_tools.desktop.protocol import validate_url
+from shp_portrait_tools.shared.filelock import file_lock
 
 
 class FileLockTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class FileLockTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class WindowsProcessTests(unittest.TestCase):
     def setUp(self):
-        from shp_photocraft_tools.shared import windows_process as wp
+        from shp_portrait_tools.shared import windows_process as wp
         self.wp = wp
 
     def spawn(self):
@@ -85,7 +85,7 @@ class ProtocolTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
     def test_prompt_protocol(self):
-        from shp_photocraft_tools.desktop.windows_controller import answer_open_prompt
+        from shp_portrait_tools.desktop.windows_controller import answer_open_prompt
 
         class Fake:
             def __init__(self, choice="folder"):
@@ -106,7 +106,7 @@ class ProtocolTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class NoConsoleTests(unittest.TestCase):
     def test_identity_and_native_icon_are_ready_before_gui_start(self):
-        from shp_photocraft_tools.desktop import windows_controller as wc
+        from shp_portrait_tools.desktop import windows_controller as wc
         import webview
 
         calls = []
@@ -119,9 +119,9 @@ class NoConsoleTests(unittest.TestCase):
                 self.assertTrue(Path(options["icon"]).is_file())
                 self.assertEqual(options["storage_path"], str(host.data / "data"))
 
-            with patch("shp_photocraft_tools.desktop.windows_identity.set_process_app_id",
+            with patch("shp_portrait_tools.desktop.windows_identity.set_process_app_id",
                        side_effect=lambda: calls.append("identity")), \
-                 patch("shp_photocraft_tools.shared.windows_process.SingleInstance",
+                 patch("shp_portrait_tools.shared.windows_process.SingleInstance",
                        return_value=Mock(primary=True)), \
                  patch.object(host, "create_window", side_effect=lambda: calls.append("window")), \
                  patch.object(host, "create_tray", side_effect=lambda: calls.append("tray")), \
@@ -130,7 +130,7 @@ class NoConsoleTests(unittest.TestCase):
         self.assertEqual(calls, ["identity", "window", "tray", "start"])
 
     def test_background_python_prefers_pythonw(self):
-        from shp_photocraft_tools.shared.windows_process import background_python
+        from shp_portrait_tools.shared.windows_process import background_python
         with tempfile.TemporaryDirectory() as directory:
             python, pythonw = Path(directory, "python.exe"), Path(directory, "pythonw.exe")
             python.touch()
@@ -140,12 +140,12 @@ class NoConsoleTests(unittest.TestCase):
             self.assertEqual(background_python(str(pythonw)), str(pythonw))
 
     def test_spawn_flags_hide_console(self):
-        from shp_photocraft_tools.shared import windows_process as wp
+        from shp_portrait_tools.shared import windows_process as wp
         for flags in (wp.spawn_options(), wp.detached_options()):
             self.assertTrue(flags["creationflags"] & subprocess.CREATE_NO_WINDOW)
 
     def test_launcher_uses_background_python_for_children(self):
-        from shp_photocraft_tools import launcher
+        from shp_portrait_tools import launcher
         self.assertTrue(Path(launcher.background_python()).name.lower() in ("pythonw.exe", Path(sys.executable).name.lower()))
 
 
@@ -181,7 +181,7 @@ class ShortcutInstallerTests(unittest.TestCase):
         self.assertTrue(all(link.exists() for link in self.links))
         details = self.installer.read_shortcut(self.links[0])
         self.assertEqual(details["target"], str(self.repo / ".venv" / "Scripts" / "pythonw.exe"))
-        self.assertIn("-m shp_photocraft_tools.launcher --config", details["arguments"])
+        self.assertIn("-m shp_portrait_tools.launcher --config", details["arguments"])
         self.assertEqual(details["cwd"], str(self.repo))
         self.assertEqual(details["app_id"], self.installer.APP_ID)
         self.assertTrue((self.out / "shp-photocraft-tools.ico").exists())
@@ -220,8 +220,8 @@ class ShortcutInstallerTests(unittest.TestCase):
 class IconTests(unittest.TestCase):
     def test_native_images_match_launcher_and_grayscale_svg_artwork(self):
         import xml.etree.ElementTree as ET
-        from shp_photocraft_tools.desktop.icons import icon_image
-        from shp_photocraft_tools.desktop.windows_controller import tray_image
+        from shp_portrait_tools.desktop.icons import icon_image
+        from shp_portrait_tools.desktop.windows_controller import tray_image
 
         for tray in (False, True):
             name = "shp-photocraft-tools" + ("-tray" if tray else "") + ".svg"
@@ -239,7 +239,7 @@ class IconTests(unittest.TestCase):
 
     def test_multi_size_ico_matches_native_launcher_artwork(self):
         from PIL import Image
-        from shp_photocraft_tools.desktop.icons import icon_image, write_icon
+        from shp_portrait_tools.desktop.icons import icon_image, write_icon
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app.ico"
@@ -253,7 +253,7 @@ class IconTests(unittest.TestCase):
         import clr
         clr.AddReference("System.Drawing")
         from System.Drawing import Icon
-        from shp_photocraft_tools.desktop.icons import write_icon
+        from shp_portrait_tools.desktop.icons import write_icon
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app.ico"

@@ -11,8 +11,8 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-from shp_photocraft_tools.shared import local_output, winfs
-from shp_photocraft_tools.shared.watch_folder import WatchFolder, verify_png
+from shp_portrait_tools.shared import local_output, winfs
+from shp_portrait_tools.shared.watch_folder import WatchFolder, verify_png
 
 WINDOWS = sys.platform == "win32"
 
@@ -227,7 +227,7 @@ class WindowsWatchFolderTests(unittest.TestCase):
 
 class PlatformPathTests(unittest.TestCase):
     def test_env_overrides_and_defaults(self):
-        from shp_photocraft_tools.shared import platform_paths as P
+        from shp_portrait_tools.shared import platform_paths as P
         with patch.dict(os.environ, {"WATCH_DIRECTORY": "generic", "SHPC_WATCH_DIRECTORY": ""}, clear=False):
             self.assertEqual(P.watch_directory("DNB_WATCH_DIRECTORY", "a", "b"), Path("generic"))
             os.environ["DNB_WATCH_DIRECTORY"] = "specific"
@@ -237,7 +237,7 @@ class PlatformPathTests(unittest.TestCase):
 
     @unittest.skipUnless(WINDOWS, "Windows defaults")
     def test_windows_defaults_use_localappdata(self):
-        from shp_photocraft_tools.shared import platform_paths as P
+        from shp_portrait_tools.shared import platform_paths as P
         env = {"LOCALAPPDATA": r"C:\Users\x\AppData\Local", "APPDATA": r"C:\Users\x\AppData\Roaming"}
         with patch.dict(os.environ, env):
             for name in ("DNB_DATA", "WATCH_DIRECTORY", "DNB_WATCH_DIRECTORY"):

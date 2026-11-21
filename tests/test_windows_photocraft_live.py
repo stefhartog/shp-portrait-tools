@@ -15,9 +15,9 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
-from shp_photocraft_tools.shared.photocraft import ControlError
-from shp_photocraft_tools.shared.photocraft.bridge import AuthenticationError
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.shared.photocraft import ControlError
+from shp_portrait_tools.shared.photocraft.bridge import AuthenticationError
 
 
 @unittest.skipUnless(sys.platform == "win32" and os.environ.get("PHOTOCRAFT_TEST_CLI"),
@@ -53,7 +53,7 @@ class WindowsPhotoCraftIntegration(unittest.TestCase):
                 return process
             with patch.dict(os.environ, {"PHOTOCRAFT_BIN": os.environ["PHOTOCRAFT_TEST_GUI"],
                                          "PHOTOCRAFT_CONFIG_DIR": str(root / "editor")}), \
-                 patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen", side_effect=start):
+                 patch("shp_portrait_tools.shared.photocraft.bridge.subprocess.Popen", side_effect=start):
                 try:
                     self.assertIn("launched", bridge.launch())
                     self.assertTrue(bridge.launch()["reused"])
@@ -164,8 +164,8 @@ class WindowsPhotoCraftIntegration(unittest.TestCase):
         code = """
 import json, sys, urllib.error, urllib.request
 from pathlib import Path
-from shp_photocraft_tools.launcher import read_config, apply_photocraft_env
-from shp_photocraft_tools.supervisor import Modules
+from shp_portrait_tools.launcher import read_config, apply_photocraft_env
+from shp_portrait_tools.supervisor import Modules
 config = read_config(Path(sys.argv[1])); apply_photocraft_env(config)
 root = Path(sys.argv[2])
 modules = Modules(config, root / 'service-data', root / 'service-logs', 'test-instance')

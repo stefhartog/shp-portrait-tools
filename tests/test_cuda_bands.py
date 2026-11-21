@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from shp_photocraft_tools.modules.dnb import cuda_bands, dodge_burn as D, processing_service, progress, skin_mask
+from shp_portrait_tools.modules.dnb import cuda_bands, dodge_burn as D, processing_service, progress, skin_mask
 
 
 PARAMS = {
@@ -57,7 +57,7 @@ class CudaFallbackTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("SHP_TEST_DNB_CUDA") == "1", "requires CUDA 13 test device")
 class CudaParityTests(unittest.TestCase):
     def test_wide_feather_keeps_full_radius_without_cpu_fallback(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as U
+        from shp_portrait_tools.modules.dnb import ui_server as U
 
         h, w = 151, 313
         image = np.full((h, w, 3), .45, np.float32)
@@ -89,7 +89,7 @@ class CudaParityTests(unittest.TestCase):
                     self.assertTrue(np.all(actual <= base))
 
     def test_selected_colour_and_feather_match_cpu_cache_mask(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as U
+        from shp_portrait_tools.modules.dnb import ui_server as U
 
         h, w = 137, 199
         image = np.ascontiguousarray(self.stress_image()[:h, :w])

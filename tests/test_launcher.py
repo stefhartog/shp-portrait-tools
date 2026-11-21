@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.request import urlopen
 
-from shp_photocraft_tools import launcher as L
+from shp_portrait_tools import launcher as L
 
 
 class LauncherTests(unittest.TestCase):

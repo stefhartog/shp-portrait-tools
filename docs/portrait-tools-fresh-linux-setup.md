@@ -211,7 +211,7 @@ different existing Tools files: read that error instead of deleting things.
 Check the native bindings without opening the window:
 
 ```sh
-/usr/bin/python3 src/shp_photocraft_tools/desktop/controller.py \
+/usr/bin/python3 src/shp_portrait_tools/desktop/controller.py \
   --url http://127.0.0.1:18760/ \
   --data-dir "${XDG_DATA_HOME:-$HOME/.local/share}/shp-photocraft-tools/webview" --check
 ```

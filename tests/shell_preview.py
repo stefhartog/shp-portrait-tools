@@ -14,7 +14,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from shp_photocraft_tools import launcher, supervisor
+from shp_portrait_tools import launcher, supervisor
 
 
 @contextlib.contextmanager
@@ -43,7 +43,7 @@ def fixture():
         spawn = supervisor.subprocess.Popen
 
         def child(command, **kwargs):
-            expected = "shp_photocraft_tools.modules."
+            expected = "shp_portrait_tools.modules."
             if len(command) > 3 and command[2] == "-m" and command[3].startswith(expected):
                 name = command[3][len(expected):].split(".")[0]
                 command = [command[0], "-u", str(Path(__file__).with_name("shell_child.py")), name, *command[4:]]

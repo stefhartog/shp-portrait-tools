@@ -14,9 +14,9 @@ from urllib.request import Request, urlopen
 import numpy as np
 from PIL import ImageCms
 
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge, tagged_rgb16
-from shp_photocraft_tools.shared.photocraft import ControlError
-from shp_photocraft_tools.shared.photocraft.bridge import Client
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge, tagged_rgb16
+from shp_portrait_tools.shared.photocraft import ControlError
+from shp_portrait_tools.shared.photocraft.bridge import Client
 
 
 COMMANDS = {
@@ -175,7 +175,7 @@ class NativeFSTests(unittest.TestCase):
         self.assertFalse(any(c == "image.duplicate" for _, c, _ in self.fake.calls))
 
     def test_native_test_ui_and_route_are_removed(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as server
+        from shp_portrait_tools.modules.dnb import ui_server as server
         html = server.HTML.read_text()
         self.assertNotIn("pcNativeFS", html)
         self.assertNotIn("nativeFSTest", html)
@@ -186,7 +186,7 @@ class NativeFSTests(unittest.TestCase):
         self.assertIn('id="blurOn"', html)
 
     def test_endpoint_requires_same_origin_and_does_not_call_send(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as module
+        from shp_portrait_tools.modules.dnb import ui_server as module
         server = ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()

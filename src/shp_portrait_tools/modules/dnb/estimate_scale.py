@@ -8,7 +8,7 @@ Scale measures per face (all in original-image pixels):
   S        the scale used downstream (ipd3d), in pixels
 Agreement between the ipd and iris based mm/px values is a sanity check, not ground truth.
 
-Usage: uv run python -m shp_photocraft_tools.modules.dnb.estimate_scale IMAGE [IMAGE ...] [--draw] [--mesh] [--out DIR]
+Usage: uv run python -m shp_portrait_tools.modules.dnb.estimate_scale IMAGE [IMAGE ...] [--draw] [--mesh] [--out DIR]
   --draw   write <name>_overlay.jpg (whole image) and <name>_face<N>.jpg (zoomed face) with the detected points
   --mesh   also draw all 478 landmarks
 """

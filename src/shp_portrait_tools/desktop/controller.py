@@ -127,7 +127,7 @@ class Desktop(Gtk.Application):
         self.data, self.icon = data, icon
         self.tray_icon = tray_icon
         self.connection = Connection(self.base)
-        self.restart_command = ([launcher_python, "-m", "shp_photocraft_tools.launcher",
+        self.restart_command = ([launcher_python, "-m", "shp_portrait_tools.launcher",
                                  "--config", str(launcher_config)] if launcher_python and launcher_config else None)
         self.window = self.view = self.indicator = None
         self.quitting = self.dialog_open = False
@@ -285,9 +285,8 @@ class Desktop(Gtk.Application):
             self.module_items[name] = item
             self.module_actions[name] = {}
             startup = Gtk.CheckMenuItem(label="Load on startup")
-            startup.set_tooltip_text("Applies next launch; does not stop current work." +
-                                    (" Skin Mask, FS & Tone, Dodge & Burn and Combine share this service." if name == "dnb"
-                                     else " Crop & Expand and Patch Fill share this service."))
+            startup.set_tooltip_text("Applies next launch; does not stop current work."
+                                     " Skin Mask, FS & Tone, Dodge & Burn and Combine share this service.")
             startup.connect("toggled", lambda button, n=name:
                             self.request_module(n, "startup") if not self.syncing_startup else None)
             submenu.append(startup)

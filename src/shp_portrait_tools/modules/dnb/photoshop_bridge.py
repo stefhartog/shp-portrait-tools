@@ -14,8 +14,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms, UnidentifiedImageError
 
-from shp_photocraft_tools.shared.photocraft import ControlError
-from shp_photocraft_tools.shared.photoshop import CHUNK, MAX_PIXELS, MAX_TRANSFER, PROTOCOL
+from shp_portrait_tools.shared.photocraft import ControlError
+from shp_portrait_tools.shared.photoshop import CHUNK, MAX_PIXELS, MAX_TRANSFER, PROTOCOL
 from . import frequency_separation as FS, skintone as ST, photoshop_lut, progress
 from .photocraft_bridge import tagged_rgb16, transfer_settings
 

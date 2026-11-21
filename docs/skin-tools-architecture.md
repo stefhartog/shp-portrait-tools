@@ -1,17 +1,17 @@
 # Skin Tools developer guide
 
 Skin Mask, FS & Tone, Dodge & Burn (D&B), and Combine share one service in
-[`modules/dnb`](../src/shp_photocraft_tools/modules/dnb). Start with the boundary
+[`modules/dnb`](../src/shp_portrait_tools/modules/dnb). Start with the boundary
 that owns the behavior you want to change, not with the whole server.
 
 | Change you want to make | Where to start |
 |---|---|
-| An HTTP route, a request setting, or a button | [`ui_server.py`](../src/shp_photocraft_tools/modules/dnb/ui_server.py) wires routes, validates requests, and retains server-side editor and provenance checks. [`ui/index.html`](../src/shp_photocraft_tools/modules/dnb/ui/index.html) is the browser UI. |
-| What gets replaced on Load/Get, or what makes a snapshot stale | [`image_session.py`](../src/shp_photocraft_tools/modules/dnb/image_session.py) publishes the source, advances its generation, resets source-derived state, and captures full-resolution inputs by reference. Decode, profile handling, and source analysis still run through `ui_server.py` before publication. |
-| Preview response, tab switching, or preview cache reuse | [`preview_service.py`](../src/shp_photocraft_tools/modules/dnb/preview_service.py) coordinates `/api/run`, decides whether to keep or queue background preparation, and attaches status. The preview renderers, preview-size keys, and component cache helpers remain in `ui_server.py`. |
-| Full-resolution composition, shared mask use, or editable layer pixels | [`processing_service.py`](../src/shp_photocraft_tools/modules/dnb/processing_service.py) assembles results and layers through shared mask, split, and band helpers. `ui_server.py` still supplies those helpers, their keys, and the full-mask cache. Algorithms live in [`skin_mask.py`](../src/shp_photocraft_tools/modules/dnb/skin_mask.py), [`frequency_separation.py`](../src/shp_photocraft_tools/modules/dnb/frequency_separation.py), [`skintone.py`](../src/shp_photocraft_tools/modules/dnb/skintone.py), [`directional_blur.py`](../src/shp_photocraft_tools/modules/dnb/directional_blur.py), and [`dodge_burn.py`](../src/shp_photocraft_tools/modules/dnb/dodge_burn.py). |
-| Background scheduling, cache retention, or readiness status | [`cache_coordinator.py`](../src/shp_photocraft_tools/modules/dnb/cache_coordinator.py) owns priority, job status, and stale-work coordination. [`mask_precache.py`](../src/shp_photocraft_tools/modules/dnb/mask_precache.py) runs the debounced, coalescing workers for both mask and layer jobs. [`layer_cache.py`](../src/shp_photocraft_tools/modules/dnb/layer_cache.py) owns bounded full-resolution component storage, not scheduling or pixel math. |
-| Save artifacts, local Send, or editor dispatch | [`transfer_service.py`](../src/shp_photocraft_tools/modules/dnb/transfer_service.py) writes Save bundles, encodes results for [`shared/local_output.py`](../src/shp_photocraft_tools/shared/local_output.py), and dispatches prepared payloads. [`photoshop_bridge.py`](../src/shp_photocraft_tools/modules/dnb/photoshop_bridge.py) and [`photocraft_bridge.py`](../src/shp_photocraft_tools/modules/dnb/photocraft_bridge.py) own editor-specific capture and import. |
+| An HTTP route, a request setting, or a button | [`ui_server.py`](../src/shp_portrait_tools/modules/dnb/ui_server.py) wires routes, validates requests, and retains server-side editor and provenance checks. [`ui/index.html`](../src/shp_portrait_tools/modules/dnb/ui/index.html) is the browser UI. |
+| What gets replaced on Load/Get, or what makes a snapshot stale | [`image_session.py`](../src/shp_portrait_tools/modules/dnb/image_session.py) publishes the source, advances its generation, resets source-derived state, and captures full-resolution inputs by reference. Decode, profile handling, and source analysis still run through `ui_server.py` before publication. |
+| Preview response, tab switching, or preview cache reuse | [`preview_service.py`](../src/shp_portrait_tools/modules/dnb/preview_service.py) coordinates `/api/run`, decides whether to keep or queue background preparation, and attaches status. The preview renderers, preview-size keys, and component cache helpers remain in `ui_server.py`. |
+| Full-resolution composition, shared mask use, or editable layer pixels | [`processing_service.py`](../src/shp_portrait_tools/modules/dnb/processing_service.py) assembles results and layers through shared mask, split, and band helpers. `ui_server.py` still supplies those helpers, their keys, and the full-mask cache. Algorithms live in [`skin_mask.py`](../src/shp_portrait_tools/modules/dnb/skin_mask.py), [`frequency_separation.py`](../src/shp_portrait_tools/modules/dnb/frequency_separation.py), [`skintone.py`](../src/shp_portrait_tools/modules/dnb/skintone.py), [`directional_blur.py`](../src/shp_portrait_tools/modules/dnb/directional_blur.py), and [`dodge_burn.py`](../src/shp_portrait_tools/modules/dnb/dodge_burn.py). |
+| Background scheduling, cache retention, or readiness status | [`cache_coordinator.py`](../src/shp_portrait_tools/modules/dnb/cache_coordinator.py) owns priority, job status, and stale-work coordination. [`mask_precache.py`](../src/shp_portrait_tools/modules/dnb/mask_precache.py) runs the debounced, coalescing workers for both mask and layer jobs. [`layer_cache.py`](../src/shp_portrait_tools/modules/dnb/layer_cache.py) owns bounded full-resolution component storage, not scheduling or pixel math. |
+| Save artifacts, local Send, or editor dispatch | [`transfer_service.py`](../src/shp_portrait_tools/modules/dnb/transfer_service.py) writes Save bundles, encodes results for [`shared/local_output.py`](../src/shp_portrait_tools/shared/local_output.py), and dispatches prepared payloads. [`photoshop_bridge.py`](../src/shp_portrait_tools/modules/dnb/photoshop_bridge.py) and [`photocraft_bridge.py`](../src/shp_portrait_tools/modules/dnb/photocraft_bridge.py) own editor-specific capture and import. |
 
 ## Request and data flow
 
@@ -77,7 +77,7 @@ stage and threshold and fails closed.
 editable D&B cache miss (standalone D&B or Combine). The desktop service uses
 CUDA for D&B and final Skin Mask when available and falls back to CPU otherwise.
 Settings & Info reports the backend; it is no longer a configuration control.
-[`cuda_bands.py`](../src/shp_photocraft_tools/modules/dnb/cuda_bands.py) compiles
+[`cuda_bands.py`](../src/shp_portrait_tools/modules/dnb/cuda_bands.py) compiles
 the adjacent `.cu` resource using the existing Windows CUDA 13 NVRTC runtime.
 It uses device 0 with compute capability 8.0 or newer; validation so far is on
 an RTX 3090. No new Python packages are needed on the tested install.

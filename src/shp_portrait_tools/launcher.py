@@ -194,7 +194,7 @@ def ensure_shell(config_path, data, config, logs):
     log_path = logs / "shell.log"
     with log_path.open("ab") as log:
         process = subprocess.Popen(
-            [background_python(), "-u", "-m", "shp_photocraft_tools.supervisor",
+            [background_python(), "-u", "-m", "shp_portrait_tools.supervisor",
              "--config", str(config_path.resolve()), "--data", str(data), "--state", str(logs)],
             env=env, cwd=str(data), stdout=log, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, **detached_options(),
@@ -294,7 +294,7 @@ def write_default_config(path):
 
 def desktop_command(url, data):
     if sys.platform == "win32":
-        command = [background_python(), "-m", "shp_photocraft_tools.desktop.windows_controller",
+        command = [background_python(), "-m", "shp_portrait_tools.desktop.windows_controller",
                    "--url", url, "--data-dir", str(data / "webview")]
         checked = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30,
                                  creationflags=subprocess.CREATE_NO_WINDOW)
@@ -303,7 +303,7 @@ def desktop_command(url, data):
                               "Run `python -m uv sync --locked` (installs pywebview/pystray) and install the "
                               "Microsoft Edge WebView2 Runtime, or use --no-browser and the loopback URL.")
         return command
-    helper = files("shp_photocraft_tools.desktop").joinpath("controller.py")
+    helper = files("shp_portrait_tools.desktop").joinpath("controller.py")
     data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "shp-photocraft-tools" / "webview"
     icon = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "icons/hicolor/scalable/apps/shp-photocraft-tools.svg"
     command = ["/usr/bin/python3", str(helper), "--url", url, "--data-dir", str(data), "--icon", str(icon)]

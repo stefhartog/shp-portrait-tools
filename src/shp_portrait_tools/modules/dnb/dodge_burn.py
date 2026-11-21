@@ -15,7 +15,7 @@ Steps
 Outputs (in --out): <name>_db_layer16.png (16-bit gray, use in Soft Light mode), <name>_db_layer8.png,
 <name>_db_preview.jpg (before | after | change map), <name>_db_crop.jpg (full-res crop around the subject).
 
-Usage: uv run python -m shp_photocraft_tools.modules.dnb.dodge_burn IMAGE (--S PX | --auto) [--strength 0.7] [--fine-mm 1.5]
+Usage: uv run python -m shp_portrait_tools.modules.dnb.dodge_burn IMAGE (--S PX | --auto) [--strength 0.7] [--fine-mm 1.5]
            [--scale-mm 12] [--edge 0.12] [--tau 0.35] [--max-ev 0.3] [--out DIR]
 """
 import argparse

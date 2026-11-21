@@ -104,7 +104,7 @@ def main():
     if args.exiftool:
         config["exiftool"] = str(args.exiftool.resolve())
     wrapper = ("#!/bin/sh\n# Managed by SHP PhotoCraft Tools scripts/install_desktop.py\n"
-               f"exec {shlex.quote(str(python))} -m shp_photocraft_tools.launcher "
+               f"exec {shlex.quote(str(python))} -m shp_portrait_tools.launcher "
                f"--config {shlex.quote(str(config_path))} \"$@\"\n")
     quoted_launcher = '"' + str(launcher).replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$").replace("%", "%%") + '"'
     entry = (ROOT / "desktop" / f"{NAME}.desktop.in").read_text().replace("@LAUNCHER@", quoted_launcher)

@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 import test_skintone as T
-from shp_photocraft_tools.modules.dnb import ui_server as U, dodge_burn as D, skintone as ST, frequency_separation as FS
+from shp_portrait_tools.modules.dnb import ui_server as U, dodge_burn as D, skintone as ST, frequency_separation as FS
 
 
 class CombineMathTests(unittest.TestCase):

@@ -13,9 +13,9 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from shp_photocraft_tools.modules.dnb import skintone as ST, dodge_burn as D, ui_server as U, frequency_separation as FS
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge
-from shp_photocraft_tools.shared.photocraft import ControlError
+from shp_portrait_tools.modules.dnb import skintone as ST, dodge_burn as D, ui_server as U, frequency_separation as FS
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge
+from shp_portrait_tools.shared.photocraft import ControlError
 
 
 class StdioClient:

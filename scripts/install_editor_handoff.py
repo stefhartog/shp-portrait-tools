@@ -66,7 +66,7 @@ def install(home, backup, python, *, defer_editor=False):
     expected["settings"]["externalEditor"] = str(helper)
     if json.loads(settings_text) != expected:
         raise ValueError("Unexpected LightCraft settings changes.")
-    command = f"exec {shlex.quote(str(python))} -m shp_photocraft_tools.editor_handoff"
+    command = f"exec {shlex.quote(str(python))} -m shp_portrait_tools.editor_handoff"
     marker = "# Managed by SHP Portrait Tools scripts/install_editor_handoff.py\n"
     updates = {
         desktop: (desktop_text.encode(), originals[desktop][1]),

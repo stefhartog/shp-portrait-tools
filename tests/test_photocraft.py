@@ -19,8 +19,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
-from shp_photocraft_tools.shared.photocraft import Client, ControlError, detect_config
+from shp_portrait_tools.modules.dnb.photocraft_bridge import Bridge as DnbBridge, tagged_rgb16
+from shp_portrait_tools.shared.photocraft import Client, ControlError, detect_config
 
 
 class FakePhotoCraft:
@@ -120,8 +120,8 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(any(c[0] == "app.open" for c in b.client.calls))
 
     def test_status_preserves_authentication_failure_code(self):
-        from shp_photocraft_tools.modules.dnb import ui_server as skin
-        from shp_photocraft_tools.shared.photocraft.bridge import AuthenticationError
+        from shp_portrait_tools.modules.dnb import ui_server as skin
+        from shp_portrait_tools.shared.photocraft.bridge import AuthenticationError
 
         for module in (skin,):
             with self.subTest(module=module.__name__), patch.object(module, "bridge") as bridge:
@@ -165,8 +165,8 @@ class BridgeTests(unittest.TestCase):
         editor_config = self.root / "editor-settings"
         editor_config.mkdir()
         with patch.dict(os.environ, {"PHOTOCRAFT_BIN": str(executable), "PHOTOCRAFT_CONFIG_DIR": str(editor_config)}), \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection",
+             patch("shp_portrait_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
+             patch("shp_portrait_tools.shared.photocraft.bridge.socket.create_connection",
                    side_effect=ConnectionRefusedError()), \
              patch.object(bridge, "_verify_windows_editor"):
             with self.assertRaisesRegex(ControlError, "private PhotoCraft control token"):
@@ -188,8 +188,8 @@ class BridgeTests(unittest.TestCase):
     def test_windows_reuses_only_authenticated_desktop(self):
         bridge = self.bridge(DnbBridge)
         bridge.token_file.write_text("a" * 64)
-        with patch("shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection"), \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
+        with patch("shp_portrait_tools.shared.photocraft.bridge.socket.create_connection"), \
+             patch("shp_portrait_tools.shared.photocraft.bridge.subprocess.Popen") as popen, \
              patch.object(bridge, "_verify_windows_editor") as verify:
             self.assertTrue(bridge.launch()["reused"])
             verify.side_effect = ControlError("untrusted listener")
@@ -205,12 +205,12 @@ class BridgeTests(unittest.TestCase):
         bridge = self.bridge(DnbBridge)
         with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1",
                                      "SHP_PC_FLATPAK_LAUNCHER": str(launcher)}), \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+             patch("shp_portrait_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
             bridge.launch()
             self.assertEqual(popen.call_args.args[0], [str(launcher)])
         with patch.dict(os.environ, {"SHP_PC_VERIFY_FLATPAK": "1",
                                      "SHP_PC_FLATPAK_LAUNCHER": "/missing"}), \
-             patch("shp_photocraft_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
+             patch("shp_portrait_tools.shared.photocraft.bridge.subprocess.Popen") as popen:
             with self.assertRaisesRegex(ControlError, "guarded PhotoCraft"):
                 bridge.launch()
             popen.assert_not_called()
@@ -317,7 +317,7 @@ class TransportTests(unittest.TestCase):
                     self.wfile.write((json.dumps(reply) + "\n").encode())
                     self.wfile.flush()
 
-        from shp_photocraft_tools.shared.photocraft import flatpak_discovery, flatpak_peer
+        from shp_portrait_tools.shared.photocraft import flatpak_discovery, flatpak_peer
         with tempfile.TemporaryDirectory() as tmp, socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as srv:
             srv.daemon_threads = True
             thread = threading.Thread(target=srv.serve_forever)
@@ -369,7 +369,7 @@ class TransportTests(unittest.TestCase):
             token.write_text("test-only\n")
             for port in (7878, 17878):
                 with self.subTest(port=port), patch(
-                        "shp_photocraft_tools.shared.photocraft.bridge.socket.create_connection",
+                        "shp_portrait_tools.shared.photocraft.bridge.socket.create_connection",
                         side_effect=ConnectionRefusedError("fixture disconnected")):
                     client = Client(port, token, timeout=2)
                     with self.assertRaises(ControlError) as raised:

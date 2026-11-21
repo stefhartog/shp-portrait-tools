@@ -139,7 +139,7 @@ class BrowserServer(ThreadingHTTPServer):
 
 
 def script():
-    return files("shp_photocraft_tools.shared.ui").joinpath("lifecycle.js").read_bytes()
+    return files("shp_portrait_tools.shared.ui").joinpath("lifecycle.js").read_bytes()
 
 
 class BrowserHandler:

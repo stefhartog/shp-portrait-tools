@@ -11,11 +11,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from shp_photocraft_tools import supervisor as S
-from shp_photocraft_tools import launcher as L
-from shp_photocraft_tools.launcher import LaunchError
-from shp_photocraft_tools.shared.lifecycle import BrowserLifetime
-from shp_photocraft_tools.shared.supervision import ControlError
+from shp_portrait_tools import supervisor as S
+from shp_portrait_tools import launcher as L
+from shp_portrait_tools.launcher import LaunchError
+from shp_portrait_tools.shared.lifecycle import BrowserLifetime
+from shp_portrait_tools.shared.supervision import ControlError
 
 
 class ModuleIsolationTests(unittest.TestCase):

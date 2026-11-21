@@ -15,8 +15,8 @@ import sys
 import time
 from pathlib import Path
 
-from shp_photocraft_tools.shared.platform_paths import global_config_dir
-from shp_photocraft_tools.shared.filelock import file_lock
+from shp_portrait_tools.shared.platform_paths import global_config_dir
+from shp_portrait_tools.shared.filelock import file_lock
 
 OPENFILL = Path.home() / ".config" / "openfill-photocraft"
 

@@ -12,7 +12,7 @@ weighted by 1/sigma^2. Confidence is reported, not hidden: high / medium / low /
 Whole-body extras (hand length, eye-corner width) are added as further cues. If the file carries a Sony
 autofocus point, the subject nearest to it is marked as the target (useful with several people or mirrors).
 
-Usage: uv run python -m shp_photocraft_tools.modules.dnb.combine_scale IMAGE [IMAGE ...] [--draw] [--out DIR]
+Usage: uv run python -m shp_portrait_tools.modules.dnb.combine_scale IMAGE [IMAGE ...] [--draw] [--out DIR]
 """
 import math
 import sys

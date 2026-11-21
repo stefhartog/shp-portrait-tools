@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from shp_photocraft_tools.modules.dnb import ui_server as U, dodge_burn as D, progress
-from shp_photocraft_tools.modules.dnb import cuda_bands
+from shp_portrait_tools.modules.dnb import ui_server as U, dodge_burn as D, progress
+from shp_portrait_tools.modules.dnb import cuda_bands
 
 
 class FullMaskCacheTests(unittest.TestCase):

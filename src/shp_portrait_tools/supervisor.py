@@ -122,7 +122,7 @@ class Modules:
             log_path = self.logs / f"{name}.log"
             with log_path.open("ab") as log:
                 module.process = subprocess.Popen(
-                    [background_python(), "-u", "-m", "shp_photocraft_tools.modules." + MODULES[name],
+                    [background_python(), "-u", "-m", "shp_portrait_tools.modules." + MODULES[name],
                      "--port", str(port)], env=env, cwd=str(self.data),
                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **spawn_options())
             module.process_identity = adopt(module.process) or process_identity(module.process.pid)
@@ -422,7 +422,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                      "/static/shell.css": ("shell.css", "text/css; charset=utf-8")}
         if path in resources:
             name, mime = resources[path]
-            return self.send(200, files("shp_photocraft_tools.shell").joinpath(name).read_bytes(), mime)
+            return self.send(200, files("shp_portrait_tools.shell").joinpath(name).read_bytes(), mime)
         if path == "/static/shp-ui.css":
             return self.send(200, stylesheet(), "text/css; charset=utf-8")
         if path == "/static/theme.js":

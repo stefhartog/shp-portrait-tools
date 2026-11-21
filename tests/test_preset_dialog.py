@@ -14,14 +14,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from shp_photocraft_tools.modules.dnb import ui_server as skin
+from shp_portrait_tools.modules.dnb import ui_server as skin
 from test_dnb import PARAMS
 
 
 class PresetDialogTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
     def test_windows_host_cancels_the_old_preset_prompt(self):
-        from shp_photocraft_tools.desktop.windows_controller import Host
+        from shp_portrait_tools.desktop.windows_controller import Host
 
         # A non-allowlisted WebView2 prompt is cancelled when the event returns unaccepted.
         def unexpected():

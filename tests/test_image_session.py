@@ -1,6 +1,6 @@
 import unittest
 
-from shp_photocraft_tools.modules.dnb import image_session as session
+from shp_portrait_tools.modules.dnb import image_session as session
 
 
 class ImageSessionTests(unittest.TestCase):

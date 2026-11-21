@@ -19,10 +19,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageCms
 
-from shp_photocraft_tools.modules.dnb import dodge_burn as D, ui_server as S
-from shp_photocraft_tools.modules.dnb import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
-from shp_photocraft_tools.modules.dnb.skin_mask_compare import pick_target
-from shp_photocraft_tools.shared.ui import stylesheet
+from shp_portrait_tools.modules.dnb import dodge_burn as D, ui_server as S
+from shp_portrait_tools.modules.dnb import estimate_scale, estimate_body_scale, paths, skin_mask, skin_mask_compare
+from shp_portrait_tools.modules.dnb.skin_mask_compare import pick_target
+from shp_portrait_tools.shared.ui import stylesheet
 
 PARAMS = {"S": 63, "bands": [[1.5, 40, 1, 0.5]], "strength": 1.2, "edge": 0.12, "tau": 1, "max_ev": 1,
           "mask": {"on": True, "feather": 1, "features": True, "colour": True, "inward": True},
@@ -715,7 +715,7 @@ class EngineTests(unittest.TestCase):
             env = dict(os.environ, DNB_DATA=tmp + "/dnb",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
             for module in ("dnb.ui_server", "dnb.dodge_burn"):
-                result = subprocess.run([sys.executable, "-m", "shp_photocraft_tools.modules." + module, "--help"],
+                result = subprocess.run([sys.executable, "-m", "shp_portrait_tools.modules." + module, "--help"],
                                         env=env, cwd=tmp, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("usage:", result.stdout)
@@ -726,7 +726,7 @@ class EngineTests(unittest.TestCase):
             env = dict(os.environ, DNB_DATA=tmp + "/dnb",
                        DNB_MODELS=tmp + "/models", SHP_PC_EXCHANGE=tmp + "/exchange", SHP_PC_TOKEN_FILE=tmp + "/token")
             for module in ("dnb.ui_server",):
-                process = subprocess.Popen([sys.executable, "-u", "-m", "shp_photocraft_tools.modules." + module, "--port", "0"],
+                process = subprocess.Popen([sys.executable, "-u", "-m", "shp_portrait_tools.modules." + module, "--port", "0"],
                                            env=env, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                 lines = queue.Queue()
 
