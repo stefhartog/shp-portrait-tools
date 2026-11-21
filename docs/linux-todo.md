@@ -68,8 +68,9 @@ before anything that needs `sudo`; `sudo` needs a real terminal, not the `!` pre
 
 ## Still open
 
-1. **Live check of the tray's Reload, Restart, Force Restart and Quit** on Linux (covered by
-   `test_desktop_host` with a fake platform; not yet clicked through on the real window).
+1. **Live check of the tray's Reload, Force Restart and Quit** on Linux (covered by `test_desktop_host`
+   with a fake platform). **Restart** was verified live on 2026-11-21: drain, launcher relaunch from the
+   installed wrapper, and a fresh window back on Skin Tools.
 2. **Real-window smoke test** for the Qt host, replacing the removed GTK one (opt-in, needs a session).
 3. **`--browser` mode** (Ungoogled Chromium app window): check it still works now that the status page
    redirects to the worker origin, or drop it.
