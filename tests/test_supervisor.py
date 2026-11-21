@@ -141,33 +141,51 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, code)
         return json.load(raised.exception)
 
+    def worker(self, path, body=None):
+        """A request straight to the Skin Tools worker, as the page in the window or a browser tab makes it."""
+        origin = f"http://127.0.0.1:{self.manager.port}"
+        headers = {"Origin": origin, "Content-Type": "application/json"} if body is not None else {}
+        req = Request(origin + path, json.dumps(body).encode() if body is not None else None, headers)
+        with urlopen(req, timeout=15) as response:
+            data = response.read()
+            return json.loads(data) if response.headers["Content-Type"] == "application/json" else data
+
     def control(self, name, action, **kwargs):
         return self.request(f"/api/modules/{name}/{action}",
                             dict(instance=self.manager.worker_instance, **kwargs))
 
-    def test_packaged_assets_relative_api_image_routes_and_fixed_proxy(self):
-        self.assertIn(b"SHP Portrait Tools", self.request("/"))
-        for path in ("/static/shell.js", "/static/shell.css", "/static/lifecycle.js", "/static/shp-ui.css"):
-            self.assertTrue(self.request(path))
-        for name in ("skin",):
-            page = self.request(f"/{name}/")
-            self.assertIn(b'href="static/shp-ui.css"', page)
-            self.assertEqual(self.request(f"/{name}/api/health")["module"], name)
-            self.assertEqual(self.request(f"/{name}/static/shp-ui.css"), self.request("/static/shp-ui.css"))
-            self.assert_error(403, f"/{name}/api/owner/status", {})
-        self.assert_error(404, "/crop/")
-        for path in ("/skin/static/../pyproject.toml", "/skin/%61pi/owner/status"):
-            self.assert_error(403, path)
-        self.assert_error(404, "/http://example.test/")
+    def test_status_page_direct_worker_page_and_no_proxy(self):
+        status_page = self.request("/")
+        self.assertIn(b"SHP Portrait Tools", status_page)
+        self.assertIn(json.dumps(self.manager.page_url()).encode(), status_page)
+        for path in ("/static/shell.js", "/static/shell.css", "/skin/", "/skin/api/health", "/crop/",
+                     "/http://example.test/"):
+            self.assert_error(404, path)
+        page = self.worker("/")
+        self.assertIn(b'href="static/shp-ui.css"', page)
+        self.assertIn(b'id="viewTabs"', page)
+        self.assertEqual(self.worker("/api/health")["module"], "skin")
+        with self.assertRaises(HTTPError) as raised:
+            self.worker("/api/owner/status", {})
+        self.assertEqual(raised.exception.code, 403)
+
+    def test_browser_tab_on_the_worker_keeps_the_supervisor_alive(self):
+        self.assertFalse(self.manager.keep_alive())
+        accepted = self.worker("/api/ui/heartbeat", {"client": "desktop-tab-probe"})
+        self.assertTrue(accepted["managed"] and accepted["accepted"])
+        self.assertEqual(self.manager.snapshot()["ui_clients"], 1)
+        self.assertTrue(self.manager.keep_alive())
+        self.worker("/api/ui/close", {"client": "desktop-tab-probe"})
+        self.assertFalse(self.manager.keep_alive())
 
     def test_stop_restart_loaded_guard(self):
-        self.request("/skin/api/pc/fetch", {})
+        self.worker("/api/pc/fetch", {})
         before = self.wait_ready()
         error = self.assert_error(409, "/api/modules/skin/restart", {"instance": before["skin"]["instance"]})
         self.assertEqual(error["code"], "confirmation")
         self.assertEqual(self.wait_ready()["skin"]["instance"], before["skin"]["instance"])
-        # Another shell changes work while the first confirmation is open.
-        self.request("/skin/api/pc/fetch", {})
+        # Another window changes work while the first confirmation is open.
+        self.worker("/api/pc/fetch", {})
         changed = self.assert_error(409, "/api/modules/skin/restart",
                                     {"instance": before["skin"]["instance"], "confirm": True,
                                      "revision": error["revision"]})
@@ -176,39 +194,33 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotEqual(restarted["instance"], before["skin"]["instance"])
         self.assertFalse(restarted["loaded"])
         self.assertEqual(self.control("skin", "stop")["phase"], "stopped")
-        error = self.assert_error(409, "/skin/")
-        self.assertEqual(error["code"], "module_stopped")
+        with self.assertRaises(OSError):
+            self.worker("/api/health")
+        self.assertIn(b"SHP Portrait Tools", self.request("/"))  # the status page stays available
         self.assertEqual(self.control("skin", "start")["phase"], "running")
 
-    def test_hue_center_real_proxy_and_direct_child_route(self):
-        loaded=self.request("/skin/api/pc/fetch",{})
+    def test_hue_center_direct_worker_route(self):
+        loaded=self.worker("/api/pc/fetch",{})
         body={"generation":loaded["generation"],"S":loaded["S"],"mode":"frequency",
               "tone":{"on":False},"color":{"on":False},"structure":{"protect":0}}
-        proxied=self.request("/skin/api/hue-center",body)
-        self.assertIsInstance(proxied["center"],float)
-        connection=http.client.HTTPConnection("127.0.0.1",self.manager.config["ports"]["skin"])
+        first=self.worker("/api/hue-center",body)
+        self.assertIsInstance(first["center"],float)
+        connection=http.client.HTTPConnection("127.0.0.1",self.manager.port)
         try:
             connection.request("POST","/api/hue-center",json.dumps(body),{"Content-Type":"application/json"})
             response=connection.getresponse()
             self.assertEqual(response.status,200)
-            self.assertEqual(json.loads(response.read()),proxied)
+            self.assertEqual(json.loads(response.read()),first)
         finally:
             connection.close()
-        self.request("/skin/api/test/hue-route",{"available":False})
-        connection=http.client.HTTPConnection("127.0.0.1",self.server.server_port)
-        try:
-            connection.request("POST","/skin/api/hue-center",json.dumps(body),
-                               {"Content-Type":"application/json","Origin":self.base})
-            response=connection.getresponse()
-            self.assertEqual(response.status,404)
-            self.assertEqual(response.getheader("Content-Type"),"text/plain")
-            self.assertEqual(response.read(),b"not found")
-        finally:
-            connection.close()
+        self.worker("/api/test/hue-route",{"available":False})
+        with self.assertRaises(HTTPError) as raised:
+            self.worker("/api/hue-center",body)
+        self.assertEqual(raised.exception.code,404)
 
     def test_busy_api_and_background_job_cannot_be_forced(self):
         with ThreadPoolExecutor() as pool:
-            work = pool.submit(self.request, "/skin/api/test/work", {})
+            work = pool.submit(self.worker, "/api/test/work", {})
             deadline = time.monotonic() + 2
             while not self.manager.snapshot()["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)
@@ -258,7 +270,7 @@ class SupervisorTests(unittest.TestCase):
         life.touch("refreshed")
         self.assertFalse(life.should_stop(self.manager.busy))
         with ThreadPoolExecutor() as pool:
-            work = pool.submit(self.request, "/skin/api/test/work", {})
+            work = pool.submit(self.worker, "/api/test/work", {})
             deadline = time.monotonic() + 2
             while not self.manager.snapshot()["busy"] and time.monotonic() < deadline:
                 time.sleep(.02)

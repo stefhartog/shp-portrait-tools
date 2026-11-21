@@ -200,6 +200,28 @@ const window = {get top(){ return top; }, prompt: request => (prompts.push(reque
         result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_page_address_trusted_origins_and_following_the_worker(self):
+        host = self.host
+        host.connection.request.return_value = {"ports": {"skin": 18765}}
+        self.assertEqual(host.resolve_page(), "http://127.0.0.1:18765")
+        self.assertTrue(host.trusted_origin("http://127.0.0.1:18760"))
+        self.assertTrue(host.trusted_origin("http://127.0.0.1:18765"))
+        self.assertFalse(host.trusted_origin("http://127.0.0.1:9999"))
+        host.update_status(status(instance="one"), host.status_epoch)
+        host.window.load_url.assert_not_called()  # the status page moves on to the page by itself
+        host.update_status(status(instance="one"), host.status_epoch)
+        host.window.load_url.assert_not_called()
+        host.update_status(status(instance="two"), host.status_epoch)  # restarted: back to the status page
+        host.window.load_url.assert_called_once_with("http://127.0.0.1:18760/")
+        host.update_status(status(phase="stopped", instance="two"), host.status_epoch)
+        self.assertEqual(host.window.load_url.call_count, 2)
+        host.update_status(status(phase="stopped", instance="two"), host.status_epoch)
+        self.assertEqual(host.window.load_url.call_count, 2)
+        host.connection.request.side_effect = OSError("down")
+        host.message = Mock()
+        self.assertIsNone(host.resolve_page(attempts=2, delay=0))
+        host.message.assert_called_once()
+
     def test_watch_folder_token_shows_window_once(self):
         host = self.host
         host.show = Mock()

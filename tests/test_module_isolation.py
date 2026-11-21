@@ -258,31 +258,30 @@ class ModuleIsolationTests(unittest.TestCase):
         handler.rfile, handler.send = io.BytesIO(b"{}"), Mock()
         return handler
 
-    def test_stopped_routes_are_explicit_and_close_beacons_are_benign(self):
+    def test_status_page_is_served_while_stopped_and_nothing_is_proxied(self):
         manager = self.manager()
         manager.phase = "stopped"
-        for path, method in (("/skin/", "GET"), ("/skin/api/run", "POST"),
-                             ("/skin/api/ui/close", "POST"), ("/skin/api/ui/heartbeat", "POST")):
-            handler = self.handler(manager, path, method)
-            with self.subTest(path=path), patch.object(S.http.client, "HTTPConnection") as connect:
-                handler.proxy()
-                code, body, _ = handler.send.call_args.args
-                if "/api/ui/" in path:
-                    self.assertEqual(code, 200)
-                    self.assertFalse(json.loads(body)["managed"])
-                else:
-                    self.assertEqual(code, 409)
-                    self.assertEqual(json.loads(body)["code"], "module_stopped")
-                connect.assert_not_called()
-        manager.phase = "running"
-        handler = self.handler(manager, "/skin/api/job", "POST")
-        manager.checked = Mock()
+        handler = self.handler(manager, "/")
+        handler.headers["Host"] = "127.0.0.1:19000"
         with patch.object(S.http.client, "HTTPConnection") as connect:
-            response = connect.return_value.getresponse.return_value
-            response.status, response.read.return_value = 200, b'{"ok":true}'
-            response.getheader.return_value = "application/json"
-            handler.proxy()
-            self.assertEqual(handler.send.call_args.args[0], 200)
+            handler.do_GET()
+            code, body, mime = handler.send.call_args.args
+            self.assertEqual((code, mime), (200, "text/html; charset=utf-8"))
+            self.assertIn(b'const PAGE = "http://127.0.0.1:19002/";', body)
+            for path in ("/skin/", "/skin/api/run", "/static/shell.js"):
+                handler = self.handler(manager, path)
+                handler.headers["Host"] = "127.0.0.1:19000"
+                handler.do_GET()
+                self.assertEqual(handler.send.call_args.args[0], 404)
+            connect.assert_not_called()
+
+    def test_keep_alive_counts_busy_work_and_open_worker_tabs(self):
+        manager = self.manager()
+        self.assertFalse(manager.keep_alive())
+        manager.owner.return_value = {"busy": False, "loaded": True, "revision": 7, "stopping": False, "ui_clients": 2}
+        self.assertTrue(manager.keep_alive())
+        manager.owner.return_value = {"busy": True, "loaded": True, "revision": 7, "stopping": False, "ui_clients": 0}
+        self.assertTrue(manager.keep_alive())
 
     def test_supervisor_health_and_status_stay_available_with_unloaded_module(self):
         manager = self.manager()

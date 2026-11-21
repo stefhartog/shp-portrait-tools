@@ -151,7 +151,6 @@ class StatusLayoutTests(unittest.TestCase):
                 self.check_panel_dimming(command, root, profile)
                 self.check_panel_graph_geometry(command, root, profile)
                 self.check_stretch_removed(command, root, profile)
-                self.check_general_settings(command, root, profile)
                 command("WebDriver:DeleteSession")
             finally:
                 if connection is not None:
@@ -1024,139 +1023,6 @@ class StatusLayoutTests(unittest.TestCase):
         """, args=[], sandbox=None)
         self.assertTrue(all(result.values()), result)
 
-    def check_general_settings(self, command, root, profile):
-        html = (root / "modules/skin/ui/index.html").read_text()
-        shell = (root / "shell/index.html").read_text()
-        shell_js = (root / "shell/shell.js").read_text()
-        theme = (root / "shared/ui/theme.js").read_text()
-        markup = '<details id="generalSettings">' + html.split('<details class="grp" id="generalSettings">', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
-        lookup = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
-        child = '<!doctype html>' + markup + '<div id="info">Source analysis retained</div><div id="temporaryLogText">Source status retained</div><span id="maskCacheStatus">Cached</span><script>' + lookup + """
-          window.addEventListener('error',event=>parent.fixtureErrors.push(event.message));
-          window.settingsLookup=$;
-          window.addEventListener('message',event=>{
-            if(event.source===parent&&event.data.type==='shp-tools-probe')
-              parent.postMessage({type:'shp-skin-ready'},location.origin);
-          });
-        </script>"""
-        child = child.replace("location.origin", "parent.location.origin")
-        body = shell.split("<body>", 1)[1].split("</body>", 1)[0]
-        fixture = """
-          window.fixtureErrors=[];
-          window.addEventListener('error',event=>fixtureErrors.push(event.message));
-          const create=document.createElement.bind(document);
-          document.createElement=tag=>{
-            const node=create(tag);
-            if(tag==='iframe')node.srcdoc=CHILD;
-            return node;
-          };
-          window.fetch=async()=>({ok:true,json:async()=>({modules:{
-            crop:{phase:'stopped',startup_enabled:false},
-            skin:{phase:'running',instance:'settings-fixture',startup_enabled:true}
-          }})});
-          window.setTimeout=()=>0;
-        """.replace("CHILD", json.dumps(child))
-        page = profile / "general-settings.html"
-        page.write_text('<!doctype html><meta charset="utf-8"><style>' + stylesheet().decode()
-                        + (root / "shell/shell.css").read_text() + '</style><script>'
-                        + theme + '</script>' + body + '<script>' + fixture.replace("</script>", "<\\/script>")
-                        + shell_js + '</script>')
-        server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(profile)))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        command("WebDriver:Navigate", url=f"http://127.0.0.1:{server.server_port}/{page.name}")
-        evaluate = lambda script: command("WebDriver:ExecuteScript", script=script, args=[], sandbox=None)
-        deadline = time.monotonic() + 10
-        while not evaluate("return !!document.getElementById('generalSettingsHost').querySelector('#editorSelect');"):
-            if time.monotonic() >= deadline:
-                self.fail("General settings did not mount: " + str(evaluate(
-                    "return {errors:window.fixtureErrors,status:document.getElementById('status').textContent,frames:document.querySelectorAll('iframe').length};")))
-            time.sleep(.1)
-        self.assertEqual(evaluate("""
-          return {mask:document.getElementById('tab-mask').getAttribute('aria-selected'),
-            visible:!document.getElementById('panel-skin').inert};
-        """), {"mask":"true","visible":True})
-        result = evaluate("""
-          document.getElementById('tab-settings').click();
-          const frame=document.querySelector('#panel-dnb iframe'),child=frame.contentWindow;
-          const host=document.getElementById('generalSettingsHost');
-          const control=document.getElementById('editorSelect');
-          const before=child.settingsLookup('editorSelect')===control;
-          return {selected:document.getElementById('tab-settings').getAttribute('aria-selected'),
-            themeHost:document.getElementById('themeSelect').closest('#themeSettings')!==null,
-            dnbHidden:document.getElementById('panel-skin').inert,
-            cropHidden:document.getElementById('panel-crop').inert,
-            settingsVisible:!document.getElementById('panel-settings').inert,
-            sameControl:before,
-            controls:[...host.querySelectorAll('select,input,button')].map(e=>e.id),
-            diagnostics:['poseHint','photoshopPixelTilesText'].every(id=>child.settingsLookup(id)===document.getElementById(id)&&host.contains(document.getElementById(id))),
-            analysis:frame.contentDocument.getElementById('info').textContent,
-            status:frame.contentDocument.getElementById('temporaryLogText').textContent,
-            badge:frame.contentDocument.getElementById('maskCacheStatus').textContent,
-            originalEmpty:frame.contentDocument.getElementById('generalSettingsContent').children.length};
-        """)
-        self.assertEqual(result, {"selected":"true", "themeHost":True, "dnbHidden":True,
-                                 "cropHidden":True, "settingsVisible":True, "sameControl":True,
-                                 "controls":["editorSelect","photoshopPair","photoshopRevoke"], "diagnostics":True,
-                                 "analysis":"Source analysis retained", "status":"Source status retained",
-                                 "badge":"Cached", "originalEmpty":0})
-        result = evaluate("""
-          const frame=document.querySelector('#panel-dnb iframe'),before=document.getElementById('editorSelect');
-          window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,origin:location.origin,
-            data:{type:'shp-skin-ready'}}));
-          const retained=document.getElementById('editorSelect')===before;
-          document.getElementById('tab-settings').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
-          return {retained,wrapped:document.getElementById('tab-mask').getAttribute('aria-selected')};
-        """)
-        self.assertEqual(result, {"retained":True, "wrapped":"true"})
-        self.assertEqual(evaluate("""
-          const tab=document.getElementById('tab-dnb'),range=document.createRange();
-          range.selectNodeContents(tab);
-          const before=range.getBoundingClientRect(),box=tab.getBoundingClientRect();
-          tab.setAttribute('aria-selected','true');
-          const after=range.getBoundingClientRect(),selected=tab.getBoundingClientRect();
-          const decoration=getComputedStyle(tab,'::before');
-          const appearance=()=>{
-            const style=getComputedStyle(tab),pseudo=getComputedStyle(tab,'::before'),rect=tab.getBoundingClientRect();
-            return {box:[rect.x,rect.y,rect.width,rect.height],
-              border:[style.borderTopColor,style.borderRightColor,style.borderBottomColor,style.borderLeftColor],
-              background:style.backgroundColor,opacity:style.opacity,
-              pseudo:[pseudo.top,pseudo.right,pseudo.bottom,pseudo.left,pseudo.backgroundColor,
-                pseudo.borderTopColor,pseudo.borderBottomColor]};
-          };
-          const enabled=appearance(),enabledText=getComputedStyle(tab).color;
-          tab.disabled=true;
-          const disabled=appearance(),disabledText=getComputedStyle(tab).color;
-          tab.disabled=false;
-          const result={textStable:before.x===after.x&&before.y===after.y,
-            layoutStable:box.y===selected.y&&box.height===selected.height,
-            top:decoration.top,bottom:decoration.bottom,pointer:decoration.pointerEvents,
-            disabledStable:JSON.stringify(enabled)===JSON.stringify(disabled),
-            textDarkens:enabledText!==disabledText};
-          tab.setAttribute('aria-selected','false');
-          return result;
-        """), {"textStable":True, "layoutStable":True, "top":"-2px",
-               "bottom":"-1px", "pointer":"none", "disabledStable":True, "textDarkens":True})
-        self.assertEqual(evaluate("""
-          return {aiFillTabs:document.querySelectorAll('#tab-crop,#tab-patch').length,
-            skinVisible:!document.getElementById('tab-mask').hidden,
-            settingsVisible:!document.getElementById('tab-settings').hidden};
-        """), {"aiFillTabs":0, "skinVisible":True, "settingsVisible":True})
-        self.assertEqual(evaluate("""
-          const tabs=[...document.querySelectorAll('nav [role=tab]')],settings=document.getElementById('tab-settings');
-          const original=tabs.map(t=>t.hidden),margin=e=>parseFloat(getComputedStyle(e).marginInlineStart),
-            divider=()=>getComputedStyle(settings,'::after').content!=='none';
-          tabs.forEach(t=>t.hidden=false);
-          const line=getComputedStyle(settings,'::after');
-          const skin=margin(settings)===9&&divider()&&line.width==='1px'&&line.pointerEvents==='none';
-          tabs.filter(t=>t.dataset.service).forEach(t=>t.hidden=true);
-          const none=margin(settings)===0&&!divider();
-          tabs.forEach((t,i)=>t.hidden=original[i]);
-          return {skin,none};
-        """), {"skin":True,"none":True})
-
     def check_analysis_controls(self, command, html, profile):
         # Run only control initialization and mocked overlay requests, never the application.
         script = re.findall(r"<script>(.*?)</script>", html, re.S)[0]
@@ -1170,7 +1036,7 @@ class StatusLayoutTests(unittest.TestCase):
           localStorage.setItem('dnb-anSkin','0');
           localStorage.removeItem('dnb-anStruct');
         """, args=[script], sandbox=None)
-        initialization = script.split("let shellConnected", 1)[0]
+        initialization = script.split("let uiReady", 1)[0]
         colors = "\n".join(re.findall(r"^\s*sliders\.color\w+ = slider\(.*$", script, re.M))
         overlays = "function analysisFlags()" + script.split("function analysisFlags()", 1)[1].split("function params()", 1)[0]
         parameters = "function params()" + script.split("function params()", 1)[1].split("\nasync function", 1)[0]

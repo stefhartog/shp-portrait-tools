@@ -78,6 +78,12 @@ class BrowserLifetime:
             with self.lock:
                 self.active -= 1
 
+    def count(self):
+        """Live (unexpired) tab leases."""
+        with self.lock:
+            now = self.clock()
+            return sum(deadline > now for deadline in self.clients.values())
+
     def should_stop(self, busy):
         with self.lock:
             now = self.clock()
@@ -104,7 +110,10 @@ class BrowserServer(ThreadingHTTPServer):
     def __init__(self, *args, close_with_ui=False, busy=lambda: False, loaded=lambda: False, **kwargs):
         super().__init__(*args, **kwargs)
         token = os.environ.get("SHP_SUPERVISOR_TOKEN")
-        self.owner = OwnerControl(token, busy=busy, loaded=loaded) if token else None
+        # A supervised server never stops for its own tabs, but counts browser tabs opened directly on it so
+        # the supervisor can stay up for them (the desktop window holds its lease on the supervisor instead).
+        self.tabs = BrowserLifetime() if token else None
+        self.owner = OwnerControl(token, busy=busy, loaded=loaded, ui_clients=self.tabs.count) if token else None
         self.lifetime = BrowserLifetime() if close_with_ui and not self.owner else None
         self.busy = busy
         self.finished = threading.Event()
@@ -148,12 +157,13 @@ class BrowserHandler:
     def do_POST(self):
         lifetime = getattr(self.server, "lifetime", None)
         owner = getattr(self.server, "owner", None)
+        leases = lifetime or getattr(self.server, "tabs", None)  # tabs: counted only, never stops this server
         if self.path.startswith("/api/owner/"):
             return handle_owner(self)
         if self.path.startswith("/api/ui/"):
             try:
                 if self.path == "/api/ui/reserve":
-                    accepted = lifetime.reserve() if lifetime else True
+                    accepted = leases.reserve() if leases else True
                 elif self.path in ("/api/ui/heartbeat", "/api/ui/close"):
                     length = int(self.headers.get("Content-Length", 0))
                     if not 0 < length <= 1024:
@@ -162,16 +172,16 @@ class BrowserHandler:
                     if not isinstance(client, str) or not 1 <= len(client) <= 100:
                         raise ValueError("Invalid UI tab identity")
                     if self.path.endswith("/close"):
-                        if lifetime:
-                            lifetime.close(client)
+                        if leases:
+                            leases.close(client)
                         accepted = True
                     else:
-                        accepted = lifetime.touch(client) if lifetime else True
-                        if accepted and lifetime and not client.startswith("desktop-"):
+                        accepted = leases.touch(client) if leases else True
+                        if accepted and leases and not client.startswith("desktop-"):
                             self.server.finished.wait(20)
                 else:
                     return self.send(404, b"not found", "text/plain")
-                return self.send(200 if accepted else 409, json.dumps({"managed": lifetime is not None,
+                return self.send(200 if accepted else 409, json.dumps({"managed": leases is not None,
                                                                      "accepted": accepted}).encode(), "application/json")
             except (ValueError, TypeError, AttributeError) as error:
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")

@@ -1,4 +1,9 @@
-"""Loopback shell, fixed Skin Tools proxy and capability-guarded supervision of that one worker."""
+"""Loopback control server and capability-guarded supervision of the one Skin Tools worker.
+
+The desktop window and browser tabs load the Skin Tools page directly from the worker. This server only
+serves health/status, module controls, the acknowledged native quit and UI leases, and a small status page at
+`/` that moves on to the worker page once Skin Tools is running.
+"""
 
 import argparse
 import http.client
@@ -8,27 +13,72 @@ import secrets
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
-from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .launcher import (MODULE, SERVER_MODULE, LaunchError, apply_photocraft_env, background_python, probe,
                        read_config, set_startup, verify)
 from .shared.health import identity
-from .shared.lifecycle import BrowserHandler, BrowserServer, script
-from .shared.owned_process import (adopt, close_handle, drain_pinned, owns, pin_session, process_identity,
+from .shared.lifecycle import BrowserHandler, BrowserServer
+from .shared.owned_process import (adopt, drain_pinned, owns, pin_session, process_identity,
                                    require_session_stopped, spawn_options)
 from .shared.photocraft.bridge import detect_config
 from .shared.platform_paths import module_folder
 from .shared.supervision import ControlError
-from .shared.ui import stylesheet, theme_script
 
 SHELL_PROTOCOL = 1
+
+# Shown at `/` while Skin Tools is starting, stopped or failed; it moves on to the worker page once running.
+# It also hands this origin's saved browser preferences (theme, view state) to the worker page once: before
+# the shell was removed, the Skin Tools page ran on this origin, so its localStorage lives here.
+STATUS_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHP Portrait Tools</title>
+<style>
+html, body { margin:0; height:100%; background:#1b1b1b; color:#ddd; font:14px/1.5 system-ui, sans-serif; }
+main { max-width:640px; padding:48px 32px; margin:0 auto; }
+h1 { font-size:18px; margin:0 0 12px; }
+#message { color:#bac2ca; }
+</style></head>
+<body><main><h1>SHP Portrait Tools</h1><p id="message" role="status" aria-live="polite">Starting Skin Tools&hellip;</p></main>
+<script>
+const PAGE = __PAGE__;
+function handoff() {
+  try {
+    if (localStorage.getItem('shp-prefs-handed-off')) return '';
+    const prefs = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key === 'shp-tools-theme' || key.startsWith('dnb-')) prefs[key] = localStorage.getItem(key);
+    }
+    localStorage.setItem('shp-prefs-handed-off', '1');
+    return Object.keys(prefs).length ? '#shp-prefs=' + encodeURIComponent(JSON.stringify(prefs)) : '';
+  } catch (error) { return ''; }
+}
+function show(text) { document.getElementById('message').textContent = text; }
+async function poll() {
+  try {
+    const response = await fetch('api/status', {cache: 'no-store'});
+    const skin = ((await response.json()).modules || {}).skin || {};
+    if (skin.phase === 'running') { location.replace(PAGE + handoff()); return; }
+    show(skin.phase === 'stopped'
+      ? 'Skin Tools is stopped. Use Start in the Tools tray menu to load it again.' +
+        (skin.startup_enabled === false ? ' Load on startup is disabled; a manual Start does not change it.' : '')
+      : skin.phase === 'error' || skin.phase === 'unavailable'
+        ? 'Skin Tools: ' + (skin.error || skin.phase) + '. Use the Tools tray menu for service controls.'
+        : 'Starting Skin Tools\u2026');
+  } catch (error) {
+    show('Tools is not responding. Reopen SHP Portrait Tools if this does not recover.');
+  }
+  setTimeout(poll, 1000);
+}
+poll();
+</script></body></html>
+"""
 
 
 def photocraft_environment(config, environ):
@@ -145,7 +195,7 @@ class SkinWorker:
                 time.sleep(0.15)
             raise LaunchError(f"{MODULE} startup timed out: {failure}. See {self.log_path}")
         except (LaunchError, OSError) as error:
-            # Only a child that has never been exposed through the proxy is eligible for startup cleanup.
+            # Only a child that has never been reported ready to the UI is eligible for startup cleanup.
             if self.alive():
                 self.process.terminate()
                 try:
@@ -218,6 +268,14 @@ class SkinWorker:
 
     def busy(self):
         return self.snapshot()["busy"]
+
+    def keep_alive(self):
+        """Busy work or a browser tab open directly on the worker page keeps the supervisor running."""
+        state = self.snapshot()
+        return bool(state["busy"] or state.get("ui_clients"))
+
+    def page_url(self):
+        return f"http://127.0.0.1:{self.port}/"
 
     def start_on_launch(self):
         if self.finished.is_set() or not self.config.get("startup", {}).get(MODULE, True):
@@ -326,7 +384,7 @@ class ShellServer(BrowserServer):
         self.drain_client = None
         self.drain_thread = None
         self.shutdown_lock = threading.Lock()
-        super().__init__(address, ShellHandler, close_with_ui=True, busy=worker.busy, **kwargs)
+        super().__init__(address, ShellHandler, close_with_ui=True, busy=worker.keep_alive, **kwargs)
 
     def native_drain(self):
         try:
@@ -373,7 +431,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
         try:
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
-            pass  # Closing a shell/iframe aborts its pending HTTP responses.
+            pass  # A closing client aborts its pending HTTP response.
 
     def fail(self, error):
         if isinstance(error, ControlError):
@@ -405,25 +463,10 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                 result["lifecycle"] = {"draining": self.server.lifetime.stopping,
                     "leases": sum(expiry > time.monotonic() for expiry in self.server.lifetime.clients.values())}
             return self.send(200, json.dumps(result).encode(), "application/json")
-        resources = {"/": ("index.html", "text/html; charset=utf-8"),
-                     "/static/shell.js": ("shell.js", "text/javascript; charset=utf-8"),
-                     "/static/shell.css": ("shell.css", "text/css; charset=utf-8")}
-        if path in resources:
-            name, mime = resources[path]
-            return self.send(200, files("shp_portrait_tools.shell").joinpath(name).read_bytes(), mime)
-        if path == "/static/shp-ui.css":
-            return self.send(200, stylesheet(), "text/css; charset=utf-8")
-        if path == "/static/theme.js":
-            return self.send(200, theme_script(), "text/javascript; charset=utf-8")
-        if path == "/static/lifecycle.js":
-            return self.send(200, script(), "text/javascript; charset=utf-8")
-        if path == "/" + MODULE:
-            self.send_response(308)
-            self.send_header("Location", path + "/")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        self.proxy()
+        if path == "/":
+            page = STATUS_PAGE.replace("__PAGE__", json.dumps(self.server.worker.page_url()))
+            return self.send(200, page.encode(), "text/html; charset=utf-8")
+        self.send(404, b'{"error":"Not found"}', "application/json")
 
     def do_POST(self):
         if not self.valid_host():
@@ -512,44 +555,7 @@ class ShellHandler(BrowserHandler, BaseHTTPRequestHandler):
                 return self.fail(LaunchError(f"Could not save module startup preference: {error}"))
             except (ValueError, TypeError) as error:
                 return self.send(400, json.dumps({"error": str(error)}).encode(), "application/json")
-        self.proxy()
-
-    def proxy(self):
-        parts = self.path.split("/", 2)
-        if len(parts) != 3 or parts[1] != MODULE:
-            return self.send(404, b'{"error":"Not found"}', "application/json")
-        name, path = parts[1], "/" + parts[2]
-        if path.startswith("/api/owner/") or "%" in path or ".." in urlsplit(path).path or path.startswith("//"):
-            return self.send(403, b'{"error":"Private or invalid module route"}', "application/json")
-        if not (path == "/" or path == "/index.html" or path.startswith(("/api/", "/img/", "/static/"))):
-            return self.send(404, b'{"error":"Not found"}', "application/json")
-        worker = self.server.worker
-        connection = None
-        try:
-            phase = worker.phase
-            if phase in ("stopped", "stopping"):
-                if self.command == "POST" and path in ("/api/ui/close", "/api/ui/heartbeat"):
-                    return self.send(200, b'{"managed":false,"accepted":true}', "application/json")
-                raise ControlError(f"{name} is {phase}. Use its Start control when stopped.",
-                                   "module_" + phase, 409, module=name, phase=phase)
-            if worker.phase != "running":
-                raise LaunchError(f"{name} is not ready. Use its Start control.")
-            worker.checked()
-            connection = http.client.HTTPConnection("127.0.0.1", worker.port,
-                                                   timeout=None if path == "/api/batch" else 900)
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0))) if self.command == "POST" else None
-            connection.request(self.command, path, body, {"Content-Type": "application/json",
-                               "Origin": f"http://127.0.0.1:{worker.port}"})
-            response = connection.getresponse()
-            content = response.read()
-            self.send(response.status, content, response.getheader("Content-Type", "application/octet-stream"))
-        except ControlError as error:
-            self.fail(error)
-        except (LaunchError, OSError, http.client.HTTPException) as error:
-            self.fail(LaunchError(f"{name}: {error}"))
-        finally:
-            if connection:
-                connection.close()
+        self.send(404, b'{"error":"Not found"}', "application/json")
 
 
 def main():

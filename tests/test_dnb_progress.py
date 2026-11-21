@@ -222,45 +222,6 @@ if (mixOnlyPending) throw Error('mix edit hid an earlier ordinary edit');
         result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_shell_tab_cache_indicators_in_node(self):
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js is unavailable")
-        shell = files("shp_portrait_tools.shell").joinpath("shell.js").read_text()
-        helpers = shell.split("(() => {", 1)[1].split("  const names =", 1)[0]
-        tabs = "function setCacheTabs(tabs) {" + shell.split(
-            "function setCacheTabs(tabs) {", 1)[1].split("  function navigationLocked()", 1)[0]
-        harness = r"""
-const modes=['mask','frequency','dnb','combine'];
-const nodes=Object.fromEntries(modes.map(name=>['tab-'+name,{
-  textContent:name,dataset:{},indicator:{dataset:{}},
-  querySelector(){return this.indicator;},setAttribute(k,v){this[k]=v;}
-}]));
-const $=id=>nodes[id],modules={skin:{phase:'running'}};
-""" + helpers + tabs + r"""
-setCacheTabs({
-  mask:{state:'ready',label:'Skin mask cached'},
-  frequency:{state:'warming',label:'Preparing Color and Detail'},
-  dnb:{state:'unavailable',label:'Not enough RAM'},
-  combine:{state:'idle',label:'Not checked'}
-});
-if(nodes['tab-mask'].indicator.dataset.state!=='ready' ||
-   !nodes['tab-mask']['aria-label'].includes('Skin mask cached') ||
-   nodes['tab-frequency'].indicator.dataset.state!=='warming' ||
-   nodes['tab-dnb'].indicator.dataset.state!=='unavailable' ||
-   nodes['tab-combine'].indicator.dataset.state!=='idle') throw Error('incorrect tab mapping');
-renderTabStatus(nodes['tab-mask'],{phase:'running',busy:true});
-if(!nodes['tab-mask'].title.includes('Skin mask cached') ||
-   nodes['tab-mask']['aria-busy']!=='true') throw Error('supervisor overwrote cache label');
-setCacheTabs({mask:{state:'bogus',label:'bad'}});
-if(nodes['tab-mask'].indicator.dataset.state!=='ready') throw Error('invalid state accepted');
-clearCacheTabs();
-if(modes.some(mode=>nodes['tab-'+mode].indicator.dataset.state!=='idle'))
-  throw Error('cache states not cleared on restart');
-"""
-        result = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_mask_tab_reports_shared_mask_status_in_node(self):
         node = shutil.which("node")
         if not node:
@@ -316,16 +277,14 @@ for (const [status,cached,enabled,expected] of [
         # Local Open goes through the picker helpers; this fake window has no JS bridge, so it uses the prompt.
         get += "function desktopPicker() {" + html.split("function desktopPicker() {", 1)[1].split(
             "let batchSelection = null;", 1)[0]
-        resolver = "const generalSettingIds =" + html.split("const generalSettingIds =", 1)[1].split(
-            "const SKINTONE_DEFAULTS", 1)[0]
+        resolver = "const $ =" + html.split("const $ =", 1)[1].split("const SKINTONE_DEFAULTS", 1)[0]
         harness = r"""
 const state={busy:false}; let clock=0, connected=true, failure=null, selected=null, applied=0, calls=[];
 const performance={now:()=>clock}; const crypto={randomUUID:()=>'token'};
 const temporaryLog={load:'',send:null,photoshop:{}};
-const controls={editorSelect:{value:'photocraft'},photoshopCaptureMode:{value:'raw'}};
+const controls={editorSelect:{value:'photocraft'},photoshopCaptureMode:{value:'raw'},
+  photoshopTransferLogText:{textContent:''}};
 const document={getElementById:id=>controls[id]||null};
-const shellControls={photoshopTransferLogText:{textContent:''}};
-const parent={document:{getElementById:id=>shellControls[id]||null}};
 const setBusy=b=>state.busy=b, syncTransferTitles=()=>{}, setStatus=()=>{};
 const invalidateMaskCacheStatus=()=>{}, invalidateLayerPrecache=()=>{}, resetCacheTabs=()=>{}, recordCalculation=()=>{}, renderTemporaryLog=()=>{};
 const markDirty=()=>{},endPreviewCompare=()=>{},closeLandmarks=()=>{},clearPanels=()=>{},showImages=()=>{};
@@ -360,9 +319,9 @@ const api=async(path,body)=>{
   controls.editorSelect.value='photoshop'; calls=[]; await pcGet();
   if(state.busy||applied!==2||calls.includes('/api/pc/status')||!calls.includes('/api/pc/fetch'))
     throw Error('Photoshop did not capture directly');
-  if(!shellControls.photoshopTransferLogText.textContent.includes('480 bytes'))
-    throw Error('Transfer timings were not rendered in the shell');
-  delete shellControls.photoshopTransferLogText;
+  if(!controls.photoshopTransferLogText.textContent.includes('480 bytes'))
+    throw Error('Transfer timings were not rendered in Settings & Info');
+  delete controls.photoshopTransferLogText;
   await pcGet();
   if(state.busy||applied!==3||loadProgress.steps.some(step=>/Live progress unavailable|Image Get\/analysis failed/.test(step)))
     throw Error('Missing optional transfer panel interrupted Get or progress: '+loadProgress.steps.join('\n'));
@@ -531,8 +490,8 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         settings_helpers = html.split("const FACTORY =", 1)[1].split("const presets =", 1)[0]
         params_helper = html.split("function params() {", 1)[1].split("async function apply(", 1)[0]
         ui_mode_helper = "function uiMode(mode) {" + html.split("function uiMode(mode) {", 1)[1].split("const state =", 1)[0]
-        switch_mode_helper = "function switchMode(mode, request=null) {" + html.split(
-            "function switchMode(mode, request=null) {", 1)[1].split("$('toolMode').onchange", 1)[0]
+        switch_mode_helper = "function switchMode(mode) {" + html.split(
+            "function switchMode(mode) {", 1)[1].split("function scaleFrequencyRadius()", 1)[0]
         frequency_controls = "function syncFrequencyControls() {" + html.split(
             "function syncFrequencyControls() {", 1)[1].split("let poseBackend", 1)[0]
         skintone_switch = "$('skintoneOn').onclick" + html.split("$('skintoneOn').onclick", 1)[1].split("$('structureOn').onchange", 1)[0]
@@ -595,7 +554,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertIn('id="maskCacheStatus"', operations)
         self.assertNotIn('id="transferFormat"', operations)
         self.assertNotIn('id="maskPrecache"', operations)
-        general = html.split('id="generalSettingsContent"', 1)[1].split('<div class="row" id="toolModeRow"', 1)[0]
+        general = html.split('id="generalSettingsContent"', 1)[1].split('<div id="app"', 1)[0]
         self.assertIn('id="calculationLogText"', general)
         self.assertIn("$('maskOperations').hidden = state.mode !== 'mask'", html)
         self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
@@ -873,11 +832,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         watcher_code = "let watchFolderErrors = '';" + html.split("let watchFolderErrors = '';", 1)[1].split("function renderBatch", 1)[0]
         variation_harness += """
           (async () => {
-            const state={busy:false},shellUiReady=true,document={hidden:false},calls=[],notes=[],statuses=[],prompts=[];
+            const state={busy:false},uiReady=true,document={hidden:false},calls=[],notes=[],statuses=[],prompts=[];
             let ready=true,token='watch-1',failure=null,applied=0,hues=0,loaded=0;
             const setBusy=value=>state.busy=value,logNote=text=>notes.push(text),setStatus=text=>statuses.push(text);
-            const modes=[],messages=[],shellConnected=true,location={origin:'http://local'};
-            const switchMode=mode=>modes.push(mode),parent={postMessage:message=>messages.push(message)};
+            const modes=[],location={origin:'http://local'};
+            let settingsOpen=true;
+            const switchMode=mode=>modes.push(mode);
             const setTimeout=()=>0,beginLoadTimings=()=>{},restoreAfterFailedLoad=()=>{},recordLoadStage=()=>{};
             const window={confirm:()=>{throw Error('Watch imports must not prompt');}};
             const applyLoaded=result=>{state.imageInfo=result;loaded++;};
@@ -899,12 +859,12 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             state.busy=true;await pollWatchFolder();check(calls.length===0);state.busy=false;
             await pollWatchFolder();
             check(calls.includes('/api/watch-folder/load') && loaded===1 && hues===1 && applied===1 && !state.busy);
-            check(modes.join(',')==='mask' && messages.length===1 && messages[0].type==='shp-watch-loaded');
+            check(modes.join(',')==='mask' && settingsOpen===false);
             check(!calls.includes('/api/watch-folder/prepare'));
             check(notes.some(text=>text.includes('Inbox file removed')));
             ready=true;token='watch-3';failure='document changed';await pollWatchFolder();
             check(loaded===1 && notes.some(text=>text.includes('input retained: document changed')) && !state.busy);
-            check(modes.length===1 && messages.length===1);
+            check(modes.length===1);
           })().then(()=>globalThis.watchFolderCheck='ok',e=>globalThis.watchFolderCheck=e.message);
         """
         batch_display = "const display = snapshot => {" + html.split("const display = snapshot => {", 1)[1].split(
@@ -1088,7 +1048,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
           check(shell.document.documentElement.dataset.theme==='photocraft');
         })();
         """
-        for package in ("shell", "modules.skin.ui"):
+        for package in ("modules.skin.ui",):
             page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             self.assertIn('<script src="static/theme.js"></script>', page)
         css = stylesheet().decode()
@@ -1126,170 +1086,46 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
             self.assertIn("border-top:0;", files("shp_portrait_tools."+page_package).joinpath("index.html").read_text())
         self.assertNotIn('.tab.on { border-color:var(--acc)', css)
         self.assertIn(":focus-visible", css)
-        shell_css = files("shp_portrait_tools.shell").joinpath("shell.css").read_text()
-        self.assertNotIn(".badge", shell_css)
-        self.assertIn('[role="tab"][aria-busy="true"] { color:color-mix', shell_css)
-        self.assertNotIn('[aria-busy="true"] { background:', shell_css)
         self.assertIn("--status-symbol-size:11px", css)
         self.assertIn("animation:status-progress 1.8s ease-in-out infinite", css)
         self.assertIn("#status.busy::before { animation:none; transform:none;", css)
         self.assertIn("--status-accent:#6a9fc5", css)
         self.assertIn("#status.ok::after", css)
-        shell_js = files("shp_portrait_tools.shell").joinpath("shell.js").read_text()
-        availability = "function viewAvailable(name) {" + shell_js.split(
-            "function viewAvailable(name) {", 1)[1].split("  const $", 1)[0]
-        navigation = "let skinBusy = false;" + shell_js.split("let skinBusy = false;", 1)[1].split("function requestMode()", 1)[0]
-        navigation += "function select(name, notify = true, internal = false) {" + shell_js.split(
-            "function select(name, notify = true, internal = false) {", 1)[1].split("function mountGeneralSettings", 1)[0]
-        navigation_harness = """
-          (() => {
-            const views=['mask','frequency','dnb','combine','settings'],modes=['mask','frequency','dnb','combine'];
-            const names={skin:'Skin Tools'};
-            const window={};
-            let modules={skin:{busy:false}},active='dnb',initialSelection=false,skinMode='dnb';
-            const tabs=views.map(view=>({dataset:{view},setAttribute(k,v){this[k]=v;}}));
-            const document={querySelectorAll:()=>tabs},requestMode=()=>{};
-            const $=()=>({setAttribute(){},focus(){},classList:{toggle(){}}});
-        """ + availability + navigation + "document.querySelectorAll('[role=\"tab\"]').forEach(button => {" + shell_js.split(
-            "document.querySelectorAll('[role=\"tab\"]').forEach(button => {", 1)[1].split("function render()", 1)[0] + """
-            skinBusy=true;syncNavigation();
-            if(!tabs.every(tab=>tab.disabled&&tab['aria-disabled']==='true'))throw Error('All tabs must lock');
-            for(const view of views)select(view);
-            tabs.forEach(tab=>tab.onclick());
-            let prevented=0;
-            tabs[0].onkeydown({key:'ArrowRight',preventDefault(){prevented++;}});
-            if(prevented!==1)throw Error('Busy keyboard navigation not blocked');
-            if(active!=='dnb')throw Error('Busy click changed navigation');
-            select('mask',false,true);
-            if(active!=='mask')throw Error('Internal watch-load navigation was blocked');
-            active='dnb';
-            skinBusy=false;modules.skin.busy=true;syncNavigation();select('settings');
-            if(active!=='dnb')throw Error('Backend busy navigation');
-            modules.skin.busy=false;syncNavigation();
-            if(tabs.some(tab=>tab.disabled))throw Error('Tabs did not unlock');
-            if(active!=='dnb')throw Error('Busy clicks were queued');
-            select('settings');if(active!=='settings')throw Error('Normal navigation did not restore');
-            select('crop');select('patch');if(active!=='settings')throw Error('Retired AI Fill view accepted');
-            modules.skin.phase='stopped';
-            select('mask');if(active!=='settings')throw Error('Hidden tab accepted selection');
-            tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
-            if(active!=='settings')throw Error('Keyboard selected unloaded module');
-            modules.skin.phase='starting';
-            tabs[4].onkeydown({key:'ArrowRight',preventDefault(){}});
-            if(active!=='mask')throw Error('Starting tabs not available');
-          })();
-        """
-        badge_helpers = shell_js.split("(() => {", 1)[1].split("  const names =", 1)[0]
-        badge_harness = badge_helpers + """
-          (() => {
-            function check(ok){if(!ok)throw Error('Badge regression');}
-            const tab={textContent:'Crop',setAttribute(k,v){this[k]=v;}};
-            for(const [phase,busy,expected,working] of [
-              ['running',false,'running',false],['running',true,'busy',true],
-              ['starting',false,'starting',true],['stopping',false,'stopping',true],
-              ['stopped',false,'stopped',false],['error',false,'error',false],
-              ['unavailable',false,'unavailable',false],['unexpected',false,'unknown',false],
-              [undefined,false,'unknown',false]]) {
-              renderTabStatus(tab,{phase,busy});
-              check(moduleStatus({phase,busy}).status===expected);
-              check(tab['aria-busy']===String(working));
-              check(tab.textContent==='Crop');
-              check(tab['aria-label']==='Crop: '+tab.title && tab.title.length>0);
-              if(phase!=='unavailable')check(tab.hidden===(phase==='stopped'));
-            }
-            renderTabStatus(tab,{phase:'stopped'});check(tab.hidden);
-            renderTabStatus(tab,{phase:'unavailable'});check(tab.hidden);
-            renderTabStatus(tab,{phase:'starting'});check(!tab.hidden);
-            renderTabStatus(tab,{phase:'error',error:'Connection lost'});
-            check(tab.title==='Error: Connection lost');
-          })();
-        """
-        shell_page = files("shp_portrait_tools.shell").joinpath("index.html").read_text()
-        render_code = "function render() {" + shell_js.split("function render() {", 1)[1].split("async function poll()", 1)[0]
-        poll_code = "async function poll() {" + shell_js.split("async function poll() {", 1)[1].split("  poll();", 1)[0]
-        isolation_harness = """
-          (async () => {
-            const names={skin:'Skin Tools'},frames=new Map(),reports=[],placeholders={skin:{}};
-            let skinBusy=false;const syncNavigation=()=>{};
-            let modules={},pending=null,initialSelection=true,active='settings';
-            const select=name=>{active=name;initialSelection=false;};
-            const tabs={skin:{}};
-            const document={querySelectorAll:selector=>selector.includes('="skin"')?[tabs.skin]:Object.values(tabs),
-              createElement:()=>({dataset:{},remove(){this.removed=true;}})};
-            const panels=Object.fromEntries(Object.keys(names).map(name=>[name,
-              {querySelector:()=>placeholders[name],append:frame=>{frame.appended=true;}}]));
-            const general={settingsAvailability:{},generalSettingsHost:{}},ready=new WeakSet();
-            const $=id=>general[id]||panels[id.replace('panel-','')];
-            const renderTabStatus=(tab,state)=>tab.phase=state.phase;
-            const clearCacheTabs=()=>{};
-            const report=(message,error=false)=>reports.push([message,error]);
-            const setTimeout=()=>{},location={origin:'http://local'};
-            const fetch=async()=>({ok:true,json:async()=>({modules})});
-            const skin={dataset:{instance:'skin'},remove(){this.removed=true;}};
-            frames.set('skin',skin);
-            const check=ok=>{if(!ok)throw Error('Shell module isolation');};
-        """ + availability + render_code + poll_code + """
-            modules={skin:{phase:'running',instance:'skin'},crop:{phase:'running',instance:'stale'}};
-            await poll();check(active==='mask'&&!initialSelection&&frames.get('skin')===skin&&!frames.has('crop'));
-            active='combine';await poll();check(active==='combine'&&tabs.skin.phase==='running'&&reports.at(-1)[0]==='');
-            modules={skin:{phase:'error',instance:'skin',error:'Child failed'}};await poll();
-            check(skin.removed&&!frames.has('skin')&&placeholders.skin.textContent.includes('Child failed'));
-            modules.skin={phase:'running',instance:'skin-new'};await poll();
-            check(frames.get('skin').dataset.instance==='skin-new'&&placeholders.skin.hidden);
-            const reloaded=frames.get('skin');
-            modules.skin={phase:'stopped',instance:'skin-new'};await poll();
-            check(reloaded.removed&&active==='settings'&&placeholders.skin.textContent.includes('share this service'));
-            initialSelection=true;modules.skin={phase:'stopped',startup_enabled:false};await poll();
-            check(active==='settings'&&!placeholders.skin.hidden&&placeholders.skin.textContent.includes('startup is disabled'));
-            modules.skin={phase:'starting',startup_enabled:true};await poll();
-            check(active==='settings');
-            modules.skin={phase:'running',instance:'skin-reloaded'};await poll();
-            check(active==='settings'&&frames.get('skin').dataset.instance==='skin-reloaded');
-            initialSelection=true;await poll();check(active==='mask');
-          })().then(()=>globalThis.moduleIsolationCheck='ok',e=>globalThis.moduleIsolationCheck=e.message);
-        """
-        self.assertEqual(re.findall(r'data-view="([^"]+)"', shell_page), ['mask', 'frequency', 'dnb', 'combine', 'settings'])
-        self.assertIn("const views = ['mask', 'frequency', 'dnb', 'combine', 'settings'];", shell_js)
         fs_panel=html.split('id="g-frequency"',1)[1].split('</details>',1)[0]
         blur_panel=html.split('id="g-blur"',1)[1].split('</details>',1)[0]
         self.assertNotIn('type="checkbox"',fs_panel)
         self.assertIn('id="blurOn"',blur_panel)
         self.assertIn('id="blurMask"',blur_panel)
         self.assertIn("#g-bands, #g-mask, #g-frequency { border-top:0; }",html)
-        self.assertIn("['mask','skintone','frequency','dnb','combine'].includes(data.mode)", html)
-        self.assertIn("const modes = ['mask', 'frequency', 'dnb', 'combine'];", shell_js)
-        self.assertIn("let active = 'mask';", shell_js)
-        self.assertIn("let skinMode = 'mask';", shell_js)
-        self.assertIn("mode: parent === window ? 'dnb' : 'mask'", html)
+        self.assertIn("const VIEWS = ['mask','frequency','dnb','combine','settings'];", html)
+        self.assertIn("mode: window.__shpOwnedDesktop ? 'mask' : 'dnb'", html)
         startup_code = "async function loadPresets() {" + html.split(
             "async function loadPresets() {", 1)[1].split("$('presetSel').onchange", 1)[0]
         startup_harness = """
           (async()=>{
-            const window={},events=[],state={},presets={}, $=()=>({});
-            let parent={postMessage:message=>events.push(message.type)},poseBackend,shellUiReady=false;
+            const events=[],state={},presets={}, $=()=>({});
+            let window={__shpOwnedDesktop:true},poseBackend,uiReady=false;
             const location={origin:'http://local'},syncTransfer=()=>{},syncPose=()=>{},presetErr=e=>{throw e;},
               fillPresetList=()=>{},snapNow=()=>events.push('snapshot'),
               presetSettings=()=>presets.default,applySettings=settings=>{state.mode=settings.mode;events.push(state.mode);},
               api=async path=>path==='/api/global-settings'?{}:{default:{mode:'dnb',strength:0.6}};
         """ + startup_code + """
             await loadPresets();
-            if(state.mode!=='mask'||!shellUiReady||presets.default.mode!=='dnb'||
-                events.join(',')!=='mask,snapshot,shp-skin-ready')throw Error('Embedded startup mode');
-            parent=window;events.length=0;await loadPresets();
+            if(state.mode!=='mask'||!uiReady||presets.default.mode!=='dnb'||
+                events.join(',')!=='mask,snapshot')throw Error('Desktop startup mode');
+            window={};events.length=0;await loadPresets();
             if(state.mode!=='dnb'||events.join(',')!=='dnb,snapshot')throw Error('Standalone startup changed');
           })().then(()=>globalThis.skinStartupCheck='ok',e=>globalThis.skinStartupCheck=e.message);
         """
-        self.assertNotIn('class="badge"', shell_page)
-        self.assertEqual(shell_page.count('title="Starting" data-service='), 4)
-        self.assertIn('[role="tab"]:where(:not(:disabled)):hover', shell_css)
-        self.assertNotIn('[role="tab"]:hover', shell_css)
-        self.assertNotIn("border-color:var(--acc)", shell_css)
-        self.assertIn("border-bottom-color:var(--panel)", shell_css)
+        self.assertEqual(re.findall(r'role="tab" aria-selected="[^"]+" data-view="([^"]+)"', html),
+                         ['mask', 'frequency', 'dnb', 'combine', 'settings'])
+        self.assertIn('[role="tab"]:where(:not(:disabled)):hover', html)
+        self.assertNotIn('[role="tab"]:hover', html)
+        self.assertIn("border-bottom-color:var(--panel)", html)
         for colour in ("#272727", "#515151", "#444444", "#626262", "#e0e0e0", "#b8b8b8", "#6a9fc5"):
             self.assertIn(colour, css)
         self.assertNotIn("filter:", css)
-        from shp_portrait_tools.supervisor import ShellHandler
-        for handler_type in (T.S.Handler, ShellHandler):
+        for handler_type in (T.S.Handler,):
             handler = object.__new__(handler_type)
             handler.path = "/static/theme.js"
             handler.valid_host = lambda: True
@@ -1298,13 +1134,13 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
                 send.assert_called_once_with(200, theme_script(), "text/javascript; charset=utf-8")
         context = js.JSGlobalContextCreate(None)
         try:
-            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.moduleIsolationCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
-            for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) + [harness, theme_harness, shell_js, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check]:
+            routing_check = "for(const result of [globalThis.localTransferCheck,globalThis.batchCheck,globalThis.watchFolderCheck,globalThis.skinStartupCheck])if(result!=='ok')throw Error(result||'UI request check incomplete');"
+            for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) + [harness, theme_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, startup_harness, routing_check]:
                 source = js.JSStringCreateWithUTF8CString(script.encode())
                 error = ctypes.c_void_p()
                 try:
                     self.assertTrue(js.JSCheckScriptSyntax(context, source, None, 1, ctypes.byref(error)))
-                    if script in (harness, theme_harness, badge_harness, navigation_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, isolation_harness, startup_harness, routing_check):
+                    if script in (harness, theme_harness, preview_harness, display_harness, settings_harness, mask_status_harness, feedback_harness, variation_harness, startup_harness, routing_check):
                         js.JSEvaluateScript(context, source, None, None, 1, ctypes.byref(error))
                         if error.value:
                             message = js.JSValueToStringCopy(context, error, None)

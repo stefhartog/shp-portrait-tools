@@ -236,30 +236,6 @@ class LocalResultTests(unittest.TestCase):
 
 @unittest.skipIf(supervisor is None, "supervisor is Linux-only")
 class NativeChooserTests(unittest.TestCase):
-    def test_owned_proxy_sets_child_origin_for_guarded_result_route(self):
-        manager = SimpleNamespace(phase="running", port=18765, checked=Mock())
-        handler = SimpleNamespace(path="/skin/api/send-result", command="POST",
-                                  server=SimpleNamespace(worker=manager), headers={"Content-Length": "2"},
-                                  rfile=io.BytesIO(b"{}"), send=Mock(), fail=Mock())
-        with patch.object(supervisor.http.client, "HTTPConnection") as factory:
-            response = factory.return_value.getresponse.return_value
-            response.status = 200
-            response.read.return_value = b'{"saved":true}'
-            response.getheader.return_value = "application/json"
-            supervisor.ShellHandler.proxy(handler)
-            factory.return_value.request.assert_called_once_with(
-                "POST", "/api/send-result", b"{}",
-                {"Content-Type": "application/json", "Origin": "http://127.0.0.1:18765"})
-            handler.fail.assert_not_called()
-            handler.send.assert_called_once_with(200, b'{"saved":true}', "application/json")
-            handler.path = "/skin/api/batch"
-            handler.rfile = io.BytesIO(b"{}")
-            supervisor.ShellHandler.proxy(handler)
-            factory.assert_called_with("127.0.0.1", 18765, timeout=None)
-            factory.return_value.request.assert_called_with(
-                "POST", "/api/batch", b"{}",
-                {"Content-Type": "application/json", "Origin": "http://127.0.0.1:18765"})
-
     def test_native_dialog_selection_cancel_and_frame_capability_without_gtk(self):
         source = Path(S.__file__).parents[2] / "desktop/controller.py"
         tree = ast.parse(source.read_text())

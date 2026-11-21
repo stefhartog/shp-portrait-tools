@@ -31,7 +31,8 @@ Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything 
 
 Key docs (read the relevant one before non-trivial changes):
 - `docs/skin-tools-architecture.md` — Skin Tools module boundaries, request flow, lock ordering, focused test selectors
-- `HANDOFF.md` — current-state behavior contracts for the whole app (shell, lifecycle, pose backends, etc.)
+- `HANDOFF.md` — current-state behavior contracts for the whole app (lifecycle, pose backends, etc.)
+- `docs/linux-todo.md` — **Linux is knowingly broken** since the Windows-first desktop changes; what to do there
 - `docs/windows-handoff.md` — Windows port status, what is and isn't verified
 - `docs/photoshop.md` — Photoshop connector wire protocol and live-validation notes
 - `MODELS.md` — required ONNX models. `docs/source/` is frozen history, not current guidance.
@@ -68,8 +69,8 @@ Running the app:
 
 ```powershell
 python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-portrait-tools\launcher.json
-python -m uv run --no-sync shp-portrait-tools                 # supervised shell + desktop window
-python -m uv run --no-sync shp-portrait-tools --no-browser    # services only; http://127.0.0.1:18760/
+python -m uv run --no-sync shp-portrait-tools                 # supervisor + Skin Tools + desktop window
+python -m uv run --no-sync shp-portrait-tools --no-browser    # services only; http://127.0.0.1:18760/ (status page)
 python -m uv run --no-sync shp-skin-tools --dir <folder>      # standalone Skin Tools web UI (port 8765)
 ```
 
@@ -80,24 +81,29 @@ not pick up Python changes.
 ## Architecture
 
 ```
-launcher.py ─► supervisor.py ─► shell/ (port 18760: tab UI, fixed proxy, mounted iframe)
-   │                └─► modules/skin/ui_server.py   (owned backend 18765)
+launcher.py ─► supervisor.py (port 18760: status page at /, health/status/controls/quit/leases; no UI proxy)
+   │                └─► modules/skin/ui_server.py   (owned worker 18765: the Skin Tools page, loaded directly)
    └─► desktop/ (Windows: windows_controller.Host = host.DesktopHost + WebView2/Win32/pystray;
-                Linux: GTK3/WebKit2 controller.py, not yet on DesktopHost)
+                Linux: GTK3/WebKit2 controller.py — broken since the shell removal, see docs/linux-todo.md)
 ```
 
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
   serving a single-file UI (`modules/skin/ui/index.html`) plus shared assets from `shared/ui/`
-  (no CDN). The shell talks to the module iframe via origin-checked `postMessage` (`shp-tools-mode` with sequence acks).
-  The supervisor manages exactly one worker (`SkinWorker`; `MODULE`/`SERVER_MODULE` in `launcher.py`). Its HTTP
-  API keeps the per-module shape (`/api/status` → `modules.skin`, `/api/modules/skin/<action>`) that the shell and
-  both tray hosts use, and it still proxies `/skin/` so the shell and the Skin Tools page share one origin.
+  (no CDN). The page owns its tab bar (Skin Mask, FS & Tone, Dodge & Burn, Combine, Settings & Info) and the
+  Settings & Info view; there is no shell any more. The supervisor manages exactly one worker (`SkinWorker`;
+  `MODULE`/`SERVER_MODULE` in `launcher.py`). Its API keeps the per-module shape (`/api/status` → `modules.skin`,
+  `/api/modules/skin/<action>`) used by the tray hosts. `/` is `supervisor.STATUS_PAGE`: it shows starting/stopped/
+  error and moves on to the worker page when running, handing over the old origin's `shp-tools-theme`/`dnb-*`
+  localStorage once (the page imports them in its `data-prefs-import` head script). The supervised worker counts
+  browser tabs open on it (`ui_clients` in owner status) so `keep_alive()` holds the supervisor up for them.
 - `desktop/host.py` `DesktopHost`: platform-neutral window geometry, status polling, tray model, module controls
-  and the quit/restart/reload confirmation flow (with the 90 s drain wait). Platform hosts subclass it and add only
+  and the quit/restart/reload confirmation flow (with the 90 s drain wait). It reads the page origin from the
+  supervisor's `/api/health` `ports.skin`, allows navigation to both origins (`trusted_origin`), and shows the
+  status page again when Skin Tools stops or restarts (`follow_worker`). Platform hosts subclass it and add only
   dialogs/pickers, webview hooks, the tray widget and process helpers (`own_identity`, `process_alive`,
   `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
   File pickers: `PickerApi` (only `pick_image`/`pick_images`/`pick_folder`) is the window's pywebview `js_api`;
-  the Skin Tools page reaches it as `window.top.pywebview.api` (same-origin iframe) and asks Folder-or-Images
+  the Skin Tools page reaches it as `window.top.pywebview.api` and asks Folder-or-Images
   in its own `#batchSourceDialog`. Without the bridge (Linux GTK host) the page falls back to the old
   `prompt('SHP_OPEN_*')` protocol. The Windows host no longer bridges prompts; its WebView2 dialog hook only
   gives `alert`/`confirm` native message boxes.

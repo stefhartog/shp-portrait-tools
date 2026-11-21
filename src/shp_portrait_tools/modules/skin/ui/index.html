@@ -4,10 +4,59 @@
 <meta charset="utf-8">
 <title>SHP Portrait Tools — Skin Tools</title>
 <link rel="stylesheet" href="static/shp-ui.css">
+<script data-prefs-import>
+// One-time import of browser preferences handed over by the Tools status page (see supervisor.STATUS_PAGE):
+// they were saved under the old shell origin. Only theme and view keys are taken, and never overwrite.
+(() => {
+  const marker = '#shp-prefs=';
+  if (!location.hash.startsWith(marker)) return;
+  try {
+    const prefs = JSON.parse(decodeURIComponent(location.hash.slice(marker.length)));
+    for (const [key, value] of Object.entries(prefs || {}))
+      if ((key === 'shp-tools-theme' || /^dnb-[\w-]{1,60}$/.test(key)) && typeof value === 'string' &&
+          value.length <= 200 && localStorage.getItem(key) === null) localStorage.setItem(key, value);
+  } catch (error) { console.warn('Preference import skipped:', error); }
+  history.replaceState(null, '', location.pathname + location.search);
+})();
+</script>
 <script src="static/theme.js"></script>
 <script src="static/lifecycle.js" defer></script>
 <style>
-  #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); height:100vh; }
+  body { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+  #app { display:grid; grid-template-columns: 380px 1fr; grid-template-rows: auto minmax(0, 1fr); flex:1; min-height:0; }
+  #app[hidden], #settingsView[hidden] { display:none; }
+  .tools-header { display:flex; align-items:center; padding:7px 14px 0; background:var(--panel); border-bottom:1px solid var(--line); flex:none; }
+  .tools-header nav { display:flex; flex:1; min-width:0; justify-content:center; gap:3px; }
+  .tools-header [role="tab"] { position:relative; flex:0 1 260px; min-width:0; margin-bottom:-1px; padding:9px 18px; white-space:nowrap; background:var(--input); color:color-mix(in srgb, var(--dim) 70%, black); border:1px solid transparent; border-bottom-color:var(--line); border-radius:6px 6px 0 0; font-weight:600; }
+  .tools-header [role="tab"]:where(:not(:disabled)):hover { color:var(--text); }
+  .tools-header [role="tab"][aria-selected="true"] { isolation:isolate; background:var(--panel); color:var(--text); border-color:var(--line); border-bottom-color:var(--panel); }
+  .tools-header [role="tab"][aria-selected="true"]::before { content:""; position:absolute; inset:-2px -1px -1px; z-index:-1; pointer-events:none; background:var(--panel); border:1px solid var(--line); border-bottom-color:var(--panel); border-radius:inherit; }
+  .tools-header [role="tab"]:focus-visible { outline:2px solid var(--acc); outline-offset:-4px; }
+  .tools-header [role="tab"]:disabled { cursor:default; color:var(--dim); opacity:.5; pointer-events:none; }
+  .tools-header [role="tab"][aria-selected="false"]:disabled { color:color-mix(in srgb, var(--dim) 50%, black); }
+  .tools-header [role="tab"][aria-selected="true"]:disabled { opacity:1; background:var(--panel); border-bottom-color:var(--panel); }
+  .tools-header #tab-settings { margin-inline-start:9px; }
+  .tools-header #tab-settings::after { content:""; position:absolute; inset-block:7px; inset-inline-start:-7px; width:1px; background:var(--line); pointer-events:none; }
+  .cache-indicator { display:inline-block; width:1em; margin-left:.4em; text-align:center; font-size:.8em; color:#aaa; }
+  .cache-indicator::before { content:"\25cb"; }
+  .cache-indicator[data-state="warming"]::before { content:"\21bb"; }
+  .cache-indicator[data-state="ready"]::before { content:"\2713"; }
+  .cache-indicator[data-state="unavailable"]::before { content:"!"; }
+  #settingsView { flex:1; min-height:0; overflow:auto; border-top:0; padding:24px; }
+  #settingsView > * { max-width:850px; margin-left:auto; margin-right:auto; }
+  #settingsView h1 { font-size:20px; margin-top:0; margin-bottom:20px; }
+  #settingsView h2 { font-size:15px; margin:0 0 12px; letter-spacing:normal; text-transform:none; color:var(--text); }
+  .settings-card { padding:18px; margin-bottom:16px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
+  .settings-card p { line-height:1.5; color:var(--dim); }
+  .settings-card .row { display:flex; align-items:center; gap:8px; margin:10px 0; }
+  .settings-card .row > label { min-width:100px; }
+  .settings-card summary { cursor:pointer; font-weight:600; padding:8px 0; }
+  .settings-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; color:var(--dim); font-size:12px; }
+  .settings-card .theme-picker { margin:0; }
+  @media (max-width:640px) {
+    .tools-header { padding:5px 7px 0; }
+    .tools-header [role="tab"] { padding:8px 5px; font-size:11px; white-space:normal; }
+  }
   #bar { grid-column: 1 / -1; }
   h1 { font-size:16px; margin:0 0 10px; }
   h2 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); margin:16px 0 6px; }
@@ -69,7 +118,7 @@
   .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
-  #standaloneLoad[hidden], details.grp[hidden], .tab[hidden], #toolModeRow[hidden] { display:none; }
+  #standaloneLoad[hidden], details.grp[hidden], .tab[hidden] { display:none; }
   #g-bands, #g-mask, #g-frequency { border-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
   details.grp > summary::after { display:none; }
@@ -119,31 +168,20 @@
     <div class="preset-dialog-actions"><button type="submit" value="folder">Folder</button><button type="submit" value="images">Images</button><button type="submit" value="cancel" formnovalidate>Cancel</button></div>
   </form>
 </dialog>
-<div id="app">
-<div id="bar"><div id="barActions"><button class="workflow" id="pcConnect" hidden title="Connect to a controlled PhotoCraft window or launch a separate one.">PhotoCraft</button><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Send the corrected photograph to PhotoCraft." disabled>Send Result</button><button class="workflow" id="pcSendLayers" disabled hidden>Send Layers</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
-<aside>
-  <details class="grp" id="g-combine" open hidden>
-    <summary>Combine</summary><div class="gbody"><div id="combineSliders"></div></div>
-  </details>
-  <details class="grp" id="g-batch" hidden>
-    <summary>BATCH PROCESSING</summary><div class="gbody">
-      <div id="batchControls">
-        <p class="hint">Local Combine only. Settings are captured at Start; each image is analyzed independently.</p>
-        <div class="workflow-actions">
-          <button class="workflow" id="batchChooseSource">Choose source</button>
-          <button class="workflow" id="batchStart" disabled>Start Batch</button>
-          <button class="cancel" id="batchCancel" hidden disabled>Cancel</button>
-        </div>
-        <p class="hint" id="batchSourceSummary">No source selected.</p>
-        <progress class="batch-progress" id="batchProgress" max="1" value="0" aria-label="Batch completion"></progress>
-        <div class="batch-summary" id="batchSummary" role="status" aria-live="polite"></div>
-        <ol class="batch-items" id="batchItems"></ol>
-      </div>
-    </div>
-  </details>
-  <details class="grp" id="generalSettings">
-    <summary>Settings &amp; Info</summary>
-    <div class="gbody" id="generalSettingsContent">
+<header class="tools-header">
+  <nav id="viewTabs" aria-label="Skin Tools views" role="tablist">
+    <button id="tab-mask" role="tab" aria-selected="true" data-view="mask">Skin Mask<span class="cache-indicator" data-state="idle" aria-hidden="true"></span></button>
+    <button id="tab-frequency" role="tab" aria-selected="false" data-view="frequency" tabindex="-1">FS &amp; Tone<span class="cache-indicator" data-state="idle" aria-hidden="true"></span></button>
+    <button id="tab-dnb" role="tab" aria-selected="false" data-view="dnb" tabindex="-1">Dodge &amp; Burn<span class="cache-indicator" data-state="idle" aria-hidden="true"></span></button>
+    <button id="tab-combine" role="tab" aria-selected="false" data-view="combine" tabindex="-1">Combine<span class="cache-indicator" data-state="idle" aria-hidden="true"></span></button>
+    <button id="tab-settings" role="tab" aria-selected="false" data-view="settings" tabindex="-1">Settings &amp; Info</button>
+  </nav>
+</header>
+<section id="settingsView" class="settings-page" role="tabpanel" aria-labelledby="tab-settings" hidden>
+  <h1>Settings &amp; Info</h1>
+  <section class="settings-card"><h2>Appearance</h2><div id="themeSettings"></div></section>
+  <section class="settings-card"><h2>Processing and transfer</h2>
+    <div id="generalSettingsContent">
       <details id="g-editor" open>
         <summary>Source editor</summary>
         <div class="row"><label for="editorSelect">editor</label><select id="editorSelect"><option value="photocraft">PhotoCraft / local files</option><option value="photoshop">Photoshop (UXP preview)</option></select></div>
@@ -169,10 +207,35 @@
         </details>
       </details>
     </div>
+  </section>
+  <section class="settings-card"><h2>About</h2>
+    <p><strong>SHP Portrait Tools</strong> provides Skin Mask, FS &amp; Tone, Dodge &amp; Burn and Combine through Skin Tools. Crop &amp; Expand and Patch Fill are the separate SHP AI Fill app.</p>
+    <p>Image processing runs locally. PhotoCraft integration is optional; Combine batch processing is local-only.</p>
+    <p>Theme is saved in this browser. Transfer options remain in the existing settings/preset bundle; skin-mask precache uses its existing browser preference. Calculation timings are temporary and clear when this view reloads.</p>
+  </section>
+</section>
+<div id="app" role="tabpanel">
+<div id="bar"><div id="barActions"><button class="workflow" id="pcConnect" hidden title="Connect to a controlled PhotoCraft window or launch a separate one.">PhotoCraft</button><button class="workflow" id="pcGet" title="Take the active document in PhotoCraft (merged) and analyse it here.">Get Image</button><button class="workflow" id="pcSend" title="Send the corrected photograph to PhotoCraft." disabled>Send Result</button><button class="workflow" id="pcSendLayers" disabled hidden>Send Layers</button></div><div id="statusWrap"><div id="status" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"></div></div><span id="presetBar"><select id="presetSel" title="Choose a saved set of settings to load. A star means the current settings differ from it."></select><button id="presetSave" title="Overwrite the selected preset with the current settings.">Save</button><button id="presetNew" title="Store the current settings as a new preset (asks for a name).">Save New</button><button id="presetRemove" title="Delete the selected preset.">Delete</button></span></div>
+<aside>
+  <details class="grp" id="g-combine" open hidden>
+    <summary>Combine</summary><div class="gbody"><div id="combineSliders"></div></div>
   </details>
-  <div class="row" id="toolModeRow"><label for="toolMode">skin tool</label><select id="toolMode" style="flex:1">
-    <option value="dnb">d&amp;b layers</option><option value="mask">skin mask</option><option value="frequency">fs + skintone</option><option value="combine">combine</option>
-  </select></div>
+  <details class="grp" id="g-batch" hidden>
+    <summary>BATCH PROCESSING</summary><div class="gbody">
+      <div id="batchControls">
+        <p class="hint">Local Combine only. Settings are captured at Start; each image is analyzed independently.</p>
+        <div class="workflow-actions">
+          <button class="workflow" id="batchChooseSource">Choose source</button>
+          <button class="workflow" id="batchStart" disabled>Start Batch</button>
+          <button class="cancel" id="batchCancel" hidden disabled>Cancel</button>
+        </div>
+        <p class="hint" id="batchSourceSummary">No source selected.</p>
+        <progress class="batch-progress" id="batchProgress" max="1" value="0" aria-label="Batch completion"></progress>
+        <div class="batch-summary" id="batchSummary" role="status" aria-live="polite"></div>
+        <ol class="batch-items" id="batchItems"></ol>
+      </div>
+    </div>
+  </details>
   <details class="grp" id="g-frequency" open hidden>
     <summary title="Frequency Separation &amp; Skin Tone">Frequency separation</summary>
     <div class="gbody">
@@ -319,10 +382,7 @@
 </div>
 
 <script>
-const generalSettingIds = new Set(['processingBackends','poseHint','calculationLogText','photoshopTransferLogText',
-  'photoshopPixelTiles','photoshopPixelTilesText','editorSelect','photoshopPairing','photoshopPair','photoshopRevoke','photoshopPairCode']);
-const $ = (id) => document.getElementById(id) ||
-  (parent !== window && generalSettingIds.has(id) ? parent.document.getElementById(id) : null);
+const $ = (id) => document.getElementById(id);
 const SKINTONE_DEFAULTS = {on:true, hue_center:30, hue_width:30, hue_softness:5, hue_amount:100};
 const DIRECTIONAL_DEFAULTS = {on:false, left:true, right:true, distance:30, strength:100, width:100, start:0, end:100, taper:0, feather:3,
   left_lower_leg:false,right_lower_leg:false,left_upper_arm:false,right_upper_arm:false,left_forearm:false,right_forearm:false,torso:false};
@@ -340,7 +400,7 @@ function uiMode(mode) {
 }
 const state = {
   combine:{fs_mix:100,dnb_mix:100},
-  mode: parent === window ? 'dnb' : 'mask', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
+  mode: window.__shpOwnedDesktop ? 'mask' : 'dnb', frequency: {on:true, method:'gaussian', radius:8, blur_radius:16, radius_at_s181:6, blur_percent:200, blur_strength:100, blur_mask:true}, pcFetched: false,
   skintone: {...SKINTONE_DEFAULTS},
   directional: directionalSettings(),
   bands: [ {lo:1.5, hi:50, gain:1.0, taper:0.5, linked:false} ],
@@ -352,15 +412,51 @@ const state = {
 let landmarkEdit = null;
 let settingsRevision = 0;
 let mixOnlyPending = false, lastLayerPrecacheInfo = null;
-let shellConnected = false, shellUiReady = false;
+let uiReady = false, settingsOpen = false;
 const layerCacheSession = crypto.randomUUID();
 let layerSettingsRevision = 0;
 const layerCacheStamp = () => `${layerCacheSession}:${layerSettingsRevision}`;
 const cacheTabs = Object.fromEntries(['mask','frequency','dnb','combine'].map(mode =>
   [mode,{state:'idle',label:'Cache not checked for current settings'}]));
-function announceCacheTabs() {
-  if (shellConnected) parent.postMessage({type:'shp-skin-cache',tabs:cacheTabs}, location.origin);
+function announceCacheTabs() { renderTabs(); }
+// Tabs: the four Skin Tools modes plus Settings & Info. Navigation is locked while work is running.
+const VIEWS = ['mask','frequency','dnb','combine','settings'];
+function activeView() { return settingsOpen ? 'settings' : uiMode(state.mode); }
+function renderTabs() {
+  const active = activeView(), locked = !!state.busy;
+  for (const view of VIEWS) {
+    const tab = $('tab-'+view);
+    if (!tab) continue;
+    const selected = view === active, cache = cacheTabs[view];
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.disabled = locked;
+    tab.setAttribute('aria-disabled', String(locked));
+    const indicator = tab.querySelector('.cache-indicator');
+    if (indicator && cache) indicator.dataset.state = cache.state;
+    tab.title = cache ? cache.label : 'Theme, source editor, timings and About';
+    tab.setAttribute('aria-label', tab.textContent.trim()+(cache ? ': '+cache.label : ''));
+  }
+  $('app').hidden = settingsOpen;
+  $('settingsView').hidden = !settingsOpen;
+  $('app').setAttribute('aria-labelledby', settingsOpen ? 'tab-settings' : 'tab-'+uiMode(state.mode));
 }
+function selectView(view) {
+  if (state.busy || !VIEWS.includes(view)) return;
+  settingsOpen = view === 'settings';
+  if (settingsOpen) renderTabs(); else switchMode(view);
+}
+document.querySelectorAll('#viewTabs [role="tab"]').forEach(tab => {
+  tab.onclick = () => selectView(tab.dataset.view);
+  tab.onkeydown = event => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    if (state.busy) return;
+    const next = VIEWS[(VIEWS.indexOf(activeView()) + (event.key === 'ArrowRight' ? 1 : -1) + VIEWS.length) % VIEWS.length];
+    selectView(next);
+    $('tab-'+next).focus();
+  };
+});
 function resetCacheTabs() {
   for (const mode of Object.keys(cacheTabs))
     cacheTabs[mode] = {state:'idle',label:'Cache not checked for current settings'};
@@ -768,10 +864,8 @@ function drawSkintone(data) {
     });
   });
 }
-function announceMode(request=null) {
-  if (shellConnected) parent.postMessage({type:'shp-skin-mode', mode:uiMode(state.mode), request}, location.origin);
-}
-function switchMode(mode, request=null) {
+function announceMode() { renderTabs(); }
+function switchMode(mode) {
   endPreviewCompare();
   mode = uiMode(mode);
   if (state.mode !== mode) closeLandmarks();
@@ -781,24 +875,8 @@ function switchMode(mode, request=null) {
     clearTimeout(markDirty.t);
     if (state.loaded && !state.busy) apply({quiet:true});
   }
-  announceMode(request);
+  announceMode();
 }
-$('toolMode').onchange = () => switchMode($('toolMode').value);
-window.addEventListener('message', event => {
-  const data = event.data;
-  if (parent === window || event.source !== parent || event.origin !== location.origin ||
-      !data || typeof data !== 'object') return;
-  if (data.type === 'shp-tools-probe') {
-    if (shellUiReady) parent.postMessage({type:'shp-skin-ready'}, location.origin);
-  } else if (data.type === 'shp-tools-connect') {
-    shellConnected = true; $('toolModeRow').hidden = true; announceMode();
-    announceCacheTabs();
-    parent.postMessage({type:'shp-skin-busy',busy:state.busy}, location.origin);
-  } else if (shellConnected && data.type === 'shp-tools-mode' &&
-             ['mask','skintone','frequency','dnb','combine'].includes(data.mode) && Number.isSafeInteger(data.request)) {
-    if (!state.busy) switchMode(data.mode, data.request);
-  }
-});
 function scaleFrequencyRadius() {
   const S = Number($('S').value);
   if (sliders.layerBlur) updateLayerBlurTip();
@@ -1209,12 +1287,11 @@ function setBusy(b, operation=true) {
   if(!b) previewMaskBusy=false;
   syncPanelAvailability();
   state.busy = b;
-  if (shellConnected) parent.postMessage({type:'shp-skin-busy',busy:b}, location.origin);
+  renderTabs();
   const st = $('status');
   st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
   $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
-  $('toolMode').disabled = panelOperationBusy;
   $('landmarkOpen').disabled = panelOperationBusy || !state.loaded;
   $('pcConnect').disabled = b; $('pcGet').disabled = b; $('pcSend').disabled = b || !state.loaded || !state.sourceKind;
   $('pcSendLayers').disabled=b||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
@@ -1621,7 +1698,7 @@ let watchFolderErrors = '';
 let watchFolderLoadError = '';
 async function pollWatchFolder() {
   try {
-    if (!shellUiReady || state.busy || document.hidden || (parent !== window && parent.__shpNavigationLocked)) return;
+    if (!uiReady || state.busy || document.hidden) return;
     const inbox = await api('/api/watch-folder');
     const errors = [inbox.error, ...(inbox.errors || [])].filter(Boolean).join('\n');
     if (errors && errors !== watchFolderErrors) {
@@ -1629,7 +1706,7 @@ async function pollWatchFolder() {
       setStatus('Watch-folder import needs attention. See Log.', true);
     }
     watchFolderErrors = errors;
-    if (!inbox.ready || state.busy || (parent !== window && parent.__shpNavigationLocked)) return;
+    if (!inbox.ready || state.busy) return;
     setBusy(true);
     let loaded = false;
     try {
@@ -1642,8 +1719,8 @@ async function pollWatchFolder() {
       }
       applyLoaded(result);
       loaded = true;
+      settingsOpen = false;
       switchMode('mask');
-      if (shellConnected) parent.postMessage({type:'shp-watch-loaded'}, location.origin);
       watchFolderLoadError = '';
       logNote(`Watch folder: loaded ${result.watch_name}. ${result.watch_cleanup ? 'Inbox file removed.' : result.watch_error}`);
       await initializeHueCenter();
@@ -1799,7 +1876,7 @@ function syncMode() {
   $('pcSendLayers').disabled=state.busy||!state.loaded||!['photocraft','photoshop'].includes(state.sourceKind);
   syncFrequencyControls();
   $('maskOperations').hidden = state.mode !== 'mask';
-  $('toolMode').value = state.mode; $('frequencyMethod').value = state.frequency.method;
+  $('frequencyMethod').value = state.frequency.method; renderTabs();
   $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
   $('g-band2').hidden = !dnb;
   $('g-dnb-shared').hidden = !dnb;
@@ -2371,9 +2448,9 @@ async function loadPresets() {
   try { Object.assign(presets, await api('/api/presets')); } catch (e) { presetErr(e); }
   fillPresetList('default');
   const initialSettings = presetSettings('default');
-  applySettings(parent === window ? initialSettings : {...initialSettings, mode:'mask'}); snapNow();
-  shellUiReady = true;
-  if (parent !== window) parent.postMessage({type:'shp-skin-ready'}, location.origin);
+  // The desktop window opens on Skin Mask; a standalone browser tab keeps the saved default mode.
+  applySettings(window.__shpOwnedDesktop ? {...initialSettings, mode:'mask'} : initialSettings); snapNow();
+  uiReady = true;
 }
 $('presetSel').onchange = () => {
   applySettings(presetSettings($('presetSel').value)); presetButtons(); snapNow();

@@ -1,1 +1,0 @@
-"""Packaged shell UI resources."""

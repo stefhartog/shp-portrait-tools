@@ -1,4 +1,4 @@
-"""Windows desktop host: a pywebview (WebView2) window and a pystray tray icon for the Tools shell.
+"""Windows desktop host: a pywebview (WebView2) window and a pystray tray icon for SHP Portrait Tools.
 
 Run with the project's Python (`python -m shp_portrait_tools.desktop.windows_controller`, normally
 started by the launcher). It speaks the same loopback shell protocol as the GTK controller; the
@@ -129,7 +129,7 @@ class Host(DesktopHost):
             # Navigate only once the document-created script is registered so the first page already has the flags.
             core.AddScriptToExecuteOnDocumentCreatedAsync(
                 "if (window === window.top) window.__shpOwnedDesktop = true;"
-                f"if (location.origin === {json.dumps(self.base)}) window.__shpNativeFileDialog = true;"
+                f"if (location.origin === {json.dumps(self.page or self.base)}) window.__shpNativeFileDialog = true;"
             ).ContinueWith(Action[Task](loaded_script))
 
         form.Invoke(Func[Type](attach))
@@ -145,8 +145,11 @@ class Host(DesktopHost):
     def on_navigation(self, sender, args):
         uri = str(args.Uri)
         parts = urlsplit(uri)
-        if (uri == "about:blank" or uri.startswith("blob:" + self.base + "/")
-                or (f"{parts.scheme}://{parts.netloc}" == self.base and not parts.username and not parts.password)):
+        origin = f"{parts.scheme}://{parts.netloc}"
+        blob = uri.startswith("blob:") and self.trusted_origin(urlsplit(uri[5:])._replace(path="", query="", fragment="")
+                                                              .geturl().rstrip("/"))
+        if (uri == "about:blank" or blob
+                or (self.trusted_origin(origin) and not parts.username and not parts.password)):
             return
         args.Cancel = True
         self.message(f"Blocked navigation outside the owned Tools window: {uri}")
@@ -215,6 +218,7 @@ class Host(DesktopHost):
             print("Tools is already open; asked the existing window to show itself.", flush=True)
             return 0
         self.data.mkdir(parents=True, exist_ok=True)
+        self.resolve_page()
         native_icon = self.data / "shp-photocraft-tools.ico"
         write_icon(native_icon)
         self.create_window()

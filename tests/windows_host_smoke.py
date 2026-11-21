@@ -1,4 +1,4 @@
-"""Real Windows host smoke run (not a unit test): shell + Skin Tools + WebView2 window + tray, fake dialogs.
+"""Real Windows host smoke run (not a unit test): supervisor + Skin Tools + WebView2 window + tray, fake dialogs.
 
 Usage: python tests/windows_host_smoke.py --models <dir with the three Skin Tools onnx files>
 Everything lives in a temp tree; the services are stopped through the host's own Quit path.
@@ -62,7 +62,7 @@ def main():
         if listening(port):
             sys.exit(f"port {port} already in use; refusing to run")
     launcher.launch(config, no_browser=True)
-    check("shell listening", wait_for(lambda: listening(18760)))
+    check("supervisor listening", wait_for(lambda: listening(18760)))
     picks = {"image": str(root / "pick.png"), "folder": str(root), "images": [str(root / "a.png"), str(root / "b.png")]}
 
     class FakeDialogs:
@@ -85,19 +85,13 @@ def main():
 
     def driver():
         try:
-            check("window loaded shell", wait_for(lambda: js("location.origin") == "http://127.0.0.1:18760", 40))
+            check("window reached the Skin Tools page", wait_for(lambda: js("location.origin") == host.page, 60),
+                  str(js("location.href")))
             check("__shpOwnedDesktop", js("window.__shpOwnedDesktop === true"))
             check("__shpNativeFileDialog", js("window.__shpNativeFileDialog === true"))
-            check("shell title", True, js("document.title"))
+            check("tabs in the page", js("document.querySelectorAll('#viewTabs [role=tab]').length") == 5)
             check("tray created", wait_for(lambda: host.tray_ready, 15))
-            frame = wait_for(lambda: js("(document.querySelector('iframe')||{}).src || ''"), 30)
-            check("Skin Tools iframe", frame and "/skin/" in frame, str(frame))
-            if frame:
-                time.sleep(4)
-                inner = js("(()=>{const f=document.querySelector('iframe');try{return f.contentDocument.title+'|'+f.contentWindow.__shpNativeFileDialog}catch(e){return 'x:'+e}})()")
-                check("iframe native flag", str(inner).endswith("|true"), str(inner))
-            reach = js("(()=>{const f=document.querySelector('iframe');try{return f.contentWindow.desktopPicker()!==null}"
-                       "catch(e){return 'x:'+e}})()")
+            reach = js("(()=>{try{return desktopPicker()!==null}catch(e){return 'x:'+e}})()")
             check("page reaches the JS picker bridge", reach is True, str(reach))
             for method, expected in (("pick_image", picks["image"]), ("pick_folder", picks["folder"]),
                                      ("pick_images", picks["images"])):

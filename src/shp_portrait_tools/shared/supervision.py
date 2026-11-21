@@ -17,8 +17,8 @@ class ControlError(RuntimeError):
 class OwnerControl:
     READ_ONLY = {"/api/job", "/api/status", "/api/pc/status", "/api/profile", "/api/tone", "/api/presets"}
 
-    def __init__(self, token, *, busy, loaded):
-        self.token, self.busy, self.loaded = token, busy, loaded
+    def __init__(self, token, *, busy, loaded, ui_clients=lambda: 0):
+        self.token, self.busy, self.loaded, self.ui_clients = token, busy, loaded, ui_clients
         self.lock = threading.RLock()
         self.active = self.revision = 0
         self.stopping = False
@@ -26,7 +26,7 @@ class OwnerControl:
     def snapshot(self):
         with self.lock:
             return {"busy": bool(self.active or self.busy()), "loaded": bool(self.loaded()),
-                    "revision": self.revision, "stopping": self.stopping}
+                    "revision": self.revision, "stopping": self.stopping, "ui_clients": int(self.ui_clients())}
 
     @contextlib.contextmanager
     def work(self, path):

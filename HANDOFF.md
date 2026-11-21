@@ -24,6 +24,18 @@ PhotoCraft reachability for Skin Tools. AI Fill and ComfyUI statements in the se
 describe the pre-split app and are kept as history. The editor handoff still resolves its
 PhotoCraft settings through the `SHPC`/`crop` configuration namespace for compatibility.
 
+## Shell removed; the window loads Skin Tools directly (2026-11-21, Windows first)
+
+The `shell/` package and the supervisor's `/skin/` proxy are gone. The Skin Tools page owns the tab bar and
+the Settings & Info view (theme, source editor/Photoshop pairing, timings, About) and is loaded straight from
+the worker origin. The supervisor serves only health/status/controls/native quit/UI leases plus a status page
+at `/` that moves on to the page once Skin Tools runs; it also hands the old origin's theme and `dnb-*` view
+preferences to the page once. The desktop host shows that status page again after Stop/Restart. Browser tabs
+opened directly on the worker page hold the supervisor up through the worker's tab count. The desktop window
+still opens on Skin Mask and a standalone page on its saved default mode. Older sections below that describe
+shell tabs, iframes, `shp-tools-*` messages or the proxy are history. **Linux is broken until its Qt host
+lands** — see `docs/linux-todo.md`.
+
 ## File pickers through pywebview's JS API (2026-11-21)
 
 Local Open and the batch source now call `window.top.pywebview.api.pick_image()`, `pick_images()` and

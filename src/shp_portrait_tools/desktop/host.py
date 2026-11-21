@@ -1,4 +1,8 @@
-"""Platform-neutral desktop host for the Tools shell: window geometry, status, tray model and the quit flow.
+"""Platform-neutral desktop host: window geometry, status, tray model and the quit flow.
+
+The window first shows the supervisor's status page (`base`), which moves on to the Skin Tools page served
+directly by the worker (`page`) once it is running; after a stop or restart the host shows the status page
+again.
 
 A platform host (today `windows_controller.Host`; later the Linux Qt host) subclasses `DesktopHost` and
 supplies only what differs per platform: native dialogs and file pickers, webview engine hooks, the tray
@@ -71,7 +75,9 @@ class DesktopHost:
     restart_message = " A fresh Tools window will open when shutdown completes."
 
     def __init__(self, url, data, launcher_python=None, launcher_config=None):
-        self.base = validate_url(url)
+        self.base = validate_url(url)  # supervisor: status page, controls, quit, leases
+        self.page = None              # worker: the Skin Tools page, from the supervisor's health
+        self.shown_instance = None
         self.data = data
         self.connection = Connection(self.base)
         self.restart_command = ([launcher_python, "-m", "shp_portrait_tools.launcher",
@@ -114,6 +120,27 @@ class DesktopHost:
 
     def spawn_detached(self, command, log):
         raise NotImplementedError
+
+    # Page address -----------------------------------------------------------------------------
+
+    def resolve_page(self, attempts=40, delay=0.25):
+        """The Skin Tools page origin from the supervisor's configured worker port."""
+        for _ in range(attempts):
+            try:
+                port = self.connection.request("/api/health", timeout=2)["ports"]["skin"]
+                self.page = validate_url(f"http://127.0.0.1:{int(port)}/")
+                return self.page
+            except (OSError, ValueError, KeyError, TypeError):
+                time.sleep(delay)
+        self.message("Could not read the Skin Tools address from Tools; the window shows the status page only.")
+        return None
+
+    def trusted_origin(self, origin):
+        return origin == self.base or (self.page is not None and origin == self.page)
+
+    def show_status_page(self):
+        if self.window is not None and not self.quitting:
+            self.window.load_url(self.base + "/")
 
     # Messages ---------------------------------------------------------------------------------
 
@@ -185,7 +212,7 @@ class DesktopHost:
         events.moved += lambda x, y: self.remember(x=x, y=y)
 
     def on_loaded(self):
-        """Default: no engine hooks, load the shell once."""
+        """Default: no engine hooks, load the status page once."""
         if self.hooked:
             return
         self.hooked = True
@@ -299,11 +326,23 @@ class DesktopHost:
             return
         self.modules = status["modules"] if status else {}
         self.external_lines = external_lines(status.get("external", {})) if status else ("PhotoCraft: Status unavailable",)
+        self.follow_worker(self.modules.get("skin", {}))
         self.refresh_tray()
         if problem:
             self.message(problem)
         elif self.connection.error:
             self.message("Desktop connection: " + self.connection.error)
+
+    def follow_worker(self, state):
+        """Back to the status page when Skin Tools stops or is replaced; it moves on to the page when ready."""
+        phase, instance = state.get("phase"), state.get("instance")
+        if phase == "running" and instance:
+            if self.shown_instance not in (None, instance):
+                self.show_status_page()
+            self.shown_instance = instance
+        elif phase in ("stopped", "error") and self.shown_instance is not None:
+            self.shown_instance = None
+            self.show_status_page()
 
     # Module controls --------------------------------------------------------------------------
 
