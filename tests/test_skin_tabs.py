@@ -135,8 +135,8 @@ scaleFigureLoad({width:4000, height:6000, S:330, head:[0.5, 0.2]});
 assert.equal($('scaleFigure').hidden, false);
 assert.equal($('scaleEyes').textContent, '330 px');
 assert.equal($('scaleAuto').hidden, true);
-assert.equal($('scaleFrame').attrs.height, '230');
-assert.equal($('scaleFrame').attrs.width, '153');
+assert.equal($('scaleFrame').attrs.height, '115');
+assert.equal($('scaleFrame').attrs.width, '77');
 assert.match($('scaleFrame').innerHTML, /class="figure"/);
 assert.doesNotMatch($('scaleFrame').innerHTML, /class="auto"/);
 // Scrolling grows the figure; one commit after the wheel settles sets S once.
@@ -152,7 +152,7 @@ assert.equal(changes, 1);
 assert.equal($('S').value, Math.round(330*1.08*1.08*10)/10);
 // Dragging only moves the figure: no new commit.
 $('scaleFrame').handlers.pointerdown({button:0, clientX:0, clientY:0, pointerId:1});
-$('scaleFrame').handlers.pointermove({clientX:15.3, clientY:23});
+$('scaleFrame').handlers.pointermove({clientX:7.7, clientY:11.5});
 $('scaleFrame').handlers.pointerup({});
 assert.equal(changes, 1);
 assert.ok(Math.abs(scaleFig.cur.hx - 0.6) < 1e-9 && Math.abs(scaleFig.cur.hy - 0.3) < 1e-9);
@@ -167,7 +167,7 @@ assert.equal(scaleFig.cur.hx, 0.5);
 $('S').value = '';
 scaleFigureLoad({width:6000, height:4000, S:null, head:null});
 assert.equal($('scaleEyes').textContent, 'Not found –');
-assert.equal($('scaleFrame').attrs.width, '196');
+assert.equal($('scaleFrame').attrs.width, '98');
 assert.equal($('scaleAuto').hidden, true);
 wheel(1); timers.forEach(fn => fn());
 assert.ok(Number($('S').value) > 0);

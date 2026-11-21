@@ -14,8 +14,10 @@ AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 
 ## Subject scale figure replaces the S box and landmark editor (2026-11-21)
 
-Image analysis shows the scale S as a stick figure in a frame shaped like the photo: an average adult (1700 mm,
-head 13%) whose drawn height is `S × 1700/63 / image height` of the frame, starting with its head at the
+Image analysis shows the scale S as a stick figure in a frame shaped like the photo: an average adult (1700 mm) drawn with the pose
+estimate's proportions (oval head about 150 × 230 mm with two eye dots exactly S apart; shoulders 18%, hip joints
+47%, knees 72%, ankles 96% down from the top of the head, so it lines up with the Analysis pose skeleton), whose
+drawn height is `S × 1700/63 / image height` of the frame, starting with its head at the
 analysed subject's head (`head`, new in the load response: face-box centre, else the nose keypoint, else the
 subject centre, as image fractions; null when nothing was found). Scrolling over the figure resizes it and
 commits S once the wheel settles (one recalculation); dragging moves it for the eye only and is never sent.
@@ -23,6 +25,11 @@ The readout is **eye distance** in pixels, which is S itself (63 mm is the avera
 pupils). A dashed outline of the estimate and an **Auto** button appear after a manual change; Auto restores
 the exact estimate. Without an estimate the figure starts full-length and S stays unset until it is resized.
 S still travels as the hidden `#S` value in every request, so processing, presets and batch are unchanged.
+Layout: the figure (at most 98 × 115 px) sits at the top of Image analysis with the eye distance, the automatic
+value and Auto stacked beside it; the analysis summary text (`#info`) is collapsed under **Details**, above **Log**.
+The full-resolution skin-mask and layer status rows and the plain-browser image list/path box with **Load** are
+gone: cache readiness shows on the tab indicators (a layer-preparation RAM warning is logged once), and loading
+is Get Image only. `/api/images` and `shp-skin-tools --dir` remain on the server but nothing in the page uses them.
 
 Removed: the typed **px / 63 mm** box, the **Adjust scale landmarks** editor (subject/point editing, missing
 points, excluded segments), `/api/landmarks`, `/api/landmarks/estimate`, `/img/landmarks` and the source's
@@ -72,8 +79,7 @@ The PhotoCraft export inbox ("watch folder") is gone: `shared/watch_folder.py`, 
 `/api/watch-folder` and `/api/watch-folder/load`, the page's 3 s poll and auto-load, the desktop hosts'
 wake-to-show poll (`DesktopHost` and the since-removed GTK controller), `platform_paths.watch_directory()`,
 `LINUX_INBOX_ROOT` and the `SKIN_WATCH_DIRECTORY`/`DNB_WATCH_DIRECTORY`/`WATCH_DIRECTORY` variables, with
-their tests. Images come in only through Get Image (editor or local file), the Image analysis list/path box,
-and Standalone batches. The folder migration still moves an old `watchfolder` data entry so the old folder
+their tests. Images come in only through Get Image (editor, or a local file in the desktop window) and Standalone batches. The folder migration still moves an old `watchfolder` data entry so the old folder
 empties, but nothing reads it. `ROOT/inbox` stays: it is the PhotoCraft Get exchange folder.
 
 ## Connection: Photoshop / PhotoCraft / Standalone (2026-11-21)

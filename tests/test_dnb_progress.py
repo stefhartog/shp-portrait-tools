@@ -79,9 +79,9 @@ if (!tilePanel.hidden || tileText.textContent) throw Error('Stale tile diagnosti
             "async function pcSend(layers=false) {", 1)[1].split("$('pcGet').onclick", 1)[0]
         harness = r"""
 const state={busy:false,loaded:true,sourceKind:'photoshop',mode:'frequency',loadEpoch:1,imageGeneration:1};
-const controls={layerCacheStatus:{textContent:''}},$=id=>controls[id];
+const controls={},$=id=>controls[id],notes=[];
 const params=()=>({S:181}),setBusy=b=>state.busy=b,setStatus=()=>{},renderTemporaryLog=()=>{};
-const recordCalculation=()=>{},watchMaskPrecache=()=>{},logNote=()=>{},finishProcessing=()=>{};
+const recordCalculation=()=>{},watchMaskPrecache=()=>{},logNote=text=>notes.push(text),finishProcessing=()=>{};
 const temporaryLog={send:''},performance={now:()=>0};
 let layerPrecacheWatch=0,layerWorkActive=true,steps=[];
 const watchLayerPrecache=()=>{},clearTimeout=()=>{};
@@ -90,11 +90,11 @@ const operationApi=async()=>({document:'test',mask_precache:{},_progress:{steps}
 (async()=>{
   steps=[{label:'Reusing cached Color and Detail'},{label:'Reusing cached skin-aware Blur'}];
   await pcSend(true);
-  if(controls.layerCacheStatus.textContent!=='Reusing cached Color and Detail; Reusing cached skin-aware Blur')
+  if(!notes.includes('Reusing cached Color and Detail; Reusing cached skin-aware Blur'))
     throw Error('missing cache-hit status');
   steps=[{label:'Reusing cached full-resolution skin mask'}];
   await pcSend(true);
-  if(controls.layerCacheStatus.textContent!=='Send used no cached layer pixels')
+  if(notes.at(-2)!=='Send used no cached layer pixels')
     throw Error('mask reuse must not count as a layer cache hit');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
@@ -138,11 +138,11 @@ if (display.textContent.includes('Feather skin mask')) throw Error(display.textC
         watcher = "function watchLayerPrecache(info, epoch) {" + html.split(
             "function watchLayerPrecache(info, epoch) {", 1)[1].split("function watchMaskPrecache(", 1)[0]
         harness = r"""
-const state={loadEpoch:1,imageGeneration:2,combine:{fs_mix:100,dnb_mix:100},band1On:true,secondBand:{on:false}},display={textContent:''},$=()=>display;
+const state={loadEpoch:1,imageGeneration:2,combine:{fs_mix:100,dnb_mix:100},band1On:true,secondBand:{on:false}},notes=[];
 let layerPrecacheWatch=0,layerWorkActive=false,lastLayerPrecacheInfo=null;
 const cacheTabs={frequency:{state:'idle'},dnb:{state:'idle'},combine:{state:'idle'}};
 const layerCacheStamp=()=> 'rev1',announceCacheTabs=()=>{};
-const setTimeout=()=>1,api=async()=>{},logNote=()=>{};
+const setTimeout=()=>1,api=async()=>{},logNote=text=>notes.push(text);
 const updateCacheTimingRows=()=>{};
 """ + watcher + r"""
 for (const [info, expected, active] of [
@@ -154,7 +154,7 @@ for (const [info, expected, active] of [
   [{status:'error',error:'failure'}, 'Preparation failed: failure', false]
 ]) {
   watchLayerPrecache(info,1);
-  if(display.textContent!==expected || layerWorkActive!==active) throw Error('incorrect layer status');
+  if(layerWorkActive!==active) throw Error('incorrect layer activity');
 }
 watchLayerPrecache({status:'running',mode:'mask',generation:2,stamp:'rev1',
   message:'Preparing D&B',tabs:{frequency:{state:'ready',message:'FS ready'},
@@ -177,8 +177,10 @@ watchLayerPrecache({status:'ready',generation:2,stamp:'rev1',
   tabs:{frequency:{state:'ready'},dnb:{state:'unavailable',
     message:'Layer preparation skipped (standalone D&B): 1.50 GiB system RAM available; 2.50 GiB required.'}},
   records:{}},1);
-if(!display.textContent.includes('standalone D&B') || !display.textContent.includes('1.50 GiB') ||
-   !display.textContent.includes('2.50 GiB')) throw Error('partial preparation hid the RAM warning');
+const ram = notes.filter(text => text.includes('standalone D&B') && text.includes('1.50 GiB') && text.includes('2.50 GiB'));
+if(ram.length!==1) throw Error('partial preparation hid the RAM warning');
+watchLayerPrecache(lastLayerPrecacheInfo,1);
+if(notes.filter(text => text.includes('standalone D&B')).length!==1) throw Error('RAM warning repeated on every poll');
 state.combine.fs_mix=100;
 watchLayerPrecache({status:'running',mode:'mask',generation:2,stamp:'rev1',
   tabs:{frequency:{state:'ready',message:'FS ready'},dnb:{state:'ready',message:'D&B ready'},
@@ -271,7 +273,7 @@ for (const [status,cached,enabled,expected] of [
         html = T.S.HTML.read_text(encoding="utf-8")
         details = "function calculationDetailLines(" + html.split(
             "function calculationDetailLines(", 1)[1].split("function cacheTimingLine(", 1)[0]
-        operation = "let loadProgress = null;" + html.split("let loadProgress = null;", 1)[1].split("async function loadList()", 1)[0]
+        operation = "let loadProgress = null;" + html.split("let loadProgress = null;", 1)[1].split("function applyLoaded(r) {", 1)[0]
         get = "async function pcGet() {" + html.split("async function pcGet() {", 1)[1].split("async function pcSend(", 1)[0]
         # Local Open goes through the picker helpers; this fake window has no JS bridge, so it uses the prompt.
         get += "function desktopPicker() {" + html.split("function desktopPicker() {", 1)[1].split(
@@ -554,15 +556,11 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
                 setStatus('Failed',true);check(symbol.className==='err');
               }})();
             """
-        self.assertEqual(html.count('id="maskCacheStatus"'), 1)
-        self.assertNotIn('id="maskPrecache"', html)
-        operations = html.split('<div id="maskOperations">', 1)[1].split('<div id="info">', 1)[0]
-        self.assertIn('id="maskCacheStatus"', operations)
-        self.assertNotIn('id="transferFormat"', operations)
-        self.assertNotIn('id="maskPrecache"', operations)
+        # Cache readiness shows on the tab indicators; Image analysis has no status rows or manual Load.
+        for removed in ('id="maskCacheStatus"', 'id="layerCacheStatus"', 'id="maskPrecache"', 'id="loadBtn"', 'id="imgPath"'):
+            self.assertNotIn(removed, html)
         general = html.split('id="generalSettingsContent"', 1)[1].split('<div id="app"', 1)[0]
         self.assertIn('id="calculationLogText"', general)
-        self.assertIn("$('maskOperations').hidden = state.mode !== 'mask'", html)
         self.assertIn("watchMaskPrecache(r.mask_precache, state.loadEpoch)", html)
         settings_harness = """
           (() => {
@@ -1034,7 +1032,7 @@ const document={createElement:()=>{const img={decode:async()=>{}};pending.push(i
         self.assertNotIn(".tab:hover", css)
         self.assertNotIn("button.workflow:disabled", css)
         for package, expected in (
-            ("modules.skin.ui", {"pcGet", "pcSend", "pcSendLayers", "loadBtn", "save", "batchChooseSource", "batchStart"}),
+            ("modules.skin.ui", {"pcGet", "pcSend", "pcSendLayers", "save", "batchChooseSource", "batchStart"}),
         ):
             page = files("shp_portrait_tools."+package).joinpath("index.html").read_text()
             workflow = set()

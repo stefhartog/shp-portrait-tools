@@ -176,7 +176,9 @@ independently. See the [scale estimator guide](skin-tools-architecture.md#automa
 for the cue weights, test calibration, and fallback rules.
 
 Under **Image analysis**, scroll over the stick figure until it is about the size
-of the person in the photo (the photo is next to it). Drag it to line it up if that
+of the person in the photo (the photo is next to it). Its joints sit where the yellow
+pose skeleton's do (shoulders, hips, knees, ankles), and its two eye dots are exactly one
+eye distance apart, so in close-ups you can match the eyes. Drag it to line it up if that
 helps; only its size matters. The eye distance updates and the previews recalculate
 once you stop scrolling. A dashed outline shows the automatic estimate, and **Auto**
 goes back to it. Precision isn't needed: matching the head size is usually enough,

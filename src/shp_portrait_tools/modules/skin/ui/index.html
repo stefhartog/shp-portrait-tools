@@ -119,7 +119,7 @@
   .pan .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--dim); }
   details { margin-top:6px; color:var(--dim); }
   details.grp { margin-top:0; }
-  #standaloneLoad[hidden], details.grp[hidden], .tab[hidden] { display:none; }
+  details.grp[hidden], .tab[hidden] { display:none; }
   #g-bands, #g-mask, #g-frequency { border-top:0; }
   details.grp > summary .hint { text-transform:none; letter-spacing:0; font-weight:400; }
   details.grp > summary::after { display:none; }
@@ -127,10 +127,6 @@
   details.mask-group > summary { gap:8px; }
   details.mask-group > summary label { display:flex; align-items:center; gap:4px; margin-left:auto; flex:none; color:var(--dim); font-size:11px; font-weight:400; letter-spacing:0; text-transform:none; cursor:pointer; }
   details.mask-group > summary input { margin:0; }
-  #maskCacheStatus { display:inline-block; width:1em; text-align:center; }
-  #maskCacheStatus.running { animation:mask-cache-spin 1s linear infinite; }
-  @keyframes mask-cache-spin { to { transform:rotate(360deg); } }
-  @media (prefers-reduced-motion:reduce) { #maskCacheStatus.running { animation:none; } }
   .color-pick { display:flex; align-items:center; gap:6px; margin:4px 0; }
   .sub-title { display:flex; align-items:center; gap:8px; }
   .color-swatch { width:14px; height:14px; flex:none; padding:0; border:1px solid var(--line); border-radius:3px; background:var(--bg); cursor:pointer; }
@@ -147,13 +143,19 @@
     .pan { height: 70vh; flex:none; }
   }
   .pan.zin { cursor:zoom-in; } .pan.zout { cursor:zoom-out; }
-  #scaleFrame { display:block; margin:6px auto 4px; touch-action:none; cursor:grab; }
+  #scaleFigure { display:flex; align-items:flex-start; gap:12px; margin:2px 0 10px; }
+  #scaleFigure[hidden] { display:none; }
+  #scaleReadout { display:flex; flex-direction:column; align-items:flex-start; gap:6px; padding-top:2px; }
+  #scaleFrame { display:block; flex:none; touch-action:none; cursor:grab; }
   #scaleFrame:active { cursor:grabbing; }
-  #scaleFrame .frame { fill:none; stroke:var(--dim); stroke-width:1.5; }
-  #scaleFrame .figure { fill:none; stroke:var(--text); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
-  #scaleFrame .auto { fill:none; stroke:var(--dim); stroke-width:1.2; stroke-dasharray:4 3; stroke-linecap:round; }
-  #scaleAuto { padding:1px 8px; margin-inline-start:auto; }
-  #scaleAutoValue { margin:0 6px; color:var(--dim); }
+  #scaleFrame .frame { fill:none; stroke:var(--dim); stroke-width:1.2; }
+  #scaleFrame .figure { fill:none; stroke:var(--text); stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+  #scaleFrame .auto { fill:none; stroke:var(--dim); stroke-width:1; stroke-dasharray:3 2; stroke-linecap:round; }
+  #scaleFrame .figure .eye { fill:var(--text); stroke:none; }
+  #scaleFrame .auto .eye { fill:var(--dim); stroke:none; }
+  #scaleAuto { padding:1px 8px; }
+  #scaleAutoValue { color:var(--dim); }
+  #analysisDetails { margin-top:8px; }
   .distribution { display:block; width:100%; height:110px; background:var(--input); border:1px solid var(--line); border-radius:4px; transform:translateX(-2px); }
 </style>
 </head>
@@ -321,21 +323,20 @@
   <details class="grp" id="g-file" open>
     <summary>Image analysis</summary>
     <div class="gbody">
-      <div id="maskOperations">
-        <div class="row" id="maskPrecacheRow"><span>Full-resolution skin mask</span> <span id="maskCacheStatus" role="status" aria-live="polite" aria-label="No matching full-resolution skin mask cached" title="No matching full-resolution skin mask cached">&#10007;</span></div>
-      </div>
-      <div class="row"><span>Full-resolution layers</span> <span id="layerCacheStatus" role="status" aria-live="polite">not prepared</span></div>
-      <div id="standaloneLoad" hidden>
-        <div class="row"><select id="imgSel" style="flex:1"></select><button class="workflow" id="loadBtn">Load</button></div>
-        <div class="row"><input type="text" id="imgPath" placeholder="or a path to an image" style="flex:1"></div>
-      </div>
-      <div id="info">No photo loaded.</div>
       <input type="hidden" id="S">
       <div id="scaleFigure" hidden>
         <svg id="scaleFrame" role="img" aria-label="Subject scale: scroll to resize the figure, drag to move it"
              title="Subject scale. Scroll over the figure to resize it to the person in the photo; drag to move it. The size sets the eye distance (pixels between the pupils) that size-based controls use."></svg>
-        <div class="row"><span title="Pixels between the subject's pupils (the scale S). Scroll over the figure to change it." style="cursor:help"><b id="scaleEyes"></b> eye distance</span> <span id="scaleAutoValue" title="The automatic estimate for this image" hidden></span><button id="scaleAuto" title="Back to the automatic estimate" hidden>Auto</button></div>
+        <div id="scaleReadout">
+          <span title="Pixels between the subject's pupils (the scale S). Scroll over the figure to change it." style="cursor:help"><b id="scaleEyes"></b> eye distance</span>
+          <span id="scaleAutoValue" title="The automatic estimate for this image" hidden></span>
+          <button id="scaleAuto" title="Back to the automatic estimate" hidden>Auto</button>
+        </div>
       </div>
+      <details id="analysisDetails">
+        <summary>Details</summary>
+        <div id="info">No photo loaded.</div>
+      </details>
       <details id="temporaryLog">
         <summary>Log</summary>
         <pre id="temporaryLogText">No activity yet.</pre>
@@ -891,10 +892,10 @@ function scaleFrequencyRadius() {
 $('S').onchange = () => { scaleFrequencyRadius(); markDirty(); };
 
 /* ---------- subject scale: a stick figure sized from S (pixels between the pupils, 63 mm) ---------- */
-// The figure is an average adult (1700 mm tall, as estimate_body_scale.BODY_H_MM; head 13% of that), drawn in a
-// frame shaped like the photo.
+// The figure is an average adult (1700 mm tall, as estimate_body_scale.BODY_H_MM), drawn in a frame shaped like
+// the photo, with an oval head whose two eye dots are exactly S apart.
 // Its size is S; its position is only a visual aid (it starts at the detected head) and is never sent.
-const SCALE_BODY_EYES = 1700 / 63, SCALE_HEAD = 0.13, SCALE_BOX = [196, 230];
+const SCALE_BODY_EYES = 1700 / 63, SCALE_BOX = [98, 115];
 const scaleFig = {auto:null, cur:null, timer:0};
 function scaleFigureLoad(r) {
   const ok = r.width > 0 && r.height > 0;
@@ -907,13 +908,26 @@ function scaleFigureLoad(r) {
   scaleFig.cur = {S:r.S > 0 ? r.S : r.height * 0.85 / SCALE_BODY_EYES, hx, hy, w:r.width, h:r.height, set:r.S > 0};
   drawScaleFigure();
 }
+// Joint positions as fractions of body height, from the top of the head down, after the same Drillis & Contini
+// proportions as the pose estimate (shoulders 18%, hip joints 47%, knees 72%, ankles 96%), so the figure lines up
+// with the yellow pose skeleton in Analysis. x offsets are from the body's centre line, also in body heights.
+const SCALE_JOINTS = {
+  shoulder:[.097, .182], elbow:[.157, .37], wrist:[.207, .5],         // slightly female build: narrower shoulders,
+  hip:[.068, .47], knee:[.078, .715], ankle:[.09, .96], toe:[.12, 1]};  // wider hips (only the look; S is unaffected)
+const SCALE_HEAD = {rx:.045, ry:.067, eyeHalf:.5 * 63 / 1700};  // head about 150 x 230 mm; pupils 63 mm apart
 function scaleStick(f, bw, bh) {
-  const H = f.S * SCALE_BODY_EYES / scaleFig.cur.h * bh, d = SCALE_HEAD * H, x = f.hx * bw, top = f.hy * bh - d / 2;
-  const y = v => top + v * H, n = v => v.toFixed(1);
-  return `<circle cx="${n(x)}" cy="${n(y(SCALE_HEAD / 2))}" r="${n(d / 2)}"/>` +
-    `<path d="M${n(x)} ${n(y(SCALE_HEAD))}V${n(y(.53))}M${n(x)} ${n(y(.2))}L${n(x - .2 * H)} ${n(y(.42))}` +
-    `M${n(x)} ${n(y(.2))}L${n(x + .2 * H)} ${n(y(.42))}M${n(x)} ${n(y(.53))}L${n(x - .13 * H)} ${n(y(1))}` +
-    `M${n(x)} ${n(y(.53))}L${n(x + .13 * H)} ${n(y(1))}"/>`;
+  const H = f.S * SCALE_BODY_EYES / scaleFig.cur.h * bh, x = f.hx * bw, top = f.hy * bh - SCALE_HEAD.ry * H;
+  const n = v => v.toFixed(1), P = (dx, v) => `${n(x + dx * H)} ${n(top + v * H)}`;
+  const J = SCALE_JOINTS, side = k => [J.shoulder, J.elbow, J.wrist].map(([dx, v]) => P(k * dx, v)).join('L');
+  const leg = k => [J.hip, J.knee, J.ankle, J.toe].map(([dx, v]) => P(k * dx, v)).join('L');
+  const eye = Math.max(0.8, 0.006 * H), ey = n(top + SCALE_HEAD.ry * H);
+  return `<ellipse cx="${n(x)}" cy="${ey}" rx="${n(SCALE_HEAD.rx * H)}" ry="${n(SCALE_HEAD.ry * H)}"/>` +
+    `<circle class="eye" cx="${n(x - SCALE_HEAD.eyeHalf * H)}" cy="${ey}" r="${n(eye)}"/>` +
+    `<circle class="eye" cx="${n(x + SCALE_HEAD.eyeHalf * H)}" cy="${ey}" r="${n(eye)}"/>` +
+    `<path d="M${P(0, 2 * SCALE_HEAD.ry)}L${P(0, J.hip[1])}` +                       // neck and spine
+    `M${P(-J.shoulder[0], J.shoulder[1])}L${P(J.shoulder[0], J.shoulder[1])}` +       // shoulders
+    `M${P(-J.hip[0], J.hip[1])}L${P(J.hip[0], J.hip[1])}` +                           // hips
+    `M${side(-1)}M${side(1)}M${leg(-1)}M${leg(1)}"/>`;
 }
 function scaleFigureManual() {
   const a = scaleFig.auto, c = scaleFig.cur;
@@ -1235,11 +1249,6 @@ function recordLoadStage(label, seconds) {
   loadProgress.steps.push(seconds === undefined ? label : `${label} in ${seconds.toFixed(2)}s`);
   renderLoadTimings();
 }
-async function loadList() {
-  const list = await api('/api/images');
-  const sel = $('imgSel'); sel.innerHTML = '';
-  list.forEach(i => { const o = document.createElement('option'); o.value = i.path; o.textContent = i.name; sel.append(o); });
-}
 function applyLoaded(r) {
     state.loadingImage = false;
     endPreviewCompare();
@@ -1314,25 +1323,6 @@ async function initializeHueCenter() {
   logNote(state.hueCenterNote);
   drawSkintone(null);
 }
-async function loadImage() {
-  if (state.busy) return;
-  const path = $('imgPath').value.trim() || $('imgSel').value;
-  if (!path) return;
-  beginLoadTimings('Loading image...');
-  setBusy(true); setStatus('Loading image...');
-  let loaded = false;
-  try {
-    applyLoaded(await operationApi('/api/load', {path}));
-    loaded = true;
-    await initializeHueCenter();
-  } catch (e) {
-    restoreAfterFailedLoad();
-    recordLoadStage('Image load/analysis failed: '+e.message);
-    loadProgress.finished = true; setStatus(e.message, true);
-  }
-  setBusy(false);
-  if (loaded) apply();
-}
 let panelOperationBusy = false, previewMaskBusy = false;
 const panelIntrinsicDisabled = new WeakMap();
 function syncPanelAvailability() {
@@ -1365,7 +1355,7 @@ function setBusy(b, operation=true) {
   const st = $('status');
   st.setAttribute('aria-busy', String(b));
   if (!st.classList.contains('err')) st.className = b ? 'busy' : statusOk ? 'ok' : '';
-  $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded; $('loadBtn').disabled = b;
+  $('apply').disabled = b || !state.loaded; $('save').disabled = b || !state.loaded;
   $('pcGet').disabled = b; syncTransferButtons();
   $('editorSelect').disabled=b; $('photoshopPair').disabled=b; $('photoshopRevoke').disabled=b;
   ['colorSwatch', 'toneSwatch'].forEach(id => {
@@ -1498,11 +1488,6 @@ function renderMaskCacheStatus(value) {
     : value.error ? `Full-resolution skin mask failed: ${value.error}`
     : value.status === 'queued' ? 'Full-resolution skin mask queued; not cached yet'
     : value.message || 'No matching full-resolution skin mask cached');
-  const symbol = $('maskCacheStatus');
-  symbol.textContent = running ? '\u21bb' : cached ? '\u2713' : '\u2717';
-  symbol.classList.toggle('running', running);
-  symbol.title = label;
-  symbol.setAttribute('aria-label', label);
   const cacheState = running || value.status === 'queued' ? 'warming'
     : cached ? 'ready' : value.enabled === false || value.error || value.status === 'skipped' ? 'unavailable' : 'idle';
   setCacheTab('mask', cacheState, label);
@@ -1518,7 +1503,6 @@ function invalidateLayerPrecache() {
   lastLayerPrecacheInfo = null;
   ++layerPrecacheWatch;
   clearTimeout(watchLayerPrecache.timer);
-  $('layerCacheStatus').textContent = 'not prepared';
   if (temporaryLog.cache.layers) updateCacheTimingRows('layers', {status:'idle'});
   for (const mode of ['frequency','dnb','combine']) {
     if (cacheTabs[mode].state === 'warming')
@@ -1543,7 +1527,6 @@ function watchLayerPrecache(info, epoch) {
                     superseded:'Preparation superseded', skipped:'Not prepared'};
     const message = value.error ? 'Preparation failed: '+value.error
       : value.message || labels[value.status] || value.status;
-    $('layerCacheStatus').textContent = message;
     if (value.stamp === layerCacheStamp() && value.generation === state.imageGeneration) {
       updateCacheTimingRows('layers', value);
       for (const mode of ['frequency','dnb','combine']) {
@@ -1572,11 +1555,12 @@ function watchLayerPrecache(info, epoch) {
         else cacheTabs[mode] = {state:'idle',label:value.budget_note || 'Matching components are not retained'};
       }
     }
-    if (value.budget_note) $('layerCacheStatus').textContent += ' '+value.budget_note;
     if (value.stamp === layerCacheStamp() && value.generation === state.imageGeneration) {
       const warnings = [...new Set(Object.values(value.tabs || {}).filter(tab => tab.state === 'unavailable')
         .map(tab => tab.message).filter(text => text?.includes('system RAM') && !message.includes(text)))];
-      if (warnings.length) $('layerCacheStatus').textContent += ' ' + warnings.join(' ');
+      const warning = warnings.join(' ');  // also on the tab indicators; log each new warning once, not every poll
+      if (warning && warning !== watchLayerPrecache.warned) logNote(warning);
+      watchLayerPrecache.warned = warning;
     }
     announceCacheTabs();
     if (layerWorkActive || Object.values(value.records || {}).some(record =>
@@ -1654,7 +1638,7 @@ async function pcGet() {
   try {
     let path = null;
     if (connection === 'standalone') {
-      if (!window.__shpNativeFileDialog) throw new Error('Get Image needs the Tools desktop window. In a browser, use the Image analysis list or path box and press Load; Send Result then saves beside that source.');
+      if (!window.__shpNativeFileDialog) throw new Error('Get Image needs the Tools desktop window to choose a local image.');
       path = await chooseImage();
       if (!path) { restoreAfterFailedLoad(); recordLoadStage('Image selection cancelled'); loadProgress.finished = true; setStatus('Image selection cancelled.'); return; }
     } else if (connection === 'photocraft') {
@@ -1697,7 +1681,7 @@ async function pcSend(layers=false) {
       watchLayerPrecache(r.layer_precache, state.loadEpoch);
       const reused = new Set((r._progress?.steps || []).map(step => step.label).filter(label =>
         ['Reusing cached Color and Detail', 'Reusing cached skin-aware Blur', 'Reusing cached D&B layers'].includes(label)));
-      $('layerCacheStatus').textContent = reused.size ? [...reused].join('; ') : 'Send used no cached layer pixels';
+      logNote(reused.size ? [...reused].join('; ') : 'Send used no cached layer pixels');
     }
     logNote(r.saved ? `Saved result: ${r.path}` : `Sent to ${r.document}.`);
     finishProcessing(started);
@@ -1855,9 +1839,7 @@ async function startBatch() {
   } finally { $('batchCancel').hidden=true; $('batchCancel').disabled=true; setBusy(false); }
 }
 $('batchStart').onclick = startBatch;
-addEventListener('load', () => { $('standaloneLoad').hidden = !!window.__shpNativeFileDialog; });
-$('loadBtn').onclick = loadImage; $('apply').onclick = apply; $('save').onclick = save;
-$('imgSel').onchange = () => { $('imgPath').value = ''; };
+$('apply').onclick = apply; $('save').onclick = save;
 const tabSel = {A: 'result', B: localStorage.getItem('dnb-tabB')};
 function rightPreviewKinds(mode) {
   return mode === 'combine' ? ['fs_result','dnb_result','mask'] : mode === 'frequency' ? ['color', 'detail', ...(state.directional?.on ? ['directional_region'] : [])] : mode === 'dnb' ? ['layer', 'layer2'] : ['mask', 'analysis'];
@@ -1885,7 +1867,6 @@ function syncMode() {
   const dnb = state.mode==='dnb', frequency = state.mode==='frequency';
   $('g-combine').hidden=state.mode!=='combine';
   syncFrequencyControls();
-  $('maskOperations').hidden = state.mode !== 'mask';
   $('frequencyMethod').value = state.frequency.method; renderTabs();
   $('g-bands').hidden = !dnb; $('g-frequency').hidden = !frequency;
   $('g-band2').hidden = !dnb;
@@ -2345,7 +2326,7 @@ $('presetRemove').onclick = async () => {
 /* start at a fixed window size (app window only) */
 if (window === window.top && (window.matchMedia('(display-mode: standalone)').matches || !window.menubar.visible)) { try { resizeTo(1347, 994); } catch (e) {} }
 /* ---------- start ---------- */
-setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets(); loadList().catch(e => setStatus(e.message, true));
+setToneSwatch(); renderBands(); drawProfile(); drawTone(); loadPresets();
 </script>
 </body>
 </html>

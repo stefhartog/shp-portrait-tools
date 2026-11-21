@@ -81,8 +81,8 @@ before anything that needs `sudo`; `sudo` needs a real terminal, not the `!` pre
 3. ~~`--browser` mode~~ (Ungoogled Chromium app window): dropped on 2026-11-21. An old `ungoogled_chromium`
    key in `launcher.json` is ignored; use the Qt window or `--no-browser` and a normal browser.
 4. **Plain-browser pickers.** Without the pywebview bridge the page falls back to `prompt('SHP_OPEN_*')`,
-   which no host answers any more, so a plain browser shows a raw prompt. Decide whether to replace it with
-   a path box or a hint.
+   which no host answers any more, so a plain browser shows a raw prompt. The image list/path box was removed
+   on 2026-11-21, so a plain browser cannot load a local image; decide whether that matters.
 5. **Tests** (`tests/run.py` on Linux with `photocraft-cli` installed: 492 tests, 114 failures, 8 errors).
    These look stale rather than Linux-specific: most are in tests that skip without `photocraft-cli`, so
    they never ran on Windows.
