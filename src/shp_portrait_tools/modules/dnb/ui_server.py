@@ -1,6 +1,6 @@
 """SHP Portrait Tools Skin Tools: local skin-mask, FS/tone, dodge & burn and Combine UI.
 
-Run: uv run shp-photocraft-dnb [--port 8765] [--dir pictures ...]
+Run: uv run shp-skin-tools [--port 8765] [--dir pictures ...]
 Then open http://127.0.0.1:8765 in a browser. The server only listens on 127.0.0.1.
 
 The page lets you pick a photo, set bands (feature-size range in mm, gain, taper) and global settings, press Apply to

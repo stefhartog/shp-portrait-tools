@@ -140,7 +140,7 @@ validation alone does not establish rendering fidelity.
    old tray's Restart or Reload UI to switch installations. For a developer start:
 
    ```powershell
-   python -m uv run shp-photocraft-dnb --port 18765
+   python -m uv run shp-skin-tools --port 18765
    ```
 
    The connector uses `http://localhost:18765`, while Tools remains bound to

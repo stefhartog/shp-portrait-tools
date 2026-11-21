@@ -101,7 +101,7 @@ The table below gives the broader application context from this handoff.
 | `comfy.py` | Dedicated existing ComfyUI runtime watchdog, listener ownership and queue-aware shutdown. |
 
 Standalone commands are `shp-photocraft-crop` / `shpcrop` (port **8768**) and
-`shp-photocraft-dnb` / `shpdnb` (port **8765**). The supervised shell uses **18760**
+`shp-skin-tools` (old aliases `shp-photocraft-dnb` / `shpdnb`, port **8765**). The supervised shell uses **18760**
 and owned backends **18768 / 18765**, plus optional owned Comfy **18788**.
 Skin Mask, FS & Tone, Dodge & Burn, Combine, Crop & Expand, Patch Fill, Settings & Info is the shell DOM/keyboard order.
 The four Skin Tools tabs share one iframe/service. Skin Mask is initially selected

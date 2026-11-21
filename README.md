@@ -130,7 +130,7 @@ needed then unless you prepare the cache in advance.
 Run Skin Tools as a local web app without the native desktop window:
 
 ```sh
-uv run --no-sync shp-photocraft-dnb --dir "$HOME/Pictures"
+uv run --no-sync shp-skin-tools --dir "$HOME/Pictures"
 ```
 
 Open the local address printed at startup. It requires the NVIDIA GPU dependencies

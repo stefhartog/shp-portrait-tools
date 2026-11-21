@@ -2182,7 +2182,7 @@ wheels = [
 ]
 
 [[package]]
-name = "shp-photocraft-tools"
+name = "shp-portrait-tools"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

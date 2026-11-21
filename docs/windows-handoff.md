@@ -231,9 +231,9 @@ Commands (from the worktree; nothing is installed, no shortcut/registry/Start me
 
 ```powershell
 python -m uv sync --locked --extra gpu           # includes win32-only pywebview + pystray
-python -m uv run --no-sync shp-photocraft-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
-python -m uv run --no-sync shp-photocraft-tools                  # starts shell + Skin Tools and opens the window
-python -m uv run --no-sync shp-photocraft-tools --no-browser     # services only; open http://127.0.0.1:18760/
+python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-photocraft-tools\launcher.json
+python -m uv run --no-sync shp-portrait-tools                  # starts shell + Skin Tools and opens the window
+python -m uv run --no-sync shp-portrait-tools --no-browser     # services only; open http://127.0.0.1:18760/
 ```
 
 `launcher.json` defaults: models `%LOCALAPPDATA%\shp-photocraft-tools\dnb\models`, ports crop
@@ -409,7 +409,7 @@ $env:SHP_PC_EXCHANGE = Join-Path $private 'exchange'
 $env:SHP_PC_READ_ROOT = $env:SHP_PC_EXCHANGE
 $env:PHOTOCRAFT_CONFIG_DIR = Join-Path $private 'editor-settings'
 & "$env:ProgramFiles\PhotoCraft\photocraft.exe" --control 7878 --control-token-file $env:SHP_PC_TOKEN_FILE --automation-read-root $env:SHP_PC_READ_ROOT --automation-write-root $env:SHP_PC_EXCHANGE
-python -m uv run --no-sync shp-photocraft-tools
+python -m uv run --no-sync shp-portrait-tools
 ```
 
 Use the actual executable path if installed elsewhere; set `PHOTOCRAFT_BIN` to it

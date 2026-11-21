@@ -108,7 +108,7 @@ route for the file-picking and batch instructions in this guide.
 For an already prepared checkout, standalone services can instead be started with:
 
 ```sh
-uv run --no-sync shp-photocraft-dnb --dir /absolute/path/to/pictures
+uv run --no-sync shp-skin-tools --dir /absolute/path/to/pictures
 uv run --no-sync shp-photocraft-crop --dir /absolute/path/to/pictures --comfy http://127.0.0.1:8188
 ```
 

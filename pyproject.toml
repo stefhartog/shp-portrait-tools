@@ -1,7 +1,7 @@
 [project]
-name = "shp-photocraft-tools"
+name = "shp-portrait-tools"
 version = "0.1.0"
-description = "SHP PhotoCraft Crop and SHP PhotoCraft D&B, with shared local UI and PhotoCraft transport"
+description = "SHP Portrait Tools: local Skin Tools retouching with PhotoCraft and Photoshop transfer"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -25,6 +25,9 @@ gpu = [
 research = ["matplotlib>=3.11.2", "jupyter>=1.1.1"]
 
 [project.scripts]
+shp-portrait-tools = "shp_portrait_tools.launcher:main"
+shp-skin-tools = "shp_portrait_tools.modules.dnb.ui_server:main"
+# Old command names, kept for one release; remove after the next tagged release.
 shp-photocraft-tools = "shp_portrait_tools.launcher:main"
 shp-photocraft-dnb = "shp_portrait_tools.modules.dnb.ui_server:main"
 shpdnb = "shp_portrait_tools.modules.dnb.ui_server:main"
