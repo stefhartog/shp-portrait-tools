@@ -152,7 +152,8 @@
   #scaleFrame .frame { fill:none; stroke:var(--dim); stroke-width:1.5; }
   #scaleFrame .figure { fill:none; stroke:var(--text); stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; }
   #scaleFrame .auto { fill:none; stroke:var(--dim); stroke-width:1.2; stroke-dasharray:4 3; stroke-linecap:round; }
-  #scaleAuto { padding:1px 8px; }
+  #scaleAuto { padding:1px 8px; margin-inline-start:auto; }
+  #scaleAutoValue { margin:0 6px; color:var(--dim); }
   .distribution { display:block; width:100%; height:110px; background:var(--input); border:1px solid var(--line); border-radius:4px; transform:translateX(-2px); }
 </style>
 </head>
@@ -333,7 +334,7 @@
       <div id="scaleFigure" hidden>
         <svg id="scaleFrame" role="img" aria-label="Subject scale: scroll to resize the figure, drag to move it"
              title="Subject scale. Scroll over the figure to resize it to the person in the photo; drag to move it. The size sets the eye distance (pixels between the pupils) that size-based controls use."></svg>
-        <div class="row"><span title="Pixels between the subject's pupils (the scale S). Scroll over the figure to change it." style="cursor:help"><b id="scaleEyes"></b> eye distance</span><button id="scaleAuto" title="Back to the automatic estimate" hidden>Auto</button></div>
+        <div class="row"><span title="Pixels between the subject's pupils (the scale S). Scroll over the figure to change it." style="cursor:help"><b id="scaleEyes"></b> eye distance</span> <span id="scaleAutoValue" title="The automatic estimate for this image" hidden></span><button id="scaleAuto" title="Back to the automatic estimate" hidden>Auto</button></div>
       </div>
       <details id="temporaryLog">
         <summary>Log</summary>
@@ -561,7 +562,8 @@ function renderAnalysisSummary() {
   $('info').textContent = [
     `${image.name} — ${image.width} × ${image.height}`,
     `Colour/profile: ${image.colour || 'unavailable'}`,
-    `Eye distance (S): ${scale > 0 ? value(scale)+' px ('+scaleType+')' : 'unavailable'}`,
+    `Eye distance (S): ${scale > 0 ? value(scale)+' px ('+scaleType+')' : 'unavailable'}` +
+      (scaleType === 'manual' && Number.isFinite(state.estS) ? `; estimated ${value(state.estS)} px` : ''),
     image.scale_comparison ? `S comparison: baseline ${value(image.scale_comparison.baseline)}; torso + head ${value(image.scale_comparison.body_priority)} (${image.scale_comparison.method})` : '',
     `Detection confidence: ${image.confidence || 'unavailable'}; ${image.desc || 'no scale cue'}`,
     `Detected mask: ${image.has_mask ? 'available' : 'unavailable'}${Number.isFinite(image.mask_pct) ? ' ('+image.mask_pct+'%)' : ''}`,
@@ -929,6 +931,9 @@ function drawScaleFigure() {
     `<rect class="frame" x=".75" y=".75" width="${bw - 1.5}" height="${bh - 1.5}" rx="3"/>`;
   $('scaleEyes').textContent = c.set ? `${Math.round(c.S)} px` : 'Not found –';
   $('scaleAuto').hidden = !(scaleFig.auto && manual);
+  // Adjusted and automatic side by side, so a correction can be compared with (and calibrate) the estimate.
+  $('scaleAutoValue').hidden = !(scaleFig.auto && manual && c.set);
+  $('scaleAutoValue').textContent = scaleFig.auto ? `auto ${Math.round(scaleFig.auto.S)} px` : '';
 }
 function commitScale() {
   const c = scaleFig.cur; if (!c?.set) return;

@@ -143,6 +143,8 @@ assert.doesNotMatch($('scaleFrame').innerHTML, /class="auto"/);
 wheel(-1); wheel(-1);
 assert.equal($('scaleEyes').textContent, Math.round(330*1.08*1.08) + ' px');
 assert.equal($('scaleAuto').hidden, false);
+assert.equal($('scaleAutoValue').hidden, false);
+assert.equal($('scaleAutoValue').textContent, 'auto 330 px');
 assert.match($('scaleFrame').innerHTML, /class="auto"/);
 assert.equal(changes, 0);
 timers.forEach(fn => fn());
@@ -159,6 +161,7 @@ $('scaleAuto').onclick();
 assert.equal($('S').value, 330);
 assert.equal(changes, 2);
 assert.equal($('scaleAuto').hidden, true);
+assert.equal($('scaleAutoValue').hidden, true);
 assert.equal(scaleFig.cur.hx, 0.5);
 // No estimate: a figure to start from, nothing committed until the user resizes it; no Auto to go back to.
 $('S').value = '';
@@ -169,6 +172,7 @@ assert.equal($('scaleAuto').hidden, true);
 wheel(1); timers.forEach(fn => fn());
 assert.ok(Number($('S').value) > 0);
 assert.equal($('scaleAuto').hidden, true);
+assert.equal($('scaleAutoValue').hidden, true);
 """
         result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
