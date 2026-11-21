@@ -104,7 +104,7 @@ On Linux, clone the repository into a new folder, then install its Python enviro
 For Windows Skin Tools, see the [Windows setup notes](docs/windows-handoff.md#windows-port-status-skin-tools-standalone).
 
 ```sh
-git clone https://github.com/stefhartog/shp-photocraft-tools.git "$HOME/shp-photocraft-tools"
+git clone https://github.com/stefhartog/shp-portrait-tools.git "$HOME/shp-photocraft-tools"
 cd "$HOME/shp-photocraft-tools"
 uv python install 3.13
 uv sync --locked --extra gpu

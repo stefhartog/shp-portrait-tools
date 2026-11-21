@@ -12,8 +12,8 @@ AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 
 ## Scope, ownership and activation
 
-The private monorepo is `stefhartog/shp-photocraft-tools`, local checkout
-`/home/stef/shp-photocraft-tools`, branch `main`. The migration used the original Crop/D&B
+The public monorepo is [`stefhartog/shp-portrait-tools`](https://github.com/stefhartog/shp-portrait-tools)
+(renamed from `shp-photocraft-tools`), local checkout `/home/stef/shp-photocraft-tools`, branch `main`. The migration used the original Crop/D&B
 sources read-only; those checkouts are not runtime dependencies. No personal photos,
 presets, credentials, environments or model binaries are shipped.
 

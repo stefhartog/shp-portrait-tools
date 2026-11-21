@@ -18,7 +18,7 @@ release. This guide does not claim a fresh computer has been tested end to end.
 ## 1. Check your computer before installing
 
 You need a Linux desktop, internet access for downloads, permission to install
-system packages, and access to the **private** Tools repository/current source.
+system packages, and a copy of the public Tools repository (cloned below).
 The commands below assume a normal Bash-style terminal and default home-directory
 locations. `$HOME` means your home folder, not someone else's `/home/stef`.
 
@@ -121,16 +121,15 @@ git --version
 
 **Check:** both print version numbers.
 
-If the maintainer has published the required source to the private repository:
+Clone the public repository:
 
 ```sh
-git clone https://github.com/stefhartog/shp-photocraft-tools.git "$HOME/shp-photocraft-tools"
+git clone https://github.com/stefhartog/shp-portrait-tools.git "$HOME/shp-photocraft-tools"
 cd "$HOME/shp-photocraft-tools"
 git log -1 --oneline
 ```
 
-You need GitHub access; use GitHub's supported authentication without putting
-tokens in commands or URLs. Do not clone over an existing folder. If you received
+The repository is public, so no GitHub sign-in is needed. Do not clone over an existing folder. If you received
 a source archive instead, unpack it into a new folder and open Terminal there.
 
 **Check with the maintainer:** this source must contain the current rename and
@@ -442,7 +441,7 @@ The helper does not silently start PhotoCraft for an external-editor request.
 
 | Problem | What to check |
 | --- | --- |
-| Private clone fails/current tabs missing | Confirm GitHub access and that the maintainer supplied the updated source; old `6e23398` alone lacks later features. |
+| Clone fails/current tabs missing | Check the clone URL and your internet connection, and that you have the current source; old `6e23398` alone lacks later features. |
 | `uv: command not found` | Open a new terminal and follow the uv installer's PATH instructions. |
 | NVIDIA/CUDA/model failure | Check driver compatibility, locked GPU dependencies, three model hashes and pose downloads. Do not assume CPU fallback will work. |
 | Missing GTK/WebKit/AppIndicator | Recheck exact system namespaces/packages and tray support for your distro. The bindings use `/usr/bin/python3`, not the uv environment. |
