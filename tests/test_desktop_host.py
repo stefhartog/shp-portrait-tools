@@ -200,6 +200,41 @@ const window = {get top(){ return top; }, prompt: request => (prompts.push(reque
         result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_window_geometry_keeps_the_normal_size_and_remembers_maximized(self):
+        host = self.host
+        host.window = Mock(width=1200, height=800, x=40, y=30)
+        host.save_geometry()
+        saved = json.loads((host.data / "window.json").read_text())
+        self.assertEqual(saved, {"width": 1200, "height": 800, "x": 40, "y": 30, "maximized": False})
+        # Maximized: the normal size stays, only the flag changes, whatever the window reports meanwhile.
+        host.window_state = "maximized"
+        host.window.width, host.window.height, host.window.x, host.window.y = 2560, 1400, -8, -8
+        host.save_geometry()
+        saved = json.loads((host.data / "window.json").read_text())
+        self.assertEqual(saved, {"width": 1200, "height": 800, "x": 40, "y": 30, "maximized": True})
+        # Minimized: nothing is captured (Windows reports off-screen coordinates).
+        host.window_state = "minimized"
+        host.window.x = host.window.y = -32000
+        host.save_geometry()
+        self.assertTrue(json.loads((host.data / "window.json").read_text())["maximized"])
+        # A fresh host reopens maximized with the remembered normal size.
+        fresh = FakeHost(host.data)
+        fresh.load_geometry()
+        self.assertEqual(fresh.window_state, "maximized")
+        self.assertEqual((fresh.geometry["width"], fresh.geometry["x"]), (1200, 40))
+
+    def test_show_never_unmaximizes_and_undoes_only_a_minimize(self):
+        host = self.host
+        host.raise_window = Mock()
+        for state, maximized, expected in (("maximized", True, []), ("normal", False, []),
+                                           ("minimized", True, ["maximize"]), ("minimized", False, ["restore"])):
+            host.window = Mock()
+            host.window_state, host.geometry = state, {"maximized": maximized}
+            host.show()
+            host.window.show.assert_called_once()
+            called = [name for name in ("maximize", "restore") if getattr(host.window, name).called]
+            self.assertEqual(called, expected, state)
+
     def test_page_address_trusted_origins_and_following_the_worker(self):
         host = self.host
         host.connection.request.return_value = {"ports": {"skin": 18765}}

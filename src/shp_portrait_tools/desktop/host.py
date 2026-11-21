@@ -93,6 +93,7 @@ class DesktopHost:
         self.external_lines = external_lines({})
         self.geometry = {}
         self.geometry_timer = None
+        self.window_state = "normal"  # normal | maximized | minimized, from the window's state events
         self.last_notice = None
         self.quit_signature = None
 
@@ -162,25 +163,50 @@ class DesktopHost:
             if (not isinstance(geometry, dict)
                     or any(type(geometry.get(key)) is not int or geometry[key] <= 0 for key in ("width", "height"))
                     or any(key in geometry and type(geometry[key]) is not int for key in ("x", "y"))
-                    or (("x" in geometry) != ("y" in geometry))):
+                    or (("x" in geometry) != ("y" in geometry))
+                    or type(geometry.get("maximized", False)) is not bool):
                 raise ValueError("Invalid saved window geometry")
             self.geometry = geometry
+            if geometry.get("maximized"):
+                self.window_state = "maximized"
         except FileNotFoundError:
             pass
         except (OSError, ValueError) as error:
             print(f"Cannot restore window size from {path}: {error}", file=sys.stderr, flush=True)
 
-    def remember(self, **values):
-        if any(v <= -30000 for v in values.values()):  # minimized windows report off-screen coordinates
-            return
-        self.geometry.update(values)
+    def remember(self, *_):
+        """Any size, position or state change: save once things settle (the events arrive in no fixed order)."""
         if self.geometry_timer:
             self.geometry_timer.cancel()
         self.geometry_timer = threading.Timer(0.5, self.save_geometry)
         self.geometry_timer.daemon = True
         self.geometry_timer.start()
 
+    def set_window_state(self, state):
+        self.window_state = state
+        self.remember()
+
+    def capture_geometry(self):
+        """Read the window as it is now. The normal size and position are only taken while it is neither maximized nor
+        minimized, so a maximized (or minimized) window keeps the size it returns to."""
+        if self.window is None or self.window_state == "minimized":
+            return
+        if self.window_state == "maximized":
+            self.geometry["maximized"] = True
+            return
+        try:
+            values = {"width": self.window.width, "height": self.window.height, "x": self.window.x, "y": self.window.y}
+        except Exception as error:  # the native window can already be gone during shutdown
+            print(f"Cannot read window geometry: {error}", file=sys.stderr, flush=True)
+            return
+        if any(type(v) is not int for v in values.values()) or values["width"] <= 0 or values["height"] <= 0:
+            return
+        if values["x"] <= -30000 or values["y"] <= -30000:  # minimized windows report off-screen coordinates
+            return
+        self.geometry.update(values, maximized=False)
+
     def save_geometry(self):
+        self.capture_geometry()
         if not {"width", "height"} <= set(self.geometry):
             return
         path = self.data / "window.json"
@@ -203,12 +229,16 @@ class DesktopHost:
         self.window = webview.create_window(
             WINDOW_TITLE, html=f"<body style='background:{BACKGROUND}'></body>",
             width=self.geometry.get("width", DEFAULT_SIZE[0]), height=self.geometry.get("height", DEFAULT_SIZE[1]),
+            maximized=bool(self.geometry.get("maximized")),
             min_size=MINIMUM_SIZE, background_color=BACKGROUND, js_api=PickerApi(self), **options)
         events = self.window.events
         events.closing += self.on_closing
         events.loaded += self.on_loaded
-        events.resized += lambda width, height: self.remember(width=width, height=height)
-        events.moved += lambda x, y: self.remember(x=x, y=y)
+        events.resized += self.remember
+        events.moved += self.remember
+        events.maximized += lambda: self.set_window_state("maximized")
+        events.minimized += lambda: self.set_window_state("minimized")
+        events.restored += lambda: self.set_window_state("normal")
 
     def on_loaded(self):
         """Default: no engine hooks, load the status page once."""
@@ -243,10 +273,15 @@ class DesktopHost:
         return False
 
     def show(self):
+        """Bring the window back as it was: never un-maximize it (restore() would), only undo a minimize."""
         if self.window is None:
             return
         self.window.show()
-        self.window.restore()
+        if self.window_state == "minimized":
+            if self.geometry.get("maximized"):
+                self.window.maximize()
+            else:
+                self.window.restore()
         self.raise_window()
 
     def hide(self):
@@ -504,7 +539,7 @@ class DesktopHost:
         self.quitting = True
         if self.geometry_timer:
             self.geometry_timer.cancel()
-            self.save_geometry()
+        self.save_geometry()
         self.stop_tray()
         self.window.destroy()
 
