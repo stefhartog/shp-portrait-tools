@@ -83,6 +83,37 @@ assert.equal(nodes.settingsView.hidden, false);
         result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_connection_decides_send_buttons_and_batch_panel(self):
+        code = "function syncTransferButtons() {" + HTML.split("function syncTransferButtons() {", 1)[1].split(
+            "[['A', $('tabsA')]", 1)[0]
+        script = r"""
+const assert = require('node:assert/strict');
+const nodes = {}; const $ = id => nodes[id] ??= {id, hidden:false, disabled:false, title:'', value:''};
+const state = {busy:false, loaded:true, sourceKind:'local', mode:'combine'};
+""" + code + r"""
+const visible = () => ['pcSend','pcSendLayers','g-batch'].filter(id => !$(id).hidden);
+$('editorSelect').value = 'standalone'; syncTransferTitles();
+assert.deepEqual(visible(), ['pcSend','g-batch']);
+assert.equal($('pcSend').disabled, false);
+state.mode = 'dnb'; syncTransferTitles();
+assert.deepEqual(visible(), ['pcSend'], 'batch stays a Combine panel');
+for (const editor of ['photoshop', 'photocraft']) {
+  $('editorSelect').value = editor; state.mode = 'combine'; state.sourceKind = 'local'; syncTransferTitles();
+  assert.deepEqual(visible(), ['pcSendLayers']);
+  assert.equal($('pcSendLayers').disabled, true, 'a local source cannot be sent to an editor');
+  state.sourceKind = editor; state.mode = 'mask'; syncTransferTitles();
+  assert.deepEqual(visible(), ['pcSendLayers'], 'the mask tab sends the mask through Send Layers');
+  assert.equal($('pcSendLayers').disabled, false);
+  assert.match($('pcSendLayers').title, /skin mask layer/);
+}
+"""
+        result = subprocess.run([shutil.which("node"), "-"], input=script, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('id="pcConnect"', HTML)
+        self.assertEqual(re.findall(r'<select id="editorSelect">(.*?)</select>', HTML)[0],
+                         '<option value="photoshop">Photoshop</option><option value="photocraft">PhotoCraft</option>'
+                         '<option value="standalone">Standalone</option>')
+
     def test_markup_has_one_tab_per_view_and_settings_live_in_the_page(self):
         self.assertEqual(re.findall(r'role="tab" aria-selected="[^"]+" data-view="([^"]+)"', HTML),
                          ["mask", "frequency", "dnb", "combine", "settings"])

@@ -61,6 +61,18 @@ class EditorSelectionTests(unittest.TestCase):
         self.assertEqual(saved["mask_placement"], "layers")
         self.assertEqual(saved["layer_transfer"]["format"], "tiff")
 
+    def test_standalone_is_stored_and_has_no_editor_bridge(self):
+        self.assertEqual(U.api_editor({"editor": "standalone"})["editor"], "standalone")
+        U.EDITOR["selected"] = "photocraft"
+        U.restore_editor_selection()
+        self.assertEqual(U.EDITOR["selected"], "standalone")
+        self.assertEqual(json.loads(self.settings.read_text())["source_editor"], "standalone")
+        self.assertEqual(U.api_pc_status({})["code"], "standalone")
+        for call in (U.bridge, lambda: U.api_pc_fetch({}), lambda: U.api_pc_launch({})):
+            with self.assertRaisesRegex(ValueError, "Standalone has no editor connection"):
+                call()
+        U.PhotoshopBroker.assert_not_called()
+
     def test_legacy_or_missing_selection_defaults_to_photocraft_without_writing(self):
         for contents in (None, '{"custom": "keep"}'):
             if contents is not None:

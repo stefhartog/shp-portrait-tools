@@ -10,6 +10,19 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## Connection: Photoshop / PhotoCraft / Standalone (2026-11-21)
+
+Settings & Info's **connection** select (`source_editor` in global settings, `/api/editor`) is now
+`photoshop`, `photocraft` or `standalone` (default still `photocraft`). The page's bar shows **Get Image**
+plus, for Photoshop/PhotoCraft, **Send Layers** on every tab (the Skin Mask tab sends the mask layer; the
+flattened RGB16 Send Result to an editor is no longer offered), or, for Standalone, **Send Result** (one
+numbered PNG beside the source). Get Image in PhotoCraft mode reads only a running controlled PhotoCraft
+window and reports an error otherwise (no local-file fallback, no PhotoCraft/launch button; `/api/pc/launch`
+remains for the live test). Standalone Get Image opens a local file through the desktop picker; Batch
+Processing (Combine tab) is shown only in Standalone. In Standalone the server has no editor bridge:
+`/api/pc/status` reports `code: "standalone"`, and `/api/pc/fetch`/`launch` refuse before touching the
+loaded image. Watch-folder handoff stays PhotoCraft-only.
+
 ## AI Fill split (2026-11-21)
 
 AI Fill (`modules/crop`, Crop & Expand and Patch Fill), `comfy.py` (Tools-managed ComfyUI) and

@@ -1715,6 +1715,8 @@ def api_save(req):
 
 BRIDGE = {"b": None, "doc": None}
 EDITOR = {"selected": "photocraft", "photoshop": None, "broker": None}
+# The connection chosen in Settings & Info. Standalone opens and saves local files and has no editor bridge.
+EDITORS = ("photoshop", "photocraft", "standalone")
 
 
 def photoshop_broker():
@@ -1725,8 +1727,8 @@ def photoshop_broker():
 
 def api_editor(req):
     selected = req.get("editor", EDITOR["selected"])
-    if selected not in ("photocraft", "photoshop"):
-        raise ValueError("editor must be photocraft or photoshop")
+    if selected not in EDITORS:
+        raise ValueError("editor must be photoshop, photocraft or standalone")
     if selected != EDITOR["selected"] and selected == "photoshop":
         photoshop_broker()
     if "editor" in req:
@@ -1750,8 +1752,8 @@ def restore_editor_selection():
         if not isinstance(settings, dict):
             raise ValueError("global settings must be an object")
         selected = settings.get("source_editor", "photocraft")
-        if selected not in ("photocraft", "photoshop"):
-            raise ValueError("source editor must be photocraft or photoshop")
+        if selected not in EDITORS:
+            raise ValueError("source editor must be photoshop, photocraft or standalone")
     EDITOR["selected"] = selected
     BRIDGE["doc"] = None
     return settings
@@ -1767,6 +1769,8 @@ def api_photoshop_revoke(req):
 
 
 def bridge():
+    if EDITOR["selected"] == "standalone":
+        raise ValueError("Standalone has no editor connection; choose Photoshop or PhotoCraft in Settings & Info")
     if EDITOR["selected"] == "photoshop":
         if EDITOR["photoshop"] is None:
             EDITOR["photoshop"] = PSB.Bridge(photoshop_broker())
@@ -1777,6 +1781,9 @@ def bridge():
 
 
 def api_pc_status(req):
+    if EDITOR["selected"] == "standalone":
+        return {"connected": False, "message": "Standalone has no editor connection.", "code": "standalone",
+                "fetched": None}
     try:
         if EDITOR["selected"] == "photoshop" and not photoshop_broker().connected():
             return {"connected": False, "message": "Open the Skin Tools Connector panel in Photoshop and pair/connect.",
@@ -1794,6 +1801,7 @@ def api_pc_fetch(req):
     capture_format = req.get("photoshop_capture", "raw")
     if capture_format not in ("raw", "png"):
         raise ValueError("Photoshop capture must be raw or png")
+    bridge()  # Standalone refuses here, before the loaded image is given up
     begin_image_replacement()
     options = {"capture_format": capture_format} if editor == "photoshop" else {}
     source, doc = progress.call("Getting merged image from " + ("Photoshop" if editor == "photoshop" else "PhotoCraft"),
@@ -2006,8 +2014,8 @@ def read_global_settings():
             migrate = True
         if settings["mask_placement"] not in ("folder", "layers"):
             raise ValueError("mask placement must be folder or layers")
-        if settings.get("source_editor", "photocraft") not in ("photocraft", "photoshop"):
-            raise ValueError("source editor must be photocraft or photoshop")
+        if settings.get("source_editor", "photocraft") not in EDITORS:
+            raise ValueError("source editor must be photoshop, photocraft or standalone")
         backend = processing_service.dnb_backend_settings(settings)
         if migrate:
             write_global_settings(settings)

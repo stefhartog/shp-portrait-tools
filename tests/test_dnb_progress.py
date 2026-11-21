@@ -77,7 +77,6 @@ if (!tilePanel.hidden || tileText.textContent) throw Error('Stale tile diagnosti
         html = T.S.HTML.read_text(encoding="utf-8")
         send = "async function pcSend(layers=false) {" + html.split(
             "async function pcSend(layers=false) {", 1)[1].split("$('pcGet').onclick", 1)[0]
-        send = send.split("$('pcConnect').onclick", 1)[0]
         harness = r"""
 const state={busy:false,loaded:true,sourceKind:'photoshop',mode:'frequency',loadEpoch:1,imageGeneration:1};
 const controls={layerCacheStatus:{textContent:''}},$=id=>controls[id];
@@ -330,8 +329,15 @@ const api=async(path,body)=>{
     throw Error('Photoshop capture error failed');
   failure=null;
   connected=false; controls.editorSelect.value='photocraft'; await pcGet();
-  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image selection cancelled')||applied!==3)
-    throw Error('cancellation failed');
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: disconnected')||applied!==3)
+    throw Error('disconnected PhotoCraft did not fail Get');
+  controls.editorSelect.value='standalone'; calls=[]; await pcGet();
+  if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image selection cancelled')||applied!==3||calls.length)
+    throw Error('Standalone cancellation failed');
+  selected='C:/photo.png'; await pcGet();
+  if(state.busy||applied!==4||calls.includes('/api/pc/status')||!calls.includes('/api/load'))
+    throw Error('Standalone Get did not open the local image');
+  controls.editorSelect.value='photocraft';
   failure='connection failed'; await pcGet();
   if(state.busy||!loadProgress.finished||!loadProgress.steps.includes('Image Get/analysis failed: connection failed'))
     throw Error('connection error failed');
