@@ -5,6 +5,74 @@ current and verified live; **Linux is knowingly broken** until the items below a
 pull on the Linux machine. Tests that need Linux (GTK, JavaScriptCore, Firefox, `/proc`, pidfds,
 bubblewrap) could not run on Windows; their status is noted per item.
 
+## Start here: update the Linux machine and get Tools running
+
+For the AI session on the Linux machine. Read `CLAUDE.md` first (it is written for Windows; on Linux use
+plain `uv`, not `python -m uv`). Ask the user before stopping a running Tools instance, before moving or
+replacing any existing file, and before anything that needs `sudo`. Run each step from a normal terminal
+in the checkout, not from a sandbox that redirects `$HOME`.
+
+The checkout lives at **`~/shp-photocraft-tools`** and must stay there: the Linux watch folder is
+`/home/stef/shp-photocraft-tools/watchfolder` (`platform_paths.LINUX_INBOX_ROOT`, ignored by git), and the
+installed launcher points into this folder's `.venv`. So update it **in place**; do not clone into a new
+folder or move the old one aside.
+
+1. **Quit Tools.** Ask the user to quit from the tray (or close the Tools window and stop the services) and
+   to save any work first. Check nothing is left: `pgrep -af shp_photocraft_tools`,
+   `ss -ltnp | grep -E ':(18760|18765|18768)\b'`. If something remains, show it to the user; don't kill it
+   without their OK.
+2. **Pull the current `main` from GitHub.**
+   ```sh
+   cd ~/shp-photocraft-tools
+   git status --short          # must be clean (ignored inbox/models/settings are fine)
+   git remote -v               # expect github.com/stefhartog/shp-portrait-tools
+   git fetch origin
+   git switch main
+   git pull --ff-only origin main
+   git log --oneline -1        # compare with the newest commit on GitHub
+   ```
+   If `git status` shows local changes, or the pull is not a fast-forward, stop and ask the user (offer
+   `git stash` or a backup branch); never reset or discard their work. If the remote still has the old
+   repository name, GitHub redirects; `git remote set-url origin https://github.com/stefhartog/shp-portrait-tools.git`
+   only with the user's OK.
+3. **Rebuild the environment** (the package was renamed to `shp_portrait_tools`, so this must be a real
+   sync, not `--no-sync`):
+   ```sh
+   uv sync --locked --extra gpu
+   uv run --no-sync python -c "import shp_portrait_tools, sys; print(shp_portrait_tools.__file__, sys.version)"
+   ```
+4. **Reinstall the desktop launcher.** The old `~/.local/bin/shp-photocraft-tools` wrapper still runs
+   `shp_photocraft_tools.launcher`, which no longer exists. The installer first migrates the folders
+   (`~/.local/share|~/.config|~/.local/state/shp-photocraft-tools` → `shp-portrait-tools`, `data/dnb` →
+   `data/skin`, `launcher.json` paths rewritten; see item 5 under "What changed" below), then writes the
+   wrapper, `launcher.json`, the `.desktop` files and icons.
+   - Note the old settings first: `cat ~/.config/shp-photocraft-tools/launcher.json` (or the
+     `shp-portrait-tools` one if already migrated) for `models` and `exiftool`.
+   - Models end up in `~/.local/share/shp-portrait-tools/skin/models` after the migration.
+   ```sh
+   uv run --no-sync python scripts/install_desktop.py \
+     --models "$HOME/.local/share/shp-portrait-tools/skin/models" [--exiftool /path/to/exiftool]
+   ```
+   It refuses to overwrite a file whose content differs ("Refusing to overwrite an existing different
+   file: …"); the old wrapper and `launcher.json` will differ. With the user's OK, rename exactly the file it
+   names to `<file>.bak-YYYYMMDD` and run it again, one file at a time. Afterwards check
+   `~/.config/shp-portrait-tools/launcher.json` (`ports.skin` 18765; old `dnb`/`crop`/`comfy` keys are gone or
+   ignored) and that `~/.local/share/shp-portrait-tools/skin` holds the models, presets and settings.
+5. **Start it without the native window** (the GTK window is broken until item 1 of "To do" is done):
+   ```sh
+   uv run --no-sync shp-portrait-tools --no-browser
+   ```
+   Open `http://127.0.0.1:18760/` in a normal browser: the status page moves on to Skin Tools
+   (`http://127.0.0.1:18765/`). Check the five tabs, Settings & Info (connection Photoshop/PhotoCraft/
+   Standalone; PhotoCraft is the one that matters on Linux), Get Image from PhotoCraft and Send Layers.
+   In a plain browser Standalone's Get Image has no file picker; use the Image analysis list or path box.
+   Logs: `~/.local/state/shp-portrait-tools/` and `~/.local/share/shp-portrait-tools/state/`.
+6. **Run the tests** and compare with "Run and fix the Linux-only tests" below:
+   `uv run --no-sync python tests/run.py`.
+7. Then work through **To do**, starting with the Qt host. AI Fill is now the separate
+   `github.com/stefhartog/shp-ai-fill` repository; clone it into its own folder only if the user wants it
+   on this machine (its data stays in `~/.local/share/shp-photocraft-tools/crop`).
+
 ## What changed under Linux's feet
 
 1. **The shell and its `/skin/` proxy are gone.** The supervisor (port 18760) now serves only health,
