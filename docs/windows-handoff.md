@@ -44,9 +44,9 @@ user's live taskbar.
 
 The normal shortcut/supervisor starts the same Skin Tools service that includes the Photoshop
 connector backend; no alternate startup command or new shortcut arguments are needed. Choose
-**Settings & Info > Source editor** in Skin Tools. That choice is stored as `source_editor` in the
-existing `%APPDATA%\shp-portrait-tools\settings.json`, preserving other settings and the PhotoCraft
-transport. Older settings default to PhotoCraft. Restarts restore the choice, not a fetched document
+**Settings & Info > connection** (Photoshop, PhotoCraft or Standalone) in Skin Tools. That choice is stored
+as `source_editor` in the existing `%APPDATA%\shp-portrait-tools\settings.json`, preserving other settings
+and the PhotoCraft transport. Older settings default to PhotoCraft. Restarts restore the choice, not a fetched document
 or connection; Photoshop must reconnect before Get Image, and disconnected Photoshop never silently
 falls back to PhotoCraft. The shortcut must target a durable installation containing the changes;
 quit Tools from its tray when work is finished, close other Tools browser windows, and open the
@@ -72,8 +72,9 @@ Reviewed **2026-11-16** against published `main` in
 [`stefhartog/shp-portrait-tools`](https://github.com/stefhartog/shp-portrait-tools),
 commit `ea615e74ce49d98f55f4bcd5b87af68f001c7d26` (before this documentation update).
 Start from fresh `main` and record its SHA; do not copy a dirty Linux installation.
-The repository/product rename does not rename Python packages, commands, environment
-variables, existing config/data directories or internal module IDs.
+Since 2026-11-21 the package is `shp_portrait_tools`, the commands are `shp-portrait-tools` and
+`shp-skin-tools`, the folders are `shp-portrait-tools` and the module ID is `skin` (see CLAUDE.md and the
+dated sections at the top of HANDOFF for what kept its old name).
 Read [README](../README.md), [HANDOFF](../HANDOFF.md) and [MODELS](../MODELS.md) first.
 Older handoff/setup documents still contain historical repository names and machine
 paths; use the repository above and configure paths locally.
@@ -193,98 +194,89 @@ browser, batch/PhotoCraft send.
 - `comfy.py` remains Linux-only (rejected in the Windows launcher config). The launcher,
   supervisor and ownership primitives now have Windows paths; see the desktop host section.
 
-## Windows desktop host design (pywebview + pystray)
+## Windows desktop host (pywebview + pystray)
 
-Decision: one Windows host process shows the existing shell in a pywebview (WebView2) window
-and a pystray tray icon. The WebUI, shell protocol (`/api/status`, `/api/modules/*`,
-`/api/ui/*`, `/api/ui/native-quit`) and the supervisor that owns the services are reused, so the
-only new UI-side code is `desktop/windows_controller.py`; the Linux GTK controller is not modified.
-Scope: Skin Tools (`dnb`, 18765 in the launcher) first. AI Fill (`crop`) is wired only because the
-supervisor already treats both modules uniformly (tray rows, start/stop); it is off by default in
-the Windows config and not verified (it needs a ComfyUI that is not ported).
+Current state (2026-11-21). One `pythonw.exe` host process shows a pywebview (WebView2) window and a
+pystray tray icon. The supervisor (18760) owns one Skin Tools worker (18765); there is no shell and no
+proxy. The window first loads the supervisor's status page (`supervisor.STATUS_PAGE`), which moves on to the
+Skin Tools page served directly by the worker once it runs; that page owns the tab bar (Skin Mask, FS &
+Tone, Dodge & Burn, Combine, Settings & Info). After a stop or restart the host shows the status page again.
+
+Code:
+
+- `desktop/host.py` `DesktopHost` — platform-neutral: window geometry, status polling, tray model, module
+  controls (Start/Stop/Restart, Load on startup), quit/restart/reload confirmations with the 90 s drain wait,
+  the page origin from `/api/health` `ports.skin`, `trusted_origin()` for both origins, and the watch-folder
+  poll on the **worker** origin (`/api/watch-folder`; a failure there never clears the tray status).
+- `desktop/windows_controller.py` `Host(DesktopHost)` — WebView2 hooks (injects `__shpOwnedDesktop` in the top
+  frame and `__shpNativeFileDialog` for the worker origin; navigation allowed only to the two origins and their
+  `blob:` URLs), `MessageBox` for `alert`/`confirm`, the pystray menu built from the shared model, named
+  mutex/event single instance, and the process-identity helpers for restart.
+- File pickers: pywebview `js_api` `PickerApi` (`pick_image`, `pick_images`, `pick_folder`); the page calls
+  `window.top.pywebview.api` and asks Folder-or-Images in its own `#batchSourceDialog`. The host no longer
+  answers `prompt('SHP_OPEN_*')` (those return cancelled).
+- `shared/windows_process.py` — identity `(pid, creation FILETIME)`; each supervised service is spawned
+  suspended, put in its own Job Object, then resumed; only that job is ever terminated, after pid + creation
+  time are verified. The job allows breakaway so that **PhotoCraft started by Skin Tools leaves it**
+  (`popen_outside_job`: `CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS`, falling back without breakaway if an
+  outer job forbids it). Without that, a running PhotoCraft kept the job non-empty and tray Quit/Restart failed
+  with "Owned job still has processes".
 
 | Linux responsibility | Windows mapping |
 |---|---|
-| Launcher single-flight lock (`fcntl.flock`) | `shared/filelock.py`: `msvcrt.locking` on a lock file (same call sites as `flock`) |
-| `/usr/bin/python3`, XDG paths | `sys.executable`; `%LOCALAPPDATA%`/`%APPDATA%` via `platform_paths`; `launcher.json` written explicitly by `--init-config`, never implicitly |
-| Single desktop instance (GTK application ID) | Named mutex per shell URL; a second launch signals a named event so the first window shows itself, then exits |
-| Process identity (`/proc` session id + start ticks) | `(pid, creation FILETIME)` from `GetProcessTimes`; recorded at spawn and rechecked before any stop |
-| Ownership/termination (session + pidfds) | Each service the supervisor spawns is placed in its own Job Object (`CREATE_NEW_PROCESS_GROUP`); only that job is ever terminated, and only after pid + creation time are verified. Port listeners the host did not start are never touched. Graceful owner-protocol stop stays first. |
-| Child exits when supervisor dies (`getppid`) | Supervisor pid + creation time passed in the environment and polled (Windows keeps a stale parent pid) |
-| Hide to tray / tray menu | Window close hides to the pystray icon; menu mirrors the GTK one (service rows, Show/Hide, Restart, Force Restart, Quit) |
-| Busy / unsent-edit guards | Same `/api/status` busy and `(instance, revision, loaded)` signature checks and confirmation dialogs before native-quit; shared helpers moved to `desktop/protocol.py` |
-| Native pickers | WebView2 `ScriptDialogOpening` answers the same `SHP_OPEN_IMAGE_V1`, `SHP_OPEN_BATCH_FOLDER_V1`, `SHP_OPEN_BATCH_IMAGES_V1`, `SHP_OPEN_BATCH_SOURCE_V1` prompts with pywebview file/folder dialogs; `__shpNativeFileDialog` is injected for the app origin in all frames and `__shpOwnedDesktop` in the top frame via `AddScriptToExecuteOnDocumentCreated` |
-| Wake/show/import from both inboxes | Same 3 s poll of `/<module>/api/watch-folder`; a new ready token shows the window |
-| SIGTERM quit | `SIGBREAK`/Ctrl+C request the same confirmed quit path; tray Quit is primary |
+| Launcher single-flight lock (`fcntl.flock`) | `shared/filelock.py`: `msvcrt.locking` on a lock file |
+| `/usr/bin/python3`, XDG paths | `pythonw.exe` from the venv; `%LOCALAPPDATA%`/`%APPDATA%` via `platform_paths`; `launcher.json` written explicitly by `--init-config` |
+| Single desktop instance | Named mutex; a second launch signals a named event so the first window shows itself, then exits |
+| Process identity (`/proc` session + start ticks) | `(pid, creation FILETIME)` recorded at spawn and rechecked before any stop |
+| Ownership/termination (session + pidfds) | Job Object per supervised service; graceful owner-protocol stop first; user editors break away |
+| Child exits when supervisor dies (`getppid`) | Supervisor pid + creation time passed in the environment and polled |
+| Hide to tray / tray menu | Close hides to the tray; menu: PhotoCraft line, Skin Tools submenu, Show/Hide, Reload UI, Restart, Force Restart, Quit |
+| Busy / unsent-edit guards | Same `/api/status` busy and `(instance, revision, loaded)` signature checks before native-quit |
 
-Known weakening versus Linux: only the services the supervisor spawns are job-contained (spawned
-suspended, assigned to their own Job Object, then resumed, so nothing can escape in a gap). The
-launcher-spawned supervisor and the desktop host are not in a job; they are identified by
-`SHP_SERVER_INSTANCE`/`(pid, creation time)` and the supervisor exits its children when it exits.
-Closing the window hides it (tray Quit is the only way to stop services; Ctrl+C/SIGBREAK is not
-handled while the WinForms loop runs, so a killed host leaves the supervisor running until its
-lifetime lease expires).
+Known weakening versus Linux: the launcher-spawned supervisor and the desktop host are not in a job; they are
+identified by `SHP_SERVER_INSTANCE`/`(pid, creation time)`. A killed host leaves the supervisor running until
+its lifetime lease expires. Ctrl+C/SIGBREAK is not handled while the WinForms loop runs.
 
-### Windows desktop host: implemented
-
-Commands (from the worktree; nothing is installed, no shortcut/registry/Start menu is touched):
+Commands:
 
 ```powershell
-python -m uv sync --locked --extra gpu           # includes win32-only pywebview + pystray
-python -m uv run --no-sync shp-portrait-tools --init-config   # once; writes %APPDATA%\shp-portrait-tools\launcher.json
-python -m uv run --no-sync shp-portrait-tools                  # starts shell + Skin Tools and opens the window
-python -m uv run --no-sync shp-portrait-tools --no-browser     # services only; open http://127.0.0.1:18760/
+python -m uv sync --locked --extra gpu                          # includes win32-only pywebview + pystray
+python -m uv run --no-sync shp-portrait-tools --init-config      # once; writes %APPDATA%\shp-portrait-tools\launcher.json
+python -m uv run --no-sync shp-portrait-tools                    # supervisor + Skin Tools + window
+python -m uv run --no-sync shp-portrait-tools --no-browser       # services only; open http://127.0.0.1:18760/
 ```
 
-`launcher.json` defaults: models `%LOCALAPPDATA%\shp-portrait-tools\skin\models`, ports crop
-18768 / dnb 18765, shell 18760, startup `{crop: false, dnb: true}`; `comfy` is rejected on Windows.
-`SHP_TOOLS_DATA` relocates the data/state tree (used by the smoke test). Logs: `<data>\state\*.log`
-and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
+`launcher.json` defaults: models `%LOCALAPPDATA%\shp-portrait-tools\skin\models`, `ports.skin` 18765,
+`shell_port` 18760 (the supervisor; the key keeps its old name), `startup.skin` true. Legacy `dnb`/`crop`/`comfy`
+entries are accepted (`dnb` maps to `skin`, the others are ignored). `SHP_TOOLS_DATA` relocates the data/state
+tree. Logs: `<data>\state\*.log` and `desktop.log`. Requires the Edge WebView2 Runtime (`--check` reports it).
 
-Optional shortcut recipe (documented only, NOT executed): a `.lnk` whose target is
-`<worktree>\.venv\Scripts\pythonw.exe`, arguments `-m shp_portrait_tools.launcher --config
-%APPDATA%\shp-portrait-tools\launcher.json`, start in `<worktree>`.
+#### Verified
 
-Code: `shared/filelock.py` (msvcrt lock), `shared/windows_process.py` (identity, jobs,
-single-instance mutex/event), platform dispatch in `shared/owned_process.py` and
-`shared/supervision.py`, Windows paths in `launcher.py`/`supervisor.py`,
-`desktop/protocol.py`, `desktop/windows_controller.py`. Linux paths are behind `sys.platform` guards.
+- `tests/windows_host_smoke.py` (real WebView2, pythonnet and pystray; disposable data dir, real models
+  read-only): the window reaches the Skin Tools page, both injected flags are set, the page has its five tabs,
+  the tray is created, the page reaches the JS picker bridge and all three pickers round-trip with a fake
+  picker, the old prompt is cancelled, hide/show work, and Quit leaves nothing listening on 18760/18765.
+- Unit tests: `tests/test_desktop_host.py` (shared host with a fake platform: tray model, confirmations, drain
+  and restart, page origin and following the worker, watch-folder poll), `tests/test_windows_host.py` (file
+  lock, job adoption/termination, identity mismatch, editor breakaway from the job, single instance).
+- Live, by the user on 2026-11-21: status page hand-over, tabs and Settings & Info, theme carry-over, real
+  Open/Batch pickers, tray Stop/Start/Restart/Reload, and Quit/Restart with PhotoCraft open.
 
-#### Verified (real run, `tests/windows_host_smoke.py`, disposable data dir/inbox, real models read-only)
+#### Not verified
 
-Against real WebView2 (157.0.4341.46), pythonnet and pystray: shell and Skin Tools iframe load in
-the pywebview window; `__shpOwnedDesktop` (top) and `__shpNativeFileDialog` (shell and iframe) are
-set; the tray icon is created (`run_detached` reports ready); all four `SHP_OPEN_*` prompts
-round-trip through the real `ScriptDialogOpening` handler with a fake picker (the answers match
-the GTK formats); hide/show toggle the form's visibility; Quit through the real
-`/api/ui/native-quit` stops the supervisor and Skin Tools with no listener left on 18760/18765
-and no stray python processes. Unit tests (`tests/test_windows_host.py`): file lock, job adoption,
-termination, identity-mismatch refusal, single-instance mutex/event, prompt protocol. Regression
-set (`test_combine ... test_windows_service`, plus the new tests): 84 OK, skipped 9.
-`test_launcher`/`test_supervisor` are Linux-oriented and still have Windows failures (6 of 21).
-
-Findings: WebView2 raises `ScriptDialogOpening` only when `AreDefaultScriptDialogsEnabled` is
-false, so the host disables them and renders alert/confirm itself with `MessageBox`; the venv
-`python.exe` is a redirector that spawns the real interpreter, so ownership uses job membership
-rather than `Popen.pid`; closed loopback ports take ~2 s to refuse on Windows (probe timeout 5 s).
-
-#### Not verified (try in the GUI)
-
-Real native pickers (Open/Folder dialogs; only the fake picker path was run), the Yes/No/Cancel
-batch-source box, tray right-click menu and notifications, close-button hide, the second-launch
-"show existing window" wake, Restart / Force Restart / Reload, the busy and unsent-work
-confirmations, window geometry persistence, download Save-As, new-window/navigation blocking,
-inbox wake-to-show, GPU inference through the host, and AI Fill (`crop`).
+Window geometry persistence across monitors, download Save-As, the second-launch wake from a Start Menu
+shortcut, inbox wake-to-show on a real watch folder, and GPU inference started through the host on a machine
+other than the development one.
 
 ## Committed feature state
 
 - Skin Tools includes Skin Mask, FS & Tone, Dodge & Burn and Combine, with shared source
-  and global settings, local Combine batches and separate Skin Tools/AI Fill PNG inboxes.
-  The shell initially selects Skin Mask when available and preserves later user selection.
-- Crop & Expand supports FLUX.2 dev, FLUX.1 Fill and, since `5cd5ac4`, FLUX.2 Klein.
-  Klein has separate settings, local seam blending/correction and optional compatible
-  LoRA support. **Patch Fill in this published baseline uses FLUX.1 Fill only.**
-  Uncommitted Klein Patch Fill/reference-preparation work is not included.
+  and global settings and a PhotoCraft PNG inbox. The connection (Photoshop / PhotoCraft /
+  Standalone) decides the buttons: Get Image + Send Layers for editors, Get Image + Send Result
+  for Standalone, which is also the only place local Combine batches are offered. In the desktop
+  window the page starts on Skin Mask and preserves later user selection.
+- AI Fill (Crop & Expand, Patch Fill, ComfyUI) is the separate `shp-ai-fill` repository.
 - Since `374151a`, pose analysis optionally supports Google Full in an isolated CPU
   worker or OpenCV Zoo MediaPipe ONNX on CPU. rtmlib remains the default. Backend settings
   apply on the next analysis/batch and do not rewrite a loaded source or presets.
@@ -297,12 +289,11 @@ inbox wake-to-show, GPU inference through the host, and AI Fill (`crop`).
 
 | Area | Current implementation | Windows work to investigate |
 |---|---|---|
-| Processing and WebUI | Python image processing plus packaged HTML/CSS/JS; AI Fill (`crop`, Crop & Expand/Patch Fill) and Skin Tools (`dnb`) HTTP services | Start with standalone service/browser tests, not a native desktop rewrite. Imports and synthetic tests still need platform verification. |
+| Processing and WebUI | Python image processing plus packaged HTML/CSS/JS; the Skin Tools (`skin`) HTTP service | Verified on Windows (see above); keep standalone service/browser tests as the first check. |
 | Python/dependencies | `pyproject.toml` requires Python 3.13; `uv.lock` pins NumPy, Pillow, OpenCV, ONNX Runtime GPU and rtmlib | Verify Windows wheels and lock resolution with `uv sync --locked`; report unavailable wheels rather than silently changing versions. Plain pip does not inherit uv's ONNX override. |
 | GPU/models | Optional `gpu` extra supplies CUDA 13/cuDNN libraries; `modules/skin/dnb_gpu.py` preloads libraries; `estimate_body_scale.py` explicitly requests CUDA for Wholebody | Verify Windows DLL discovery, driver/provider compatibility and real inference separately. CPU-only full analysis is not guaranteed. Provide external weights per MODELS; never commit weights or caches. |
 | Experimental pose | `modules/skin/pose_backend.py` requires Linux bubblewrap/namespaces and `bin/python` for Google Full; `scripts/google-pose-requirements.txt` hashes Linux-specific wheels. `opencv_zoo_pose.py` uses existing OpenCV DNN with a pinned two-model pair | Keep rtmlib as baseline. Do not run the Google provisioning instructions unchanged or remove isolation to enable Windows. OpenCV Zoo is a separate candidate for Windows verification, not a verified port; Linux checks covered blank/synthetic input, not portrait accuracy or speed. |
-| AI Fill/ComfyUI | External ComfyUI has its own PyTorch environment/models/nodes; `comfy.py` searches `venv/bin/python` or `.venv/bin/python` and uses `/proc` listener inspection. Klein uses core FLUX.2 nodes and a local safetensors shape check for optional LoRAs | Validate against an explicitly started external ComfyUI first. Later support `Scripts/python.exe` and Windows-safe ownership/lifecycle; do not attach to or terminate arbitrary listeners. Follow method-specific MODELS requirements; Klein is not FLUX.2 dev/GGUF and does not require the custom seam node. |
-| Native desktop | `desktop/controller.py` runs system Python with GTK3, WebKit2 4.1 and AppIndicator3; GLib Unix signals, GTK file choosers and tray presentation | These are the Linux desktop implementation, not a verified Windows runtime. Choose a Windows host only after browser/service validation; preserve existing UI and lifecycle contracts. |
+| Native desktop | Windows: `desktop/host.py` + `windows_controller.py` (pywebview/pystray), implemented and verified. Linux: the GTK3/WebKit2 `controller.py`, broken since the shell removal | Linux gets a Qt host on `DesktopHost`; see [linux-todo](linux-todo.md). |
 | Launcher/install/lifetime | `launcher.py` imports `fcntl`, uses file locks and `/usr/bin/python3`; `scripts/install_desktop.py` creates shell wrappers, XDG `.desktop` files and icons. Supervisor/process ownership uses `/proc`, Linux pidfds/signals and session semantics | Replace locks, platform paths, launch/install assets and verified process identity/termination. Standalone module commands avoid launcher import but do not provide equivalent owned-shell/tray management. |
 | Output/file safety | `shared/local_output.py` uses directory descriptors, `dir_fd`, `O_DIRECTORY`, `O_NOFOLLOW`, exclusive allocation, directory fsync and atomic manifest replacement | Provide Windows equivalents with no-overwrite and replacement/symlink/reparse-point safety. Test case-insensitive collisions, reserved names, Unicode/spaces, long paths, locked files and cross-volume behavior. Do not remove safety checks just to make writes succeed. |
 | Inbox imports | `shared/watch_folder.py` pins directories/files and validates PNG completion/CRC; uses `/proc/self/fd`, POSIX descriptor operations. Both server `WATCH_DIRECTORY` constants currently point to fixed Linux paths | Make inbox locations portable/configurable before enabling Windows imports. Use disposable configured directories, never a developer's real inbox. Retain stable-file detection, association checks, deduplication and cleanup only after unchanged successful import. Missing inboxes currently are not auto-created. |

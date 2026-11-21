@@ -32,14 +32,16 @@ Implemented source paths:
 - `plugins/photoshop`: manifest v5 panel, HTTP client, validation and disposable smoke script.
 - `shared/photoshop.py`: bounded binary command broker, pairing and DPAPI credential store.
 - `modules/skin/photoshop_bridge.py`: capture and Skin Tools layer-bundle adapter.
-- Skin Tools **Settings & Info > Source editor**: editor choice, pairing code and revocation.
+- Skin Tools **Settings & Info > connection**: Photoshop / PhotoCraft / Standalone, pairing code and
+  revocation.
 
 These are relative to the repository; Python modules live under
 `src/shp_portrait_tools`.
 
 If tabs remain disabled after selecting Photoshop in an older UI, save or finish
-Tools work and use the tray's **Reload UI** after updating both the shell and Skin
-Tools UI files. Reload resets unsent previews; it does not restart Photoshop.
+Tools work and use the tray's **Reload UI** after updating the Skin Tools UI file
+(Python changes need a Tools restart). Reload resets unsent previews; it does not
+restart Photoshop.
 
 ## Current limitations (not hidden conversions)
 
@@ -156,14 +158,16 @@ validation alone does not establish rendering fidelity.
    its contents; this connector uses it only as a picker location and reads the
    file you explicitly choose. Manual browsing remains available. The previously cached ICC is available
    as **Previously selected ICC**; click it to explicitly associate it with the
-   active document. In Tools choose **Settings & Info > Source editor > Photoshop
-   (UXP preview)**, then **Create pairing code**.
+   active document. In Tools choose **Settings & Info > connection > Photoshop**,
+   then **Create pairing code**.
 5. In Photoshop paste that code and click **Pair with local Tools**. The code is
    single-use, expires in 120 seconds and allows at most five guesses. The panel
    must display **Connected**.
 6. With that **new disposable**, opaque RGB8 or RGB16 document and its explicit
-   matching profile active, use **Get Image** in Tools, process it, then **Send Layers** or
-   **Send Result**. Nothing saves the Photoshop document.
+   matching profile active, use **Get Image** in Tools, process it, then **Send Layers**
+   (on the Skin Mask tab it adds the mask layer). The flattened RGB16 result is no longer
+   offered for editors; it is Standalone's **Send Result**, saved as a local file.
+   Nothing saves the Photoshop document.
 
 Pairing persists across launches using Windows user-bound DPAPI in Tools and UXP
 secureStorage in the plugin. After a Photoshop restart, open the panel: it

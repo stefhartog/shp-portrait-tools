@@ -4,6 +4,10 @@ SHP Portrait Tools is a desktop companion for portrait photography on Linux and
 Windows. It provides local skin retouching and editable results for PhotoCraft or
 Photoshop. Skin analysis runs locally.
 
+> **Linux status:** the native desktop window is temporarily broken on Linux after the
+> Windows-first desktop changes; see [docs/linux-todo.md](docs/linux-todo.md). Until it is fixed,
+> start with `shp-portrait-tools --no-browser` and open `http://127.0.0.1:18760/` in a browser.
+
 The tools estimate each subject's scale (S, in pixels per 63 mm), so size-based
 controls adapt to the subject instead of relying on fixed pixel dimensions—helping
 keep retouching behavior more consistent across close-ups, wider shots and
@@ -24,8 +28,9 @@ needed, since automatic detection can miss or include areas.
 - **Skin Mask** — analyze a portrait and inspect or refine the skin mask.
 - **FS & Tone** — smooth skin texture and adjust skin tone while retaining detail.
 - **Dodge & Burn** — work with editable tonal bands and masks.
-- **Combine** — mix frequency-separation and dodge-and-burn results, including local batches.
-- **Settings & Info** — source editor, theme, Photoshop pairing and diagnostics.
+- **Combine** — mix frequency-separation and dodge-and-burn results, including local batches (Standalone).
+- **Settings & Info** — connection (Photoshop, PhotoCraft or Standalone), theme, Photoshop pairing and
+  diagnostics.
 
 The skin tools share a source image, analysis and mask settings.
 
@@ -55,9 +60,12 @@ existing AI Fill data keeps working there.
 
 ### Using results
 
-Load a local image or fetch the current document from a connected editor. Preview
-and compare results, then save locally or send editable layers back to PhotoCraft
-or Photoshop where supported. An editor is optional for local-file work.
+Choose the connection in **Settings & Info**:
+
+- **Photoshop** or **PhotoCraft** — **Get Image** takes the active document from the editor and
+  **Send Layers** returns editable layers (on the Skin Mask tab, the mask layer).
+- **Standalone** — no editor. **Get Image** opens a local file and **Send Result** saves a numbered
+  result beside it, never overwriting. Batch Processing (Combine tab) is available here.
 
 The **Windows Photoshop 28.0 preview** is for Skin Tools. It pairs locally, reads
 opaque RGB 8/16-bit documents with the exact source ICC profile, and returns editable

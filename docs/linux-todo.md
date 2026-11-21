@@ -20,7 +20,12 @@ bubblewrap) could not run on Windows; their status is noted per item.
    `pick_images()` / `pick_folder()` (`host.PickerApi`) and asks Folder-or-Images in its own
    `#batchSourceDialog`. Without the bridge it falls back to `prompt('SHP_OPEN_*')`, which the GTK
    controller answers — but see item 1 below.
-4. **Renames and folder migration** (already in place, never exercised on Linux): package
+4. **Connection choice** (page and server only, nothing Linux-specific): Settings & Info's connection is
+   Photoshop / PhotoCraft / Standalone. Editors get Get Image + Send Layers; Standalone gets Get Image (local
+   file through the picker bridge or the `prompt` fallback) + Send Result, and is the only place Batch
+   Processing shows. The PhotoCraft launch button is gone. On Linux PhotoCraft already starts in its own
+   session (`start_new_session`), so the Windows Job Object fix for tray Quit/Restart has no Linux counterpart.
+5. **Renames and folder migration** (already in place, never exercised on Linux): package
    `shp_portrait_tools`, distribution/commands `shp-portrait-tools` / `shp-skin-tools`, module ID `skin`
    (route `/skin/` is now unused, env `SKIN_*` with `DNB_*` fallbacks), folders
    `~/.local/share|~/.config|~/.local/state/shp-portrait-tools` with `migrate_legacy_roots()` on first
@@ -35,7 +40,13 @@ bubblewrap) could not run on Windows; their status is noted per item.
 - injects `__shpNativeFileDialog` only for `self.base`, so the Skin Tools page (worker origin) would not
   offer local Open even if navigation were allowed;
 - answers `prompt('SHP_OPEN_*')` only for `self.base`;
-- has its own copy of the status/tray/quit logic that `DesktopHost` now owns.
+- has its own copy of the status/tray/quit logic that `DesktopHost` now owns, including the watch-folder poll
+  to the supervisor's removed `/skin/api/watch-folder` route (a 404 that shows "Tools connection lost" and
+  empties the tray status; `DesktopHost` asks the worker origin instead).
+
+Until the Qt host lands, use Tools on Linux without the native window: `shp-portrait-tools --no-browser`, then
+open `http://127.0.0.1:18760/` in a normal browser (the status page moves on to Skin Tools). File pickers are not
+available there; use the Image analysis list or path box and press Load.
 
 Patching it is possible (allow and flag the worker origin from `/api/health` `ports.skin`), but the plan is
 to replace it.
@@ -93,8 +104,9 @@ On Windows these were skipped or run through a Node stand-in; results there were
 desktop changes, i.e. these **pre-existing** failures remain:
 
 - `test_dnb_progress.test_feedback_summary_log_and_inline_syntax_without_browser` (JavaScriptCore):
-  stale expectations — workflow buttons now include `pcConnect`, the local transfer harness lacks
-  `pcConnect`, the batch harness expects old calls, the feedback harness fails at its first check, and an
+  stale expectations — the workflow-button and local-transfer harnesses predate the connection choice
+  (`pcConnect` is gone; Send Result/Send Layers visibility now follows `editorSelect`), the batch harness
+  expects old calls, the feedback harness fails at its first check, and an
   "Always exaggerated diagnostic" check. The shell/AI Fill parts were removed from it.
 - `test_status_layout` (Firefox/Marionette): AI Fill and shell checks removed; **re-add a layout check for
   the in-page tab bar and Settings & Info view** (the old shell-based `check_general_settings` was removed).

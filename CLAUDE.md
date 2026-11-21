@@ -17,8 +17,8 @@ unchanged: app identity strings (`shp-photocraft-tools` window class/icons/healt
 (`shpdnb` etc.).
 Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything PhotoCraft relies on.
 
-- **Skin Tools** = module `skin` (`modules/skin`, route `/skin/`, `SKIN_*` env vars; it was `dnb` before
-  2026-11-21). Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service. `dnb` is still the Dodge & Burn
+- **Skin Tools** = module `skin` (`modules/skin`, supervisor API `/api/modules/skin/<action>`, `SKIN_*` env vars;
+  it was `dnb` before 2026-11-21). Skin Mask, FS & Tone, Dodge & Burn, Combine — one shared service. `dnb` is still the Dodge & Burn
   *feature* name (the `dnb` mode/tab, `shpdnb` outputs, `DNB_LAYER_BACKEND`, `dnb-*` UI preferences) and the
   PhotoCraft namespace (`detect_config("DNB", "dnb")`, `DNB_PC_*`, the `photocraft-dnb` LightCraft wrapper): keep
   those. Old `dnb` launcher.json keys, `DNB_DATA`/`DNB_MODELS`/`DNB_WATCH_DIRECTORY`/`DNB_EXIFTOOL` and the
@@ -101,7 +101,7 @@ launcher.py ─► supervisor.py (port 18760: status page at /, health/status/co
   supervisor's `/api/health` `ports.skin`, allows navigation to both origins (`trusted_origin`), and shows the
   status page again when Skin Tools stops or restarts (`follow_worker`). Platform hosts subclass it and add only
   dialogs/pickers, webview hooks, the tray widget and process helpers (`own_identity`, `process_alive`,
-  `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
+  `spawn_detached`). It polls the watch folder on the worker origin, not the supervisor. Covered by `tests/test_desktop_host.py` with a fake platform.
   File pickers: `PickerApi` (only `pick_image`/`pick_images`/`pick_folder`) is the window's pywebview `js_api`;
   the Skin Tools page reaches it as `window.top.pywebview.api` and asks Folder-or-Images
   in its own `#batchSourceDialog`. Without the bridge (Linux GTK host) the page falls back to the old

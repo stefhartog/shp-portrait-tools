@@ -1,7 +1,9 @@
 # SHP Portrait Tools handoff
 
-Current reproducible implementation, updated **2026-11-10**. This file describes the
-completed Tools code in this revision, not incidental experiments or planned features.
+Current reproducible implementation. The dated sections at the top (2026-11-21) are current; the
+sections from "Scope, ownership and activation" on were written for **2026-11-10** and are kept as
+history where the dated sections changed them. This file describes completed Tools code, not
+incidental experiments or planned features.
 Use [README.md](README.md) for operation/setup, [MODELS.md](MODELS.md) for external weights
 and nodes, and [PROVENANCE.md](PROVENANCE.md) for the migration sources.
 `docs/source/` is deliberately frozen historical context, not current installation guidance.
@@ -101,6 +103,14 @@ Chromium profile (config), all or nothing, then rewrites `launcher.json` paths t
 A `--config` still naming the old folder is followed to the new file. Kept in the old folders: AI Fill's
 `crop`, the per-module PhotoCraft control folders (`<config>/shp-photocraft-tools/<module>`), and files
 Tools did not create. If any entry is in use the move is undone and the old folders stay in use.
+
+---
+
+> **Before 2026-11-21.** The sections below describe the app as of 2026-11-10. Where they mention the
+> Tools shell (its tabs, iframe, `postMessage` and the `/dnb/` or `/skin/` proxy routes), AI Fill/`crop`/
+> ComfyUI, the module ID `dnb`, the `shp-photocraft-*` package/commands/folders, prompt-based native
+> pickers, the PhotoCraft launch button, the "source editor" choice, the flattened Send Result to an
+> editor, or Batch Processing outside Standalone, the dated sections above are what is current.
 
 ## Scope, ownership and activation
 
