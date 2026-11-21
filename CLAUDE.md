@@ -32,19 +32,19 @@ Never rename the Photoshop connector ID `shp.skin-tools.connector`, or anything 
 Key docs (read the relevant one before non-trivial changes):
 - `docs/skin-tools-architecture.md` — Skin Tools module boundaries, request flow, lock ordering, focused test selectors
 - `HANDOFF.md` — current-state behavior contracts for the whole app (lifecycle, pose backends, etc.)
-- `docs/linux-todo.md` — **Linux is knowingly broken** since the Windows-first desktop changes; what to do there
+- `docs/linux-todo.md` — Linux desktop status (Qt host done 2026-11-21) and the remaining Linux follow-ups
 - `docs/windows-handoff.md` — Windows port status, what is and isn't verified
 - `docs/photoshop.md` — Photoshop connector wire protocol and live-validation notes
 - `MODELS.md` — required ONNX models. `docs/source/` is frozen history, not current guidance.
 
 ## Commands
 
-On this Windows machine `uv` is not on PATH: use `python -m uv ...`. Always run with `--no-sync`
-after the initial sync.
+On the Windows machine `uv` is not on PATH: use `python -m uv ...`; on Linux use plain `uv ...` (same
+arguments). Always run with `--no-sync` after the initial sync.
 
 ```powershell
 python -m uv sync --locked --extra gpu                       # install (gpu = CUDA/cuDNN user-space libs)
-python -m uv run --no-sync python tests/run.py               # full suite, isolated data/config roots via env vars
+python -m uv run --no-sync python tests/run.py               # full suite, isolated data/config/state roots via env vars
 ```
 
 Single test file / test (tests import helpers such as `winlinks` from `tests/`, so set PYTHONPATH):
@@ -61,8 +61,10 @@ python -m uv run --no-sync python -m unittest test_local_results.LocalResultTest
 - Photoshop connector mock tests (Node): `node tests\photoshop_plugin.cjs`
   (or `python -m uv tool run --from nodejs-wheel node tests\photoshop_plugin.cjs`). Mocks do not prove live Photoshop behavior.
 - Several UI tests run only with Node on PATH (they skip otherwise); `test_dnb_progress`'s big harness needs Linux
-  JavaScriptCore, `test_status_layout` needs Firefox, and `tests/desktop_smoke.py` is an opt-in Linux GTK smoke
-  (`SHP_DESKTOP_SMOKE=1`) that still drives the removed AI Fill module and needs updating.
+  JavaScriptCore, and `test_status_layout` needs Firefox. `test_qt_host` runs Qt offscreen (Linux only); there is
+  no real-window smoke test for the Qt host yet.
+- On Linux, `photocraft-cli` on PATH enables the `RealCodecTests`/`NativeTests` transfer tests, which are skipped
+  on Windows; many of them still expect the pre-Corrections layer stacks (see `docs/linux-todo.md`).
 - No linter/formatter is configured.
 
 Running the app:
@@ -84,7 +86,7 @@ not pick up Python changes.
 launcher.py ─► supervisor.py (port 18760: status page at /, health/status/controls/quit/leases; no UI proxy)
    │                └─► modules/skin/ui_server.py   (owned worker 18765: the Skin Tools page, loaded directly)
    └─► desktop/ (Windows: windows_controller.Host = host.DesktopHost + WebView2/Win32/pystray;
-                Linux: GTK3/WebKit2 controller.py — broken since the shell removal, see docs/linux-todo.md)
+                Linux: qt_controller.Host = host.DesktopHost + pywebview Qt WebEngine/QSystemTrayIcon)
 ```
 
 - Each module is a plain HTTP server (`ThreadingHTTPServer`-based `BrowserServer` from `shared/lifecycle.py`)
@@ -104,15 +106,22 @@ launcher.py ─► supervisor.py (port 18760: status page at /, health/status/co
   `spawn_detached`). Covered by `tests/test_desktop_host.py` with a fake platform.
   File pickers: `PickerApi` (only `pick_image`/`pick_images`/`pick_folder`) is the window's pywebview `js_api`;
   the Skin Tools page reaches it as `window.top.pywebview.api` and asks Folder-or-Images
-  in its own `#batchSourceDialog`. Without the bridge (Linux GTK host) the page falls back to the old
+  in its own `#batchSourceDialog`. Without the bridge (a plain browser; no host answers it now) the page falls back to the old
   `prompt('SHP_OPEN_*')` protocol. The Windows host no longer bridges prompts; its WebView2 dialog hook only
   gives `alert`/`confirm` native message boxes.
+- `desktop/qt_controller.py` (Linux): creates the `QApplication` on the main thread before `webview.start(gui="qt")`,
+  so the `QSystemTrayIcon`, the `QLocalServer` single instance (socket in `$XDG_RUNTIME_DIR`) and `Invoker` live on
+  the GUI thread. pywebview window calls block on the GUI thread, so tray actions run them on a worker thread and
+  workers reach Qt widgets via `Invoker.later`/`wait`. `install_page_class` replaces pywebview's
+  `BrowserView.WebPage` with a `QWebEnginePage` subclass (navigation allow-list, no popups, all permissions denied,
+  document-creation flags); it must not subclass pywebview's page (its `super(BrowserView.WebPage, self)` recurses).
+  `QT_QPA_PLATFORMTHEME=xdgdesktopportal` (default only) gives native, dark-aware file choosers.
 - `shared/health.py`, `supervision.py`, `lifecycle.py`: ownership capabilities, work admission/draining,
   revision guards and leases. `owned_process.py` / `windows_process.py`: identity-pinned child processes
   (Windows children run under `pythonw.exe` to avoid console windows).
 - `shared/platform_paths.py`: per-OS data/model/config locations; overridable with `SKIN_DATA`,
-  `SKIN_MODELS`, `SHP_TOOLS_DATA`. `launcher.py` and `supervisor.py` import `fcntl`
-  and the Linux desktop controller imports `gi`, so those don't import on Windows.
+  `SKIN_MODELS`, `SHP_TOOLS_DATA`. `launcher.py` and `supervisor.py` import `fcntl`, so those don't import
+  on Windows.
 - `shared/local_output.py` (+ `local_output_windows.py`, `winfs.py`): exclusive, never-overwrite numbered
   output files; Windows path pins folders via handles.
 - Skin Tools (`modules/skin/`): `ui_server.py` wires routes; `image_session.py` owns the published source and

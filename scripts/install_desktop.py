@@ -131,6 +131,15 @@ def main():
         trusted = subprocess.run(["gio", "set", str(shortcut), "metadata::trusted", "true"], capture_output=True, text=True)
         if trusted.returncode:
             print(f"Desktop trust could not be set: {trusted.stderr.strip()}. If needed, use Allow Launching on the shortcut.", file=sys.stderr)
+    # The window and tray come from the project environment (pywebview + PySide6/Qt WebEngine); no system
+    # GUI packages are needed. Report a broken runtime now rather than at the first launch.
+    runtime = subprocess.run([str(python), "-m", "shp_portrait_tools.desktop.qt_controller", "--check",
+                              "--url", "http://127.0.0.1:18760/", "--data-dir", str(home)],
+                             capture_output=True, text=True, timeout=60)
+    if runtime.returncode:
+        print("Desktop window runtime unavailable: " + (runtime.stderr or runtime.stdout).strip() +
+              ". Run `uv sync --locked`, or start Tools with --no-browser and open http://127.0.0.1:18760/.",
+              file=sys.stderr)
     print(json.dumps({"launcher": str(launcher), "application": str(application), "desktop": str(shortcut),
                       "icon": str(icon), "config": str(config_path)}, indent=2))
 

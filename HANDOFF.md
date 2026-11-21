@@ -12,11 +12,30 @@ the pywebview/pystray desktop host and the Photoshop 28.0 connector preview are 
 AI Fill/ComfyUI is Linux-only. Unverified items are listed there and in
 [docs/photoshop.md](docs/photoshop.md).
 
+## Linux Qt desktop host (2026-11-21)
+
+`desktop/qt_controller.py` `Host(DesktopHost)` is the Linux window and tray; the GTK3/WebKit2
+`desktop/controller.py` is removed. The launcher starts it from the project environment
+(`background_python() -m shp_portrait_tools.desktop.qt_controller`, `--check` first); pywebview, PySide6 and qtpy
+are Linux dependencies. It creates the `QApplication` before `webview.start(gui="qt")`, so the
+`QSystemTrayIcon`, the `QLocalServer` single instance (`$XDG_RUNTIME_DIR/shp-portrait-tools-<hash>`) and the
+GUI-thread `Invoker` exist before the event loop; worker threads show Qt message boxes through it, and tray
+actions run pywebview calls on a worker thread because those block on the GUI thread. pywebview's
+`BrowserView.WebPage` is replaced by a `QWebEnginePage` subclass: main- and sub-frame navigation only to the
+supervisor and worker origins, `about:blank` and their `blob:` URLs (credentials refused); `createWindow`
+returns nothing; feature and `QWebEnginePermission` requests are denied (pywebview's page granted
+camera/microphone); `__shpOwnedDesktop`/`__shpNativeFileDialog` are injected at document creation as on
+Windows. JS alert/confirm use Qt's own dialogs; prompts are not bridged. Restart uses `/proc` start ticks
+(`owned_process.process_identity`) for both `--wait-for-exit` identities. `QT_QPA_PLATFORMTHEME` defaults to
+`xdgdesktopportal` for the desktop's native file chooser and colour scheme. Without a tray (GNOME without
+AppIndicator) closing the window asks to quit, as `DesktopHost` already did. `shared/filelock.py` now
+honours its timeout on Linux. Open items: `docs/linux-todo.md`.
+
 ## Watch folder removed (2026-11-21)
 
 The PhotoCraft export inbox ("watch folder") is gone: `shared/watch_folder.py`, the Skin Tools routes
 `/api/watch-folder` and `/api/watch-folder/load`, the page's 3 s poll and auto-load, the desktop hosts'
-wake-to-show poll (`DesktopHost` and the GTK controller), `platform_paths.watch_directory()`,
+wake-to-show poll (`DesktopHost` and the since-removed GTK controller), `platform_paths.watch_directory()`,
 `LINUX_INBOX_ROOT` and the `SKIN_WATCH_DIRECTORY`/`DNB_WATCH_DIRECTORY`/`WATCH_DIRECTORY` variables, with
 their tests. Images come in only through Get Image (editor or local file), the Image analysis list/path box,
 and Standalone batches. The folder migration still moves an old `watchfolder` data entry so the old folder
@@ -58,8 +77,8 @@ at `/` that moves on to the page once Skin Tools runs; it also hands the old ori
 preferences to the page once. The desktop host shows that status page again after Stop/Restart. Browser tabs
 opened directly on the worker page hold the supervisor up through the worker's tab count. The desktop window
 still opens on Skin Mask and a standalone page on its saved default mode. Older sections below that describe
-shell tabs, iframes, `shp-tools-*` messages or the proxy are history. **Linux is broken until its Qt host
-lands** — see `docs/linux-todo.md`.
+shell tabs, iframes, `shp-tools-*` messages or the proxy are history. Linux runs this through the Qt host
+(see "Linux Qt desktop host" above).
 
 ## File pickers through pywebview's JS API (2026-11-21)
 
@@ -67,9 +86,9 @@ Local Open and the batch source now call `window.top.pywebview.api.pick_image()`
 `pick_folder()`, served by `host.PickerApi` (the window's only `js_api` object; it exposes nothing else)
 and `host.Picker` (pywebview's native dialogs). The host refuses a second picker while a tray dialog is
 open and reports picker errors as a notice. The Folder-or-Images choice moved from a Win32 Yes/No/Cancel
-box into the page (`#batchSourceDialog`). Pages without the bridge keep the `prompt('SHP_OPEN_*')` path
-answered by the Linux GTK controller; plain browsers still see the "needs the Tools desktop window"
-message. On Windows the WebView2 ScriptDialogOpening hook no longer answers prompts (all prompts are
+box into the page (`#batchSourceDialog`). Pages without the bridge keep the `prompt('SHP_OPEN_*')` path,
+which no host answers since the GTK controller was removed; plain browsers still see the "needs the Tools
+desktop window" message. On Windows the WebView2 ScriptDialogOpening hook no longer answers prompts (all prompts are
 cancelled) and only renders alert/confirm as native message boxes.
 
 ## Shared desktop host core (2026-11-21)
@@ -79,8 +98,8 @@ polling, the tray model (titles, enabled states, Load on startup, window actions
 confirmation/revision retry, and the quit/restart/reload flow including the busy/changed-work checks,
 the acknowledged native-quit, the 90 s drain wait and the single detached relaunch. `windows_controller.Host`
 subclasses it with MessageBox dialogs, the pywebview picker, WebView2 hooks and prompt bridge, the pystray
-widget, foreground focus, single-instance handling and `webview.start`. Behaviour is unchanged. The Linux
-GTK controller still has its own copy until the Phase 3 Qt host replaces it.
+widget, foreground focus, single-instance handling and `webview.start`. Behaviour is unchanged. On Linux,
+`qt_controller.Host` is the second subclass (see above).
 
 ## Single-worker supervisor (2026-11-21)
 
@@ -196,7 +215,7 @@ The table below gives the broader application context from this handoff.
 | `launcher.py`, `supervisor.py`, `shell/` | Identity-verified owned startup, fixed proxy, mounted views, mode handshake, controls and lifecycle. |
 | `shared/health.py`, `supervision.py`, `lifecycle.py` | Private ownership capabilities, work admission/draining, revision guards and leases. |
 | `shared/local_output.py`, `owned_process.py` | Exclusive numbered outputs and identity-pinned explicit Force Restart cleanup. |
-| `desktop/controller.py` | System-Python GTK3/WebKit2-4.1/AppIndicator3 window, tray, chooser, geometry and guarded shutdown. |
+| `desktop/host.py`, `qt_controller.py`, `windows_controller.py` | Shared window/tray/quit core and the Linux (pywebview Qt WebEngine, QSystemTrayIcon) and Windows (WebView2, pystray) hosts. |
 | `comfy.py` | Dedicated existing ComfyUI runtime watchdog, listener ownership and queue-aware shutdown. |
 
 Standalone commands are `shp-photocraft-crop` / `shpcrop` (port **8768**) and

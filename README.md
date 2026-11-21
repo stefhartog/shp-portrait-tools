@@ -4,10 +4,6 @@ SHP Portrait Tools is a desktop companion for portrait photography on Linux and
 Windows. It provides local skin retouching and editable results for PhotoCraft or
 Photoshop. Skin analysis runs locally.
 
-> **Linux status:** the native desktop window is temporarily broken on Linux after the
-> Windows-first desktop changes; see [docs/linux-todo.md](docs/linux-todo.md). Until it is fixed,
-> start with `shp-portrait-tools --no-browser` and open `http://127.0.0.1:18760/` in a browser.
-
 The tools estimate each subject's scale (S, in pixels per 63 mm), so size-based
 controls adapt to the subject instead of relying on fixed pixel dimensions—helping
 keep retouching behavior more consistent across close-ups, wider shots and
@@ -73,6 +69,36 @@ layer stacks, including native Hue Color Lookup. Full fidelity and group masks s
 need validation. See [Photoshop setup and limitations](docs/photoshop.md) and the
 [connector 0.1.14 CCX](plugins/photoshop/releases/0.1.14/shp.skin-tools.connector_PS.ccx).
 
+### PhotoCraft connection
+
+Tools talks to a running PhotoCraft through PhotoCraft's control server. PhotoCraft must be started with
+it on, either with `--control <port> --control-token-file <file> --automation-read-root <dir>
+--automation-write-root <dir>` or the matching `PHOTOCRAFT_CONTROL_PORT`, `PHOTOCRAFT_CONTROL_TOKEN_FILE`,
+`PHOTOCRAFT_AUTOMATION_READ_ROOT` and `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` environment variables (on Linux,
+for example, in `~/.config/environment.d/`, so app-menu launches get them too). PhotoCraft creates the
+token file if it is missing.
+
+Tools must use the same port, token file and exchange folder. Put them in the `photocraft` section of
+`launcher.json` (`~/.config/shp-portrait-tools/` on Linux); all six keys are required, with absolute paths:
+
+```json
+"photocraft": {
+  "port": 29766,
+  "token_file": "/home/you/.local/share/photocraft-control/control.token",
+  "exchange": "/home/you/.local/share/photocraft-control/exchange",
+  "read_root": "/home/you/.local/share/photocraft-control/exchange",
+  "executable": "/usr/bin/photocraft",
+  "editor_config": "/home/you/.config/photocraft"
+}
+```
+
+The exchange folder must be one PhotoCraft may write to and read from (its write root, inside a read
+root): Get Image and Send Layers pass files through it. A running PhotoCraft has one control server, so
+other integrations that drive it must share these settings. `SHP_PC_PORT`, `SHP_PC_TOKEN_FILE`,
+`SHP_PC_EXCHANGE` and `SHP_PC_READ_ROOT` in Tools' environment override the saved values. Restart Tools
+after changing them; the tray's PhotoCraft line shows whether the port is reachable (not whether the
+token is accepted).
+
 ## Dependencies
 
 **Required:** Linux or Windows, Git, Python 3.13 and [uv](https://docs.astral.sh/uv/).
@@ -81,9 +107,10 @@ need validation. See [Photoshop setup and limitations](docs/photoshop.md) and th
 dependencies, and three manually supplied ONNX models. The app does not download
 these models during installation. See [MODELS.md](MODELS.md#db-three-manually-supplied-onnx-files).
 
-**For the native desktop window:** Linux needs GTK 3, WebKit2 4.1, AppIndicator3
-bindings and a tray host; Windows needs the Edge WebView2 Runtime. Standalone web
-commands do not require these desktop components.
+**For the native desktop window:** on Linux, the window (pywebview on Qt WebEngine) and its tray
+icon come from the Python environment, so no system GUI packages are needed; GNOME needs the
+AppIndicator extension to show the tray icon. Windows needs the Edge WebView2 Runtime. Standalone
+web commands do not require these desktop components.
 
 **Optional:** PhotoCraft or a licensed Photoshop installation for editor integration;
 ExifTool and Perl for Sony autofocus-point subject selection.
@@ -94,8 +121,8 @@ On Linux, clone the repository into a new folder, then install its Python enviro
 For Windows Skin Tools, see the [Windows setup notes](docs/windows-handoff.md#windows-port-status-skin-tools-standalone).
 
 ```sh
-git clone https://github.com/stefhartog/shp-portrait-tools.git "$HOME/shp-photocraft-tools"
-cd "$HOME/shp-photocraft-tools"
+git clone https://github.com/stefhartog/shp-portrait-tools.git "$HOME/shp-portrait-tools"
+cd "$HOME/shp-portrait-tools"
 uv python install 3.13
 uv sync --locked --extra gpu
 ```
