@@ -222,6 +222,23 @@ const window = {get top(){ return top; }, prompt: request => (prompts.push(reque
         self.assertIsNone(host.resolve_page(attempts=2, delay=0))
         host.message.assert_called_once()
 
+    def test_watch_folder_is_polled_on_the_worker_and_never_clears_status(self):
+        host = self.host
+        host.page = "http://127.0.0.1:18765"
+        host.show = Mock()
+        host.update_status(status(), host.status_epoch)
+        host.connection.fetch.return_value = {"ready": True, "token": "a"}
+        host.poll_watch_folder(status()["modules"], host.status_epoch)
+        host.connection.fetch.assert_called_once_with("http://127.0.0.1:18765/api/watch-folder")
+        host.show.assert_called_once()
+        host.connection.fetch.side_effect = OSError("HTTP Error 404")
+        host.poll_watch_folder(status()["modules"], host.status_epoch)
+        self.assertEqual(host.module_title("skin"), "Skin Tools - Running")
+        host.connection.fetch.reset_mock(side_effect=True)
+        host.poll_watch_folder(status(busy=True)["modules"], host.status_epoch)
+        host.poll_watch_folder(status(phase="stopped")["modules"], host.status_epoch)
+        host.connection.fetch.assert_not_called()
+
     def test_watch_folder_token_shows_window_once(self):
         host = self.host
         host.show = Mock()

@@ -389,7 +389,8 @@ class Bridge:
                    if not k.startswith("PHOTOCRAFT_CONTROL") and not k.startswith("PHOTOCRAFT_AUTOMATION")}
             log_path = self.config_dir / "photocraft.log"
             with log_path.open("ab") as log:
-                process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, env=env)
+                from shp_portrait_tools.shared.windows_process import popen_outside_job
+                process = popen_outside_job(args, stdout=log, stderr=subprocess.STDOUT, env=env)
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 if process.poll() is not None:

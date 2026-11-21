@@ -55,6 +55,25 @@ class WindowsProcessTests(unittest.TestCase):
         self.assertFalse(self.wp.is_alive(*identity))
         self.wp.close_handle(handles[0])
 
+    def test_editor_started_by_a_service_leaves_its_job(self):
+        """PhotoCraft started from the worker must not keep the worker's job alive (strict stop/restart)."""
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "editor.pid"
+            code = ("import subprocess, sys; from pathlib import Path; "
+                    "from shp_portrait_tools.shared.windows_process import popen_outside_job; "
+                    "p = popen_outside_job([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                    f"Path({str(pid_file)!r}).write_text(str(p.pid))")
+            # pythonw, as the supervised worker runs: no console host of its own in the job.
+            process = subprocess.Popen([self.wp.background_python(), "-c", code], **self.wp.spawn_options())
+            self.addCleanup(lambda: process.poll() is None and process.kill())
+            self.wp.adopt(process)
+            process.wait(30)
+            editor = int(pid_file.read_text())
+            self.addCleanup(lambda: subprocess.run(["taskkill", "/PID", str(editor), "/T", "/F"], capture_output=True))
+            self.assertFalse(self.wp.owns(process, editor))
+            self.wp.require_session_stopped(process, wait=5)  # raised "Owned job still has processes" before
+            self.assertTrue(self.wp.is_alive(*self.wp.process_identity(editor)))
+
     def test_identity_mismatch_refused(self):
         process = self.spawn()
         identity = self.wp.adopt(process)

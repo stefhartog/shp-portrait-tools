@@ -24,6 +24,9 @@ JobObjectBasicProcessIdList = 3
 PROCESS_SUSPEND_RESUME = 0x0800
 CREATE_SUSPENDED = 0x00000004
 ERROR_INVALID_PARAMETER = 87
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+JobObjectExtendedLimitInformation = 9
+JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
 
 CREATE_NEW_PROCESS_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
@@ -41,6 +44,7 @@ _k32.CreateJobObjectW.restype = wintypes.HANDLE
 _k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
 _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
 _k32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+_k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
 _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
                                            ctypes.POINTER(wintypes.DWORD)]
 _k32.CreateMutexW.restype = wintypes.HANDLE
@@ -62,6 +66,19 @@ class _BasicAccounting(ctypes.Structure):
                 ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
                 ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
                 ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
 
 def _filetime(value):
@@ -103,6 +120,12 @@ class Job:
         if not self.handle:
             raise OSError(ctypes.get_last_error(), "CreateJobObject failed")
         try:
+            # Only an explicit CREATE_BREAKAWAY_FROM_JOB child (the user's editor, see editor_options) leaves.
+            limits = _ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK
+            if not _k32.SetInformationJobObject(self.handle, JobObjectExtendedLimitInformation,
+                                                ctypes.byref(limits), ctypes.sizeof(limits)):
+                raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
             handle = _k32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, process.pid)
             if not handle:
                 raise OSError(ctypes.get_last_error(), "Cannot open spawned service for job assignment")
@@ -240,6 +263,23 @@ def spawn_options():
 
 def detached_options():
     return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW}
+
+
+def editor_options():
+    """Creation flags for a user application (PhotoCraft) started by a service: it leaves the service's job.
+
+    The editor belongs to the user, so it must outlive the service and must not block a strict stop or
+    restart ("Owned job still has processes"). DETACHED_PROCESS keeps it off the service's console, whose
+    conhost.exe would otherwise stay in the job. Use popen_outside_job(), which falls back when an outer job
+    (not ours) forbids breakaway."""
+    return {"creationflags": CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB}
+
+
+def popen_outside_job(args, **kwargs):
+    try:
+        return subprocess.Popen(args, **editor_options(), **kwargs)
+    except PermissionError:
+        return subprocess.Popen(args, creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS, **kwargs)
 
 
 def background_python(executable=None):
